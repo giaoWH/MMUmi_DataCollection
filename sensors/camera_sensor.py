@@ -18,7 +18,7 @@ class CameraSensor(BaseSensor):
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         cap.set(cv2.CAP_PROP_FPS, self.fps)
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG')) # type: ignore
 
         if not cap.isOpened():
             print(f"[Camera] 无法打开设备 {self.camera_idx}")
@@ -29,7 +29,7 @@ class CameraSensor(BaseSensor):
         self.video_filename = f"video_{timestamp}.mp4"
         writer = cv2.VideoWriter(
             self.video_filename,
-            cv2.VideoWriter_fourcc(*'mp4v'),
+            cv2.VideoWriter_fourcc(*'mp4v'), # type: ignore
             self.fps,
             (self.width, self.height)
         )

@@ -14,13 +14,15 @@ class FTSensor(SerialBaseSensor):
         super().__init__("FT_Sensor", port, baudrate, data_length=6)
 
     def _on_open(self):
-        time.sleep(0.1)
-        self._ser.reset_input_buffer()
-        self._ser.write(self.CMD_START)
+        if self._ser:
+            time.sleep(0.1)
+            self._ser.reset_input_buffer()
+            self._ser.write(self.CMD_START)
 
     def _on_close(self):
-        self._ser.write(self.CMD_STOP)
-        time.sleep(0.05)
+        if self._ser:
+            self._ser.write(self.CMD_STOP)
+            time.sleep(0.05)
 
     def _parse_protocol(self, buffer):
         last_valid_frame = None
