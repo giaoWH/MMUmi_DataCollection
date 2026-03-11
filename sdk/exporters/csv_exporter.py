@@ -1,0 +1,127 @@
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+from typing import Any
+
+from sdk.exporters.base import ExportResult, SessionExporter
+from sdk.storage import SessionReader
+
+
+class CSVSnapshotExporter(SessionExporter):
+    export_format = "csv"
+
+    def export(self, session_dir: str | Path, output_path: str | Path | None = None) -> ExportResult:
+        reader = SessionReader(session_dir)
+        target = Path(output_path) if output_path else Path(session_dir) / "exports" / "session_snapshot.csv"
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        frame_index: dict[str, dict[int, Any]] = {}
+        for sensor_name in reader.sensor_names():
+            frame_index[sensor_name] = {
+                frame.frame_id: frame
+                for frame in reader.iter_sensor_frames(sensor_name, load_payload=True)
+            }
+
+        fieldnames = [
+            "Aligned_Time",
+            "FT_Time",
+            "Fx_Raw",
+            "Fy_Raw",
+            "Fz_Raw",
+            "Tx",
+            "Ty",
+            "Tz",
+            "Fx_Pure",
+            "Fy_Pure",
+            "Fz_Pure",
+            "Gravity_Fx",
+            "Gravity_Fy",
+            "Gravity_Fz",
+            "IMU_Time",
+            "Ax",
+            "Ay",
+            "Az",
+            "Gx",
+            "Gy",
+            "Gz",
+            "Qw",
+            "Qx",
+            "Qy",
+            "Qz",
+            "RealSense_Time",
+            "RealSense_Frame_ID",
+            "Missing_Sensors",
+        ]
+
+        with target.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for aligned_record in reader.iter_aligned_records():
+                writer.writerow(self._build_row(aligned_record, frame_index))
+
+        return ExportResult(export_format=self.export_format, output_path=target)
+
+    def _build_row(self, aligned_record: dict[str, Any], frame_index: dict[str, dict[int, Any]]) -> dict[str, Any]:
+        row = {key: "" for key in [
+            "FT_Time", "Fx_Raw", "Fy_Raw", "Fz_Raw", "Tx", "Ty", "Tz",
+            "Fx_Pure", "Fy_Pure", "Fz_Pure", "Gravity_Fx", "Gravity_Fy", "Gravity_Fz",
+            "IMU_Time", "Ax", "Ay", "Az", "Gx", "Gy", "Gz", "Qw", "Qx", "Qy", "Qz",
+            "RealSense_Time", "RealSense_Frame_ID",
+        ]}
+        row["Aligned_Time"] = f"{float(aligned_record['aligned_time']):.6f}"
+        row["Missing_Sensors"] = "|".join(aligned_record.get("missing_sensors", []))
+
+        self._fill_force_torque(row, aligned_record, frame_index)
+        self._fill_imu(row, aligned_record, frame_index)
+        self._fill_realsense(row, aligned_record)
+        self._fill_compensation(row, aligned_record)
+        return row
+
+    def _fill_force_torque(self, row: dict[str, Any], aligned_record: dict[str, Any], frame_index: dict[str, dict[int, Any]]) -> None:
+        for sensor_name, frame_info in aligned_record.get("frames", {}).items():
+            frame = frame_index.get(sensor_name, {}).get(frame_info["frame_id"])
+            if frame is None or frame.modality != "force_torque":
+                continue
+            row["FT_Time"] = f"{float(frame.time.host_time):.6f}"
+            wrench = frame.payload.get("force_torque", [])
+            if len(wrench) >= 6:
+                row["Fx_Raw"], row["Fy_Raw"], row["Fz_Raw"] = [f"{float(value):.6f}" for value in wrench[:3]]
+                row["Tx"], row["Ty"], row["Tz"] = [f"{float(value):.6f}" for value in wrench[3:6]]
+            return
+
+    def _fill_imu(self, row: dict[str, Any], aligned_record: dict[str, Any], frame_index: dict[str, dict[int, Any]]) -> None:
+        for sensor_name, frame_info in aligned_record.get("frames", {}).items():
+            frame = frame_index.get(sensor_name, {}).get(frame_info["frame_id"])
+            if frame is None or frame.modality != "imu":
+                continue
+            row["IMU_Time"] = f"{float(frame.time.host_time):.6f}"
+            acceleration = frame.payload.get("acceleration", [])
+            angular_velocity = frame.payload.get("angular_velocity", [])
+            quaternion = frame.payload.get("quaternion", [])
+            if len(acceleration) >= 3:
+                row["Ax"], row["Ay"], row["Az"] = [f"{float(value):.6f}" for value in acceleration[:3]]
+            if len(angular_velocity) >= 3:
+                row["Gx"], row["Gy"], row["Gz"] = [f"{float(value):.6f}" for value in angular_velocity[:3]]
+            if len(quaternion) >= 4:
+                row["Qw"], row["Qx"], row["Qy"], row["Qz"] = [f"{float(value):.6f}" for value in quaternion[:4]]
+            return
+
+    def _fill_realsense(self, row: dict[str, Any], aligned_record: dict[str, Any]) -> None:
+        for sensor_name, frame_info in aligned_record.get("frames", {}).items():
+            if sensor_name != "realsense":
+                continue
+            row["RealSense_Time"] = f"{float(frame_info['host_time']):.6f}"
+            row["RealSense_Frame_ID"] = str(frame_info["frame_id"])
+            return
+
+    def _fill_compensation(self, row: dict[str, Any], aligned_record: dict[str, Any]) -> None:
+        compensation = aligned_record.get("metadata", {}).get("gravity_compensation")
+        if not compensation:
+            return
+        pure_force = compensation.get("pure_force", [])
+        gravity_force = compensation.get("gravity_force", [])
+        if len(pure_force) >= 3:
+            row["Fx_Pure"], row["Fy_Pure"], row["Fz_Pure"] = [f"{float(value):.6f}" for value in pure_force[:3]]
+        if len(gravity_force) >= 3:
+            row["Gravity_Fx"], row["Gravity_Fy"], row["Gravity_Fz"] = [f"{float(value):.6f}" for value in gravity_force[:3]]
