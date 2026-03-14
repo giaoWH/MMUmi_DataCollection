@@ -1,0 +1,12 @@
+{
+  "mode": "rgbd_inertial",
+  "output_mode": "stdout_jsonl",
+  "source_name": "orbslam3",
+  "working_dir": null,
+  "bundle_dir": null,
+  "env": {
+    "ORB_SLAM3_VOCAB": "/abs/path/to/ORBvoc.txt",
+    "ORB_SLAM3_SETTINGS": "/abs/path/to/realsense_rgbd_inertial.yaml"
+  },
+  "command": "python /abs/path/to/orbslam3_wrapper.py --mode rgbd_inertial --bundle-manifest {bundle_manifest} --association {association_file} --imu {imu_file} --output {output_jsonl}"
+}
