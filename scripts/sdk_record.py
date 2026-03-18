@@ -19,18 +19,30 @@ from sdk.core import BufferedFrameAligner, SensorRegistry, SystemClock, create_s
 from sdk.logging import build_logger
 from sdk.processors import GravityCompensationConfig, GravityCompensator
 from sdk.sensors.fake import (
+    FakeCameraAdapter,
+    FakeCameraConfig,
     FakeFTAdapter,
     FakeFTSensorConfig,
     FakeIMUAdapter,
     FakeIMUSensorConfig,
+    FakeMicrophoneAdapter,
+    FakeMicrophoneConfig,
+    FakeMotorsAdapter,
+    FakeMotorsConfig,
     FakeRealSenseAdapter,
     FakeRealSenseConfig,
 )
 from sdk.sensors.legacy import (
+    CameraSensorConfig,
     FTSensorConfig,
     IMUSensorConfig,
     LegacyFTAdapter,
     LegacyIMUAdapter,
+    LegacyCameraAdapter,
+    LegacyMicrophoneAdapter,
+    LegacyMotorsAdapter,
+    MicrophoneSensorConfig,
+    MotorsSensorConfig,
 )
 from sdk.sensors.realsense import RealSenseConfig, RealSenseRGBDAdapter
 from sdk.storage import SessionWriter
@@ -46,9 +58,15 @@ class RecorderConfig:
     enable_ft: bool = True
     enable_imu: bool = True
     enable_realsense: bool = True
+    enable_motors: bool = False
+    enable_microphone: bool = False
+    enable_camera: bool = False
     ft: FTSensorConfig = FTSensorConfig()
     imu: IMUSensorConfig = IMUSensorConfig()
     realsense: RealSenseConfig = RealSenseConfig()
+    motors: MotorsSensorConfig = MotorsSensorConfig()
+    microphone: MicrophoneSensorConfig = MicrophoneSensorConfig()
+    camera: CameraSensorConfig = CameraSensorConfig()
     gravity_compensation: GravityCompensationConfig = GravityCompensationConfig()
 
 
@@ -79,6 +97,40 @@ def build_registry(config: RecorderConfig, clock: SystemClock) -> SensorRegistry
                     clock,
                 )
             )
+        if config.enable_motors:
+            registry.register(
+                FakeMotorsAdapter(
+                    FakeMotorsConfig(
+                        name=config.motors.name,
+                        sample_rate_hz=100.0,
+                    ),
+                    clock,
+                )
+            )
+        if config.enable_microphone:
+            registry.register(
+                FakeMicrophoneAdapter(
+                    FakeMicrophoneConfig(
+                        name=config.microphone.name,
+                        channels=config.microphone.channels,
+                        rate=config.microphone.rate,
+                        chunk=config.microphone.chunk,
+                    ),
+                    clock,
+                )
+            )
+        if config.enable_camera:
+            registry.register(
+                FakeCameraAdapter(
+                    FakeCameraConfig(
+                        name=config.camera.name,
+                        width=config.camera.width,
+                        height=config.camera.height,
+                        fps=config.camera.fps,
+                    ),
+                    clock,
+                )
+            )
         return registry
 
     if config.enable_ft:
@@ -87,6 +139,12 @@ def build_registry(config: RecorderConfig, clock: SystemClock) -> SensorRegistry
         registry.register(LegacyIMUAdapter(config.imu, clock))
     if config.enable_realsense:
         registry.register(RealSenseRGBDAdapter(config.realsense, clock))
+    if config.enable_motors:
+        registry.register(LegacyMotorsAdapter(config.motors, clock))
+    if config.enable_microphone:
+        registry.register(LegacyMicrophoneAdapter(config.microphone, clock))
+    if config.enable_camera:
+        registry.register(LegacyCameraAdapter(config.camera, clock))
     return registry
 
 
@@ -166,8 +224,20 @@ def parse_args() -> RecorderConfig:
     parser.add_argument("--disable-ft", action="store_true")
     parser.add_argument("--disable-imu", action="store_true")
     parser.add_argument("--disable-realsense", action="store_true")
+    parser.add_argument("--enable-motors", action="store_true")
+    parser.add_argument("--enable-microphone", action="store_true")
+    parser.add_argument("--enable-camera", action="store_true")
     parser.add_argument("--ft-port", default="COM3")
     parser.add_argument("--imu-port", default="COM4")
+    parser.add_argument("--motors-port", default="/dev/ttyUSB0")
+    parser.add_argument("--microphone-device-index", type=int, default=None)
+    parser.add_argument("--microphone-channels", type=int, default=1)
+    parser.add_argument("--microphone-rate", type=int, default=44100)
+    parser.add_argument("--microphone-chunk", type=int, default=1024)
+    parser.add_argument("--camera-device-index", type=int, default=0)
+    parser.add_argument("--camera-width", type=int, default=640)
+    parser.add_argument("--camera-height", type=int, default=480)
+    parser.add_argument("--camera-fps", type=int, default=30)
     parser.add_argument("--realsense-width", type=int, default=640)
     parser.add_argument("--realsense-height", type=int, default=480)
     parser.add_argument("--realsense-fps", type=int, default=30)
@@ -182,8 +252,24 @@ def parse_args() -> RecorderConfig:
         "enable_ft": not args.disable_ft,
         "enable_imu": not args.disable_imu,
         "enable_realsense": not args.disable_realsense,
+        "enable_motors": args.enable_motors,
+        "enable_microphone": args.enable_microphone,
+        "enable_camera": args.enable_camera,
         "ft": {"port": args.ft_port},
         "imu": {"port": args.imu_port},
+        "motors": {"port": args.motors_port},
+        "microphone": {
+            "device_index": args.microphone_device_index,
+            "channels": args.microphone_channels,
+            "rate": args.microphone_rate,
+            "chunk": args.microphone_chunk,
+        },
+        "camera": {
+            "device_index": args.camera_device_index,
+            "width": args.camera_width,
+            "height": args.camera_height,
+            "fps": args.camera_fps,
+        },
         "realsense": {
             "width": args.realsense_width,
             "height": args.realsense_height,
@@ -210,9 +296,15 @@ def parse_args() -> RecorderConfig:
         enable_ft=payload["enable_ft"],
         enable_imu=payload["enable_imu"],
         enable_realsense=payload["enable_realsense"],
+        enable_motors=payload.get("enable_motors", False),
+        enable_microphone=payload.get("enable_microphone", False),
+        enable_camera=payload.get("enable_camera", False),
         ft=FTSensorConfig(**payload.get("ft", {})),
         imu=IMUSensorConfig(**payload.get("imu", {})),
         realsense=RealSenseConfig(**payload.get("realsense", {})),
+        motors=MotorsSensorConfig(**payload.get("motors", {})),
+        microphone=MicrophoneSensorConfig(**payload.get("microphone", {})),
+        camera=CameraSensorConfig(**payload.get("camera", {})),
         gravity_compensation=GravityCompensationConfig(**payload.get("gravity_compensation", {})),
     )
 
@@ -229,6 +321,14 @@ def main() -> None:
     print("=== SDK 录制启动中 ===")
     print(f"数据源: {config.sensor_source}")
     registry.start_all()
+    print("等待传感器就绪...")
+    while is_running:
+        if registry.wait_until_ready(timeout=0.2):
+            break
+    if not is_running:
+        print("录制在传感器就绪前被中断")
+        registry.stop_all()
+        return
     session_info = create_session_info(
         config.output_root,
         sensors=registry.get_metadata(),

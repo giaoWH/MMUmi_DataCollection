@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -33,6 +34,31 @@ class SensorRegistry:
     def stop_all(self) -> None:
         for sensor in reversed(list(self._sensors.values())):
             sensor.stop()
+
+    def wait_until_ready(self, timeout: float | None = None, poll_interval: float = 0.05) -> bool:
+        deadline = None if timeout is None else (time.time() + timeout)
+
+        while True:
+            pending: list[SensorAdapter] = []
+            for sensor in self._sensors.values():
+                if sensor.is_ready():
+                    continue
+
+                status = sensor.get_status()
+                if status.get("running") is False:
+                    raise RuntimeError(f"传感器未就绪且已停止: {sensor.name}")
+                pending.append(sensor)
+
+            if not pending:
+                return True
+
+            if deadline is not None:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return False
+                time.sleep(min(poll_interval, remaining))
+            else:
+                time.sleep(poll_interval)
 
     def get_metadata(self) -> dict[str, dict[str, object]]:
         return {name: sensor.get_metadata() for name, sensor in self._sensors.items()}

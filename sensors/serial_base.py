@@ -22,6 +22,8 @@ class SerialBaseSensor(BaseSensor):
             self._on_open() # 钩子：发送启动指令等
         except Exception as e:
             print(f"[{self.name}] 串口打开失败: {e}")
+            self.running = False
+            self._close_hardware()
             return
 
         while self.running:

@@ -32,6 +32,28 @@ class FakeRealSenseConfig:
     fps: int = 30
 
 
+@dataclass(frozen=True)
+class FakeMotorsConfig:
+    name: str = "motors"
+    sample_rate_hz: float = 100.0
+
+
+@dataclass(frozen=True)
+class FakeMicrophoneConfig:
+    name: str = "microphone"
+    channels: int = 1
+    rate: int = 44100
+    chunk: int = 1024
+
+
+@dataclass(frozen=True)
+class FakeCameraConfig:
+    name: str = "camera"
+    width: int = 640
+    height: int = 480
+    fps: int = 30
+
+
 class _BaseFakeAdapter(SensorAdapter):
     def __init__(
         self,
@@ -256,5 +278,169 @@ class FakeRealSenseAdapter(_BaseFakeAdapter):
             "height": self.config.height,
             "fps": self.config.fps,
             "depth_scale": 0.001,
+            "source": "fake",
+        }
+
+
+class FakeMotorsAdapter(_BaseFakeAdapter):
+    def __init__(self, config: FakeMotorsConfig, clock: SystemClock | None = None) -> None:
+        super().__init__(
+            config.name,
+            "fake_motors_sensor",
+            "motor_state",
+            sample_rate_hz=config.sample_rate_hz,
+            clock=clock,
+        )
+        self.config = config
+
+    def _build_frame(self, *, frame_time: object, phase: float) -> SensorFrame:
+        motor_1 = [
+            0.5 * math.sin(phase * 0.8),
+            0.3 * math.cos(phase * 1.3),
+            0.2 * math.sin(phase * 1.7),
+        ]
+        motor_2 = [
+            0.6 * math.cos(phase * 0.6),
+            0.25 * math.sin(phase * 1.1),
+            0.15 * math.cos(phase * 1.5),
+        ]
+        state = motor_1 + motor_2
+        return SensorFrame(
+            sensor_name=self.name,
+            sensor_type=self.sensor_type,
+            modality=self.modality,
+            frame_id=self._frame_id,
+            time=frame_time,
+            payload={
+                "motor_state": state,
+                "motor_1": {
+                    "position": motor_1[0],
+                    "velocity": motor_1[1],
+                    "torque": motor_1[2],
+                },
+                "motor_2": {
+                    "position": motor_2[0],
+                    "velocity": motor_2[1],
+                    "torque": motor_2[2],
+                },
+            },
+            metadata={
+                "channels": ["M1_P", "M1_V", "M1_T", "M2_P", "M2_V", "M2_T"],
+                "source": "fake",
+            },
+        )
+
+    def get_metadata(self) -> dict[str, object]:
+        return {
+            "sensor_type": self.sensor_type,
+            "modality": self.modality,
+            "sample_rate_hz": self.sample_rate_hz,
+            "source": "fake",
+        }
+
+
+class FakeMicrophoneAdapter(_BaseFakeAdapter):
+    def __init__(self, config: FakeMicrophoneConfig, clock: SystemClock | None = None) -> None:
+        super().__init__(
+            config.name,
+            "fake_microphone_sensor",
+            "audio",
+            sample_rate_hz=float(config.rate) / float(config.chunk),
+            clock=clock,
+        )
+        self.config = config
+        self._sample_index = 0
+
+    def start(self) -> None:
+        super().start()
+        self._sample_index = 0
+
+    def _build_frame(self, *, frame_time: object, phase: float) -> SensorFrame:
+        sample_idx = np.arange(self.config.chunk, dtype=np.float64) + self._sample_index
+        wave = 0.4 * np.sin(2.0 * np.pi * 440.0 * sample_idx / float(self.config.rate))
+        if self.config.channels > 1:
+            channels = []
+            for channel in range(self.config.channels):
+                channels.append(
+                    0.4 * np.sin(
+                        2.0 * np.pi * (440.0 + 20.0 * channel) * sample_idx / float(self.config.rate)
+                    )
+                )
+            audio = np.stack(channels, axis=1)
+        else:
+            audio = wave
+
+        self._sample_index += self.config.chunk
+        audio_int16 = np.clip(audio * 32767.0, -32768, 32767).astype(np.int16)
+        return SensorFrame(
+            sensor_name=self.name,
+            sensor_type=self.sensor_type,
+            modality=self.modality,
+            frame_id=self._frame_id,
+            time=frame_time,
+            payload={"audio": audio_int16},
+            metadata={
+                "channels": self.config.channels,
+                "sample_rate": self.config.rate,
+                "chunk": self.config.chunk,
+                "dtype": "int16",
+                "source": "fake",
+            },
+        )
+
+    def get_metadata(self) -> dict[str, object]:
+        return {
+            "sensor_type": self.sensor_type,
+            "modality": self.modality,
+            "channels": self.config.channels,
+            "sample_rate": self.config.rate,
+            "chunk": self.config.chunk,
+            "source": "fake",
+        }
+
+
+class FakeCameraAdapter(_BaseFakeAdapter):
+    def __init__(self, config: FakeCameraConfig, clock: SystemClock | None = None) -> None:
+        super().__init__(
+            config.name,
+            "fake_camera_sensor",
+            "rgb",
+            sample_rate_hz=float(config.fps),
+            clock=clock,
+        )
+        self.config = config
+        self._grid_x, self._grid_y = np.meshgrid(
+            np.arange(self.config.width, dtype=np.uint16),
+            np.arange(self.config.height, dtype=np.uint16),
+        )
+
+    def _build_frame(self, *, frame_time: object, phase: float) -> SensorFrame:
+        shift = int((phase * 20.0) % 255)
+        color = np.zeros((self.config.height, self.config.width, 3), dtype=np.uint8)
+        color[..., 0] = ((self._grid_x + shift) % 255).astype(np.uint8)
+        color[..., 1] = ((self._grid_y + shift * 3) % 255).astype(np.uint8)
+        color[..., 2] = np.uint8((80 + shift) % 255)
+        return SensorFrame(
+            sensor_name=self.name,
+            sensor_type=self.sensor_type,
+            modality=self.modality,
+            frame_id=self._frame_id,
+            time=frame_time,
+            payload={"color": color},
+            metadata={
+                "width": self.config.width,
+                "height": self.config.height,
+                "fps": self.config.fps,
+                "source": "fake",
+            },
+        )
+
+    def get_metadata(self) -> dict[str, object]:
+        return {
+            "sensor_type": self.sensor_type,
+            "modality": self.modality,
+            "width": self.config.width,
+            "height": self.config.height,
+            "fps": self.config.fps,
             "source": "fake",
         }

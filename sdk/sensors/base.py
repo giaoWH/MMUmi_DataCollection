@@ -30,3 +30,9 @@ class SensorAdapter(abc.ABC):
     @abc.abstractmethod
     def get_status(self) -> dict[str, object]:
         pass
+
+    def is_ready(self) -> bool:
+        return True
+
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        return True
