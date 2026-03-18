@@ -2,56 +2,139 @@
 
 ## 1. 项目是什么
 
-这是一个面向多模态数据采集的 SDK，当前统一围绕以下三类传感器构建：
+这是一个面向多模态机器人数据采集的统一 SDK。项目当前的重点，不再是做一个一次性的采集脚本，而是维护一套长期可扩展的软件系统，用于：
 
-- 六维力传感器
-- IMU
-- RealSense
+1. 统一接入多种真实传感器与 fake 数据源
+2. 在统一时间轴下记录和对齐多模态数据
+3. 将原始流、对齐结果、轨迹结果写入统一 session
+4. 为 ORB-SLAM3 提供 RGB-D / RGB-D-Inertial 软件输入
+5. 将内部 session 导出为多种数据集格式
 
-SDK 的目标不是只完成一次采集脚本，而是提供一套可持续扩展的软件系统，用于：
-
-1. 统一采集多模态原始数据
-2. 在统一时间轴下完成对齐
-3. 为 ORB-SLAM3 准备输入并写回轨迹结果
-4. 将内部 session 导出为主流数据集格式
-5. 在没有真机时，也能用 fake 数据跑通完整软件闭环
-
-当前仓库已经完成“只保留一套新 SDK 系统”的收口，旧主脚本和普通相机链路已移除。
+当前项目已经完成收口，只保留一套新的 SDK 主系统。
 
 ---
 
-## 2. 当前已经能做什么
+## 2. 当前纳入的传感器
 
-在软件层面，当前已经可以稳定跑通下面这条链路：
+当前已经进入 SDK 录制层的模态：
+
+- 六维力传感器 FT
+- 独立串口 IMU
+- RealSense RGB-D
+- 电机状态
+- 麦克风
+- 通用 RGB 相机
+
+### 重要边界：这里有两套不同用途的 IMU
+
+这是当前最容易混淆、也最需要写清楚的一点：
+
+- 项目中的“独立串口 IMU”
+  - 当前主要用于 FT 重力补偿
+  - 也是当前 `rgbd_inertial` 软件链路里实际使用的惯性来源
+- RealSense D435i 自带的“板载 IMU”
+  - 未来应主要服务于 SLAM
+  - 当前还没有单独接入 SDK
+
+因此，当前项目真实状态应理解为：
+
+- FT 的重力补偿：依赖独立 IMU
+- RealSense：当前只接入 RGB + Depth
+- `rgbd_inertial`：当前软件上仍是 “RealSense RGB-D + 独立 IMU”
+- 还不是 “D435i RGB-D + D435i 板载 IMU” 的原生惯性组合
+
+---
+
+## 3. 当前已经能做什么
+
+在软件层面，当前已经形成如下完整闭环：
 
 ```text
 record -> inspect -> process_trajectory -> export -> validate
 ```
 
-对应含义：
+各环节含义如下：
 
-- `record`
-  - 录制 FT / IMU / RealSense 的统一 session
-  - 支持 `real` 和 `fake` 两种数据源
-  - 支持静态校准和重力补偿
-- `inspect`
-  - 查看 session 摘要与传感器信息
-- `process_trajectory`
-  - 导出 ORB-SLAM3 bundle
-  - 调用外部 ORB-SLAM3 wrapper
-  - 将轨迹写回 session
-- `export`
-  - 导出为 `csv`、`hdf5`、`rlds`、`lerobot`、`rosbag2`
-- `validate`
-  - 检查导出结果与 session 是否一致
+### `record`
 
-因此，这个仓库现在已经不是“框架骨架”，而是一套可以在无真机条件下端到端验证的软件系统。
+负责统一录制多模态 session。
+
+当前已经支持：
+
+- FT / IMU / RealSense / Motors / Microphone / Camera 的统一注册
+- `real` / `fake` 两种数据源
+- 录制前 ready 等待
+- FT / Motors 零点校准
+- FT 静态校准与重力补偿
+
+### `inspect`
+
+负责读取 session 摘要、传感器信息和统计信息。
+
+### `process_trajectory`
+
+负责：
+
+- 从 session 导出 ORB-SLAM3 所需 bundle
+- 调用外部 ORB-SLAM3 命令
+- 将轨迹结果回写到 session
+
+### `export`
+
+负责将 session 导出为多种数据格式：
+
+- `csv`
+- `hdf5`
+- `rlds`
+- `lerobot`
+- `rosbag2`
+
+### `validate`
+
+负责校验导出结果与内部 session 是否一致。
+
+因此，当前仓库已经不是“框架骨架”状态，而是一套已经能在软件侧跑通闭环的系统。
 
 ---
 
-## 3. 项目目录
+## 4. 当前总体结论
 
-当前核心目录如下：
+截至 2026-03-18，软件侧可以认为已经完成的部分包括：
+
+- 统一多传感器接入
+- 统一时间对齐
+- 统一 session schema
+- ready / 校准等待
+- FT 重力补偿
+- ORB-SLAM3 软件接入
+- 多格式导出
+- fake 模式下的闭环验证
+
+仍然属于下一阶段联调任务，而不是“SDK 框架未完成”的事项包括：
+
+- RealSense 真机联调细节
+- D435i 板载 IMU 接入
+- 用 D435i 板载 IMU 替换当前 SLAM 惯性输入
+- 真实 ORB-SLAM3 可执行程序联调
+- ROS 2 真环境下的 rosbag2 导出验证
+
+---
+
+## 5. 当前架构
+
+### 5.1 运行时主链路
+
+当前标准主链路如下：
+
+```text
+sensor adapters
+    -> SensorRegistry
+    -> BufferedFrameAligner
+    -> SessionWriter
+    -> inspect / process_trajectory / export / validate
+```
+
+### 5.2 核心目录
 
 ```text
 UMI_DataCollection/
@@ -68,95 +151,294 @@ UMI_DataCollection/
 │   ├── sdk_process_trajectory.py
 │   └── sdk_validate_export.py
 ├── sdk/
-│   ├── config.py
-│   ├── constants.py
-│   ├── logging.py
 │   ├── core/
-│   ├── exporters/
-│   ├── perception/
-│   ├── processors/
 │   ├── sensors/
-│   └── storage/
+│   ├── processors/
+│   ├── perception/
+│   ├── storage/
+│   └── exporters/
 ├── sensors/
 │   ├── ft_sensor.py
 │   ├── imu_sensor.py
+│   ├── motors_sensor.py
+│   ├── microphone_sensor.py
+│   ├── camera_sensor.py
 │   ├── serial_base.py
 │   ├── FTsensor_tool/
-│   └── IMU_tool/
+│   ├── IMU_tool/
+│   ├── motors/
+│   ├── microphone/
+│   └── camera/
 └── tests/
 ```
 
-目录职责可以概括为：
+### 5.3 模块职责
 
-- `sdk/`
-  - 真正的核心实现
-- `scripts/`
-  - 面向使用者的 CLI 入口
-- `configs/`
-  - ORB-SLAM3 等外部程序配置示例
-- `docs/`
-  - 设计边界、迁移结论、使用说明
-- `sensors/`
-  - 保留的 FT / IMU 底层旧驱动来源和调试工具
-- `tests/`
-  - 软件闭环与关键能力回归测试
-
----
-
-## 4. SDK 核心模块
-
-### 4.1 `sdk/core/`
+#### `sdk/core/`
 
 负责运行时基础抽象：
 
 - `frame.py`
-  - 定义 `FrameTime`、`SensorFrame`、`AlignedFrame`、`TrajectoryFrame`
+  - `FrameTime`
+  - `SensorFrame`
+  - `AlignedFrame`
+  - `TrajectoryFrame`
 - `clock.py`
-  - 统一 host/device 时间捕获
+  - host/device 时间捕获
 - `aligner.py`
   - 多传感器缓冲对齐
-  - 输出 `present_sensors`、`dropped_sensors`、`age_stats` 等诊断信息
 - `registry.py`
-  - 统一管理传感器注册、启动、停止
+  - 统一注册、启动、停止、ready 等待
 - `session.py`
-  - 创建 session 基础信息
+  - session 基础信息创建
 
-### 4.2 `sdk/sensors/`
+#### `sdk/sensors/`
 
 负责统一传感器适配层：
 
 - `base.py`
   - `SensorAdapter` 抽象接口
 - `legacy.py`
-  - FT / IMU 旧驱动适配
+  - FT / 独立 IMU / Motors / Microphone / Camera 真实适配
 - `realsense.py`
-  - RealSense RGB-D 适配
+  - RealSense RGB-D 真实适配
 - `fake.py`
-  - fake FT / IMU / RealSense 数据源
+  - fake FT / IMU / RealSense / Motors / Microphone / Camera
 
-这层的作用是把“具体硬件输入”与“SDK 主流程”解耦。后续新增模态时，优先新增 adapter，而不是改主循环。
+#### `sdk/processors/`
 
-### 4.3 `sdk/processors/`
-
-负责采集过程中的派生处理：
+负责采集中的派生处理：
 
 - `gravity_compensation.py`
-  - 静态校准
+  - FT 静态校准
   - 重力补偿
-  - 为对齐结果生成补偿后的力数据
 
-### 4.4 `sdk/storage/`
+#### `sdk/storage/`
 
-负责 session 存储与读取：
+负责 session 的持久化与读取：
 
 - `schema.py`
-  - session schema
 - `session_writer.py`
-  - 写入原始流、对齐结果、轨迹结果
 - `session_reader.py`
-  - 读取 session 与 artifact
 
-当前 session 目录布局固定为：
+#### `sdk/perception/orbslam3/`
+
+负责 ORB-SLAM3 软件接入：
+
+- bundle 导出
+- 命令执行
+- 轨迹写回
+
+#### `sdk/exporters/`
+
+负责多格式导出：
+
+- `csv`
+- `hdf5`
+- `rlds`
+- `lerobot`
+- `rosbag2`
+
+---
+
+## 6. 各传感器接入现状
+
+### 6.1 FT
+
+状态：已完整接入
+
+已完成内容：
+
+- 真实串口 FT 适配
+- fake FT 适配
+- 3 秒零点校准
+- ready 等待
+- FT 重力补偿输入
+
+对应代码：
+
+- `sensors/ft_sensor.py`
+- `sdk/sensors/legacy.py`
+- `sdk/sensors/fake.py`
+- `sdk/processors/gravity_compensation.py`
+
+### 6.2 独立 IMU
+
+状态：已完整接入
+
+已完成内容：
+
+- 真实串口 IMU 适配
+- fake IMU 适配
+- 当前作为 FT 重力补偿姿态输入
+
+当前边界：
+
+- 这不是 D435i 板载 IMU
+- 当前 `rgbd_inertial` 软件链路里仍在使用这套 IMU 数据
+
+对应代码：
+
+- `sensors/imu_sensor.py`
+- `sdk/sensors/legacy.py`
+- `sdk/sensors/fake.py`
+- `sdk/perception/orbslam3/bundle.py`
+
+### 6.3 RealSense
+
+状态：已接入 RGB-D
+
+已完成内容：
+
+- 真实 RealSense RGB-D 适配
+- fake RealSense RGB-D 适配
+- color / depth 写盘
+- intrinsics / depth scale 元数据
+- 作为默认视觉主路径参与 ORB-SLAM3 软件链路
+
+当前边界：
+
+- 当前只接入 RGB + Depth
+- 尚未接入 D435i 板载 IMU
+- 因此当前还没有形成“D435i RGB-D + D435i IMU”的原生惯性 SLAM 组合
+
+对应代码：
+
+- `sdk/sensors/realsense.py`
+- `sdk/sensors/fake.py`
+- `sdk/perception/orbslam3/bundle.py`
+
+### 6.4 Motors
+
+状态：已接入 SDK
+
+已完成内容：
+
+- 真实电机状态串口适配
+- fake Motors 适配
+- 3 秒零点校准
+- ready 等待
+- `motor_state`、`motor_1`、`motor_2` payload
+
+对应代码：
+
+- `sensors/motors_sensor.py`
+- `sdk/sensors/legacy.py`
+- `sdk/sensors/fake.py`
+
+### 6.5 Microphone
+
+状态：已接入 SDK
+
+已完成内容：
+
+- 真实 microphone 适配
+- fake microphone 适配
+- `audio` payload 写盘
+- 支持 `channels / rate / chunk / device_index`
+
+对应代码：
+
+- `sensors/microphone_sensor.py`
+- `sdk/sensors/legacy.py`
+- `sdk/sensors/fake.py`
+
+### 6.6 Camera
+
+状态：已接入 SDK 录制层
+
+已完成内容：
+
+- 真实 camera 适配
+- fake camera 适配
+- `color` payload 写盘
+- 支持 `device_index / width / height / fps`
+
+当前边界：
+
+- 已接入录制层
+- 不是 ORB-SLAM3 默认视觉主路径
+- `CameraSensor` 仍不从 `sensors/__init__.py` 暴露
+
+对应代码：
+
+- `sensors/camera_sensor.py`
+- `sdk/sensors/legacy.py`
+- `sdk/sensors/fake.py`
+- `sensors/__init__.py`
+
+---
+
+## 7. 当前录制流程
+
+### 7.1 当前录制入口
+
+当前标准录制入口：
+
+```bash
+python scripts/sdk_record.py
+```
+
+支持的数据源：
+
+- `--sensor-source real`
+- `--sensor-source fake`
+
+支持的启停控制：
+
+- `--disable-ft`
+- `--disable-imu`
+- `--disable-realsense`
+- `--enable-motors`
+- `--enable-microphone`
+- `--enable-camera`
+
+支持的主要配置项：
+
+- FT：`--ft-port`
+- IMU：`--imu-port`
+- RealSense：`--realsense-width` / `--realsense-height` / `--realsense-fps`
+- Motors：`--motors-port`
+- Microphone：`--microphone-device-index` / `--microphone-channels` / `--microphone-rate` / `--microphone-chunk`
+- Camera：`--camera-device-index` / `--camera-width` / `--camera-height` / `--camera-fps`
+
+### 7.2 ready / 校准等待
+
+当前行为：
+
+- 所有传感器先启动
+- registry 在正式录制前等待传感器 ready
+- 无需校准的传感器默认立即 ready
+- FT / Motors 在零点校准完成前不会进入正式录制
+- 串口打开失败时不会一直维持假 running 状态，避免主流程死等
+
+对应代码：
+
+- `sdk/core/registry.py`
+- `sdk/sensors/base.py`
+- `sensors/base_sensor.py`
+- `sensors/ft_sensor.py`
+- `sensors/motors_sensor.py`
+- `sensors/serial_base.py`
+
+### 7.3 FT 重力补偿
+
+当前行为：
+
+- 仅在 FT + 独立 IMU 同时存在时启用
+- 先收集静态样本
+- 在 aligned 记录中写入补偿结果
+
+当前边界：
+
+- 当前明确依赖独立 IMU
+- D435i 板载 IMU 当前不参与 FT 重力补偿
+
+---
+
+## 8. Session 与数据落盘
+
+当前 session 结构为：
 
 ```text
 session_xxx/
@@ -166,135 +448,124 @@ session_xxx/
     ft/
     imu/
     realsense/
+    motors/
+    microphone/
+    camera/
   aligned/
   trajectory/
   exports/
   logs/
 ```
 
-### 4.5 `sdk/perception/orbslam3/`
+说明：
 
-负责 ORB-SLAM3 的软件接入：
+- 实际创建哪些 `streams/<sensor>/`，取决于本次录制启用了哪些传感器
+- 多维数组 payload 会落为 `png` 或 `npy`
+- 标量和小向量会直接写入 `frames.jsonl`
 
-- `bundle.py`
-  - 从 session 导出 ORB-SLAM3 输入 bundle
-- `command_runner.py`
-  - 调用外部命令并解析 JSONL 轨迹
-- `pipeline.py`
-  - 串联 bundle 导出、命令执行、轨迹写回
+对应代码：
 
-当前推荐模式：
-
-- `rgbd`
-- `rgbd_inertial`
-
-### 4.6 `sdk/exporters/`
-
-负责导出与校验：
-
-- `csv_exporter.py`
-- `hdf5_exporter.py`
-- `rlds_exporter.py`
-- `lerobot_exporter.py`
-- `rosbag2_exporter.py`
-- `validation.py`
-
-其中：
-
-- `csv`、`hdf5`、`rlds`、`lerobot` 已经完成软件侧验证
-- `rosbag2` 已有代码路径，但真实验证依赖 ROS 环境
+- `sdk/storage/session_writer.py`
+- `sdk/storage/session_reader.py`
+- `sdk/storage/schema.py`
 
 ---
 
-## 5. CLI 入口
+## 9. ORB-SLAM3 当前接入边界
 
-项目的标准入口都在 `scripts/`：
+当前已经完成的软件侧内容：
 
-- `scripts/sdk_record.py`
-  - 录制 session
-  - 支持 `real / fake`
-  - 支持静态校准和重力补偿
-- `scripts/sdk_inspect.py`
-  - 输出 session 摘要
-- `scripts/sdk_process_trajectory.py`
-  - 处理 ORB-SLAM3 轨迹
-- `scripts/sdk_export.py`
-  - 导出目标格式
-- `scripts/sdk_validate_export.py`
-  - 校验导出结果
+- bundle 导出
+- 外部命令调用
+- JSONL 轨迹写回
+- `rgbd` / `rgbd_inertial` 模式支持
 
-如果你只想快速确认软件系统是否正常，最短路径是先跑 `sdk_record.py` 的 fake 模式。
+当前边界：
 
----
+- 默认视觉数据来自 RealSense
+- 理想的 `rgbd_inertial` 惯性来源应为 D435i 板载 IMU
+- 当前 `rgbd_inertial` 惯性来源仍是独立 IMU
+- 普通 camera 当前不作为 ORB-SLAM3 默认输入链路
 
-## 6. 当前推荐工作流
+对应代码与文档：
 
-### 6.1 无真机验证
-
-推荐顺序：
-
-1. `python scripts/sdk_record.py --sensor-source fake --duration 1`
-2. `python scripts/sdk_inspect.py <session_dir>`
-3. `python scripts/sdk_process_trajectory.py <session_dir> ...`
-4. `python scripts/sdk_export.py <session_dir> --format csv`
-5. `python scripts/sdk_validate_export.py <session_dir> --format csv`
-
-这条路径的意义是：
-
-- 不需要真机
-- 不需要真实 ORB-SLAM3
-- 先验证架构、schema、导出链路和 CLI 边界都正确
-
-### 6.2 接真机前要替换什么
-
-后续接入真机时，主要需要替换的是：
-
-- FT / IMU / RealSense 的真实配置
-- ORB-SLAM3 的真实命令模板
-- ORB-SLAM3 词典与相机配置文件路径
-
-原则上不需要再改：
-
-- session schema
-- 核心对齐逻辑
-- 导出框架
-- CLI 主入口结构
+- `sdk/perception/orbslam3/bundle.py`
+- `sdk/perception/orbslam3/command_runner.py`
+- `sdk/perception/orbslam3/pipeline.py`
+- `docs/orbslam3-io-contract.md`
 
 ---
 
-## 7. 重要文档
+## 10. 导出能力
 
-- [plan.md](/home/windiff/Code/UMI_DataCollection/plan.md)
-  - 当前阶段目标与完成状态
-- [docs/orbslam3-io-contract.md](/home/windiff/Code/UMI_DataCollection/docs/orbslam3-io-contract.md)
-  - ORB-SLAM3 输入输出约定
+当前已经具备：
 
----
+- `csv`
+- `hdf5`
+- `rlds`
+- `lerobot`
+- `rosbag2` 代码路径
 
-## 8. 当前边界
+当前边界：
 
-### 软件侧已经完成
-
-- 统一时间与对齐
-- 统一 session schema
-- FT / IMU / RealSense 接入框架
-- fake 全流程
-- 静态校准与重力补偿
-- ORB-SLAM3 软件接入边界
-- 多格式导出
-- 导出一致性校验
-- 旧链路清理
-
-### 仍依赖外部环境
-
-- RealSense 真机联调
-- 真实 ORB-SLAM3 程序联调
-- ROS Bag 2 真实环境验证
-
-这些属于下一阶段联调任务，不再属于当前仓库的软件开发缺口。
+- `rosbag2` 的真实验证仍依赖 ROS 2 环境
 
 ---
 
-## 9. 一句话总结
+## 11. 测试状态
 
-当前仓库已经是一套单一的新 SDK 系统，重点不再是继续补框架，而是使用现有主链路去接真机、接真实 ORB-SLAM3，并完成外部联调验证。
+当前已经覆盖的软件侧测试包括：
+
+- 对齐逻辑测试
+- 重力补偿测试
+- session writer / reader 测试
+- 导出校验测试
+- fake 端到端测试
+- fake 全传感器 registry 扩展测试
+- `CameraSensor` 不继续从 `sensors/__init__.py` 暴露的约束测试
+
+对应测试：
+
+- `tests/test_aligner.py`
+- `tests/test_gravity_compensation.py`
+- `tests/test_session_writer.py`
+- `tests/test_export_validation.py`
+- `tests/test_sdk_e2e.py`
+- `tests/test_sensor_registry_extensions.py`
+- `tests/test_legacy_cleanup.py`
+
+---
+
+## 12. 当前验收口径
+
+当前软件系统已经达到的验收标准：
+
+- `scripts/sdk_record.py` 能生成规范 session
+- `scripts/sdk_record.py` 能按配置启用 FT / IMU / RealSense / Motors / Microphone / Camera
+- `scripts/sdk_record.py --sensor-source fake` 能在无真机条件下生成多模态 session
+- Motors / Microphone / Camera 已进入 SDK 主录制入口
+- 需要校准的传感器会在 ready / 零点校准后再进入正式录制
+- `scripts/sdk_inspect.py` 能读取 session 摘要
+- `scripts/sdk_process_trajectory.py` 能导出 ORB-SLAM3 bundle 并写回轨迹
+- `scripts/sdk_export.py` 能导出多种格式
+- `scripts/sdk_validate_export.py` 能校验导出结果
+- 新增模态时不需要改动核心主循环
+
+---
+
+## 13. 当前仍待推进的事项
+
+以下事项属于下一阶段联调或增强任务：
+
+1. RealSense 真机联调细节验证
+2. D435i 板载 IMU 接入
+3. 用 D435i 板载 IMU 替换当前 SLAM 惯性输入
+4. 真实 ORB-SLAM3 可执行程序联调
+5. ROS 2 环境下的 rosbag2 真实导出验证
+6. 新增模态在真实硬件条件下的长期稳定性验证
+
+---
+
+## 14. 一句话总结
+
+当前仓库已经是一套可运行的统一多模态采集 SDK。FT / 独立 IMU / RealSense / Motors / Microphone / Camera 都已进入录制体系；其中独立 IMU 当前服务于 FT 重力补偿，D435i 板载 IMU 仍待接入以服务 SLAM。
