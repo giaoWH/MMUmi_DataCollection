@@ -365,7 +365,9 @@ def main() -> None:
                 break
 
             loop_start = time.perf_counter()
-            aligned_time = time.time()
+            aligned_time_ns = time.time_ns()
+            aligned_monotonic_time_ns = time.perf_counter_ns()
+            aligned_time = aligned_time_ns / 1_000_000_000.0
 
             for sensor_name, sensor in registry.sensors.items():
                 frame = sensor.read_frame()
@@ -378,7 +380,11 @@ def main() -> None:
                 writer.write_sensor_frame(frame)
                 last_written_frame_ids[sensor_name] = frame.frame_id
 
-            aligned = aligner.align(aligned_time)
+            aligned = aligner.align(
+                aligned_time,
+                aligned_time_ns=aligned_time_ns,
+                aligned_monotonic_time_ns=aligned_monotonic_time_ns,
+            )
             if (
                 compensator is not None
                 and ft_sensor_name is not None

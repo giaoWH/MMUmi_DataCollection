@@ -42,6 +42,35 @@ class BufferedFrameAlignerTest(unittest.TestCase):
         self.assertEqual(aligned.metadata["dropped_sensors"], ["ft"])
         self.assertEqual(aligned.metadata["age_stats"]["count"], 0)
 
+    def test_align_uses_monotonic_nanoseconds_for_age_calculation(self) -> None:
+        aligner = BufferedFrameAligner(["ft"], max_frame_age=0.1)
+        aligner.add_frame(
+            SensorFrame(
+                sensor_name="ft",
+                sensor_type="ft",
+                modality="force_torque",
+                frame_id=1,
+                time=FrameTime(
+                    host_time=1000.0,
+                    monotonic_time=10.0,
+                    host_time_ns=1_000_000_000_000,
+                    monotonic_time_ns=10_000_000_000,
+                ),
+                payload={"value": 1},
+            )
+        )
+
+        aligned = aligner.align(
+            1000.5,
+            aligned_time_ns=1_000_500_000_000,
+            aligned_monotonic_time_ns=10_050_000_000,
+        )
+
+        self.assertEqual(aligned.missing_sensors, [])
+        self.assertEqual(aligned.frames["ft"].frame_id, 1)
+        self.assertEqual(aligned.metadata["age_by_sensor_ns"]["ft"], 50_000_000)
+        self.assertAlmostEqual(aligned.age_by_sensor["ft"], 0.05)
+
 
 if __name__ == "__main__":
     unittest.main()

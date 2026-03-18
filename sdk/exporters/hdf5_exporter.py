@@ -41,11 +41,27 @@ class HDF5SessionExporter(SessionExporter):
                     frame_group.attrs["sensor_type"] = frame.sensor_type
                     frame_group.attrs["modality"] = frame.modality
                     frame_group.create_dataset("host_time", data=frame.time.host_time)
+                    if frame.time.host_time_ns is not None:
+                        frame_group.create_dataset("host_time_ns", data=frame.time.host_time_ns)
                     frame_group.create_dataset("monotonic_time", data=frame.time.monotonic_time)
+                    if frame.time.monotonic_time_ns is not None:
+                        frame_group.create_dataset("monotonic_time_ns", data=frame.time.monotonic_time_ns)
                     if frame.time.device_time is not None:
                         frame_group.create_dataset("device_time", data=frame.time.device_time)
+                    if frame.time.device_time_ns is not None:
+                        frame_group.create_dataset("device_time_ns", data=frame.time.device_time_ns)
                     if frame.time.aligned_time is not None:
                         frame_group.create_dataset("aligned_time", data=frame.time.aligned_time)
+                    if frame.time.aligned_time_ns is not None:
+                        frame_group.create_dataset("aligned_time_ns", data=frame.time.aligned_time_ns)
+                    if frame.time.host_arrival_time is not None:
+                        frame_group.create_dataset("host_arrival_time", data=frame.time.host_arrival_time)
+                    if frame.time.host_arrival_time_ns is not None:
+                        frame_group.create_dataset("host_arrival_time_ns", data=frame.time.host_arrival_time_ns)
+                    if frame.time.host_read_start_time_ns is not None:
+                        frame_group.create_dataset("host_read_start_time_ns", data=frame.time.host_read_start_time_ns)
+                    if frame.time.host_read_end_time_ns is not None:
+                        frame_group.create_dataset("host_read_end_time_ns", data=frame.time.host_read_end_time_ns)
                     payload_group = frame_group.create_group("payload")
                     self._write_mapping(payload_group, frame.payload)
                     frame_group.create_dataset(
@@ -76,11 +92,27 @@ class HDF5SessionExporter(SessionExporter):
                 frame_group.attrs["source"] = frame.source
                 frame_group.attrs["tracking_state"] = frame.tracking_state
                 frame_group.create_dataset("host_time", data=frame.time.host_time)
+                if frame.time.host_time_ns is not None:
+                    frame_group.create_dataset("host_time_ns", data=frame.time.host_time_ns)
                 frame_group.create_dataset("monotonic_time", data=frame.time.monotonic_time)
+                if frame.time.monotonic_time_ns is not None:
+                    frame_group.create_dataset("monotonic_time_ns", data=frame.time.monotonic_time_ns)
                 if frame.time.device_time is not None:
                     frame_group.create_dataset("device_time", data=frame.time.device_time)
+                if frame.time.device_time_ns is not None:
+                    frame_group.create_dataset("device_time_ns", data=frame.time.device_time_ns)
                 if frame.time.aligned_time is not None:
                     frame_group.create_dataset("aligned_time", data=frame.time.aligned_time)
+                if frame.time.aligned_time_ns is not None:
+                    frame_group.create_dataset("aligned_time_ns", data=frame.time.aligned_time_ns)
+                if frame.time.host_arrival_time is not None:
+                    frame_group.create_dataset("host_arrival_time", data=frame.time.host_arrival_time)
+                if frame.time.host_arrival_time_ns is not None:
+                    frame_group.create_dataset("host_arrival_time_ns", data=frame.time.host_arrival_time_ns)
+                if frame.time.host_read_start_time_ns is not None:
+                    frame_group.create_dataset("host_read_start_time_ns", data=frame.time.host_read_start_time_ns)
+                if frame.time.host_read_end_time_ns is not None:
+                    frame_group.create_dataset("host_read_end_time_ns", data=frame.time.host_read_end_time_ns)
                 frame_group.create_dataset("position", data=np.asarray(frame.position, dtype=np.float64))
                 frame_group.create_dataset("quaternion", data=np.asarray(frame.quaternion, dtype=np.float64))
                 frame_group.create_dataset(

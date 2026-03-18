@@ -1,6 +1,6 @@
+import multiprocessing as mp
 import struct
 import time
-import threading
 import numpy as np
 from .serial_base import SerialBaseSensor
 
@@ -18,8 +18,12 @@ class FTSensor(SerialBaseSensor):
         self._calibration_sum = np.zeros(6, dtype=np.float64)
         self._calibration_count = 0
         self._baseline = np.zeros(6, dtype=np.float64)
-        self._calibration_finished = False
-        self._calibration_event = threading.Event()
+        self._calibration_finished = mp.Value("b", False)
+        self._calibration_event = mp.Event()
+
+    def _reset_process_state(self):
+        self._calibration_finished.value = False
+        self._calibration_event.clear()
 
     def _on_open(self):
         if self._ser:
@@ -29,7 +33,7 @@ class FTSensor(SerialBaseSensor):
             self._calibration_sum.fill(0.0)
             self._calibration_count = 0
             self._baseline.fill(0.0)
-            self._calibration_finished = False
+            self._calibration_finished.value = False
             self._calibration_event.clear()
             self._ser.write(self.CMD_START)
 
@@ -70,7 +74,7 @@ class FTSensor(SerialBaseSensor):
                     vals[0]/100.0, vals[1]/100.0, vals[2]/100.0,
                     vals[3]/1000.0, vals[4]/1000.0, vals[5]/1000.0
                 ])
-                if not self._calibration_finished:
+                if not self._calibration_finished.value:
                     if self._calibration_start_time is None:
                         self._calibration_start_time = time.time()
 
@@ -82,7 +86,7 @@ class FTSensor(SerialBaseSensor):
                         continue
 
                     self._baseline = self._calibration_sum / max(self._calibration_count, 1)
-                    self._calibration_finished = True
+                    self._calibration_finished.value = True
                     self._calibration_event.set()
                     print(
                         f"[{self.name}] 零点校准完成，基线: "
@@ -97,7 +101,7 @@ class FTSensor(SerialBaseSensor):
         return last_valid_frame, buffer
 
     def is_calibrated(self):
-        return self._calibration_finished
+        return bool(self._calibration_finished.value)
 
     def wait_until_calibrated(self, timeout=None):
         return self._calibration_event.wait(timeout=timeout)

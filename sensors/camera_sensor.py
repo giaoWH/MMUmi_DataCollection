@@ -49,18 +49,30 @@ class CameraSensor(BaseSensor):
 
         while self.running:
             try:
+                read_start_wall_ns = time.time_ns()
+                read_start_mono_ns = time.perf_counter_ns()
                 ok, frame_bgr = self._cap.read()
+                read_end_wall_ns = time.time_ns()
+                read_end_mono_ns = time.perf_counter_ns()
                 if not ok or frame_bgr is None:
                     time.sleep(0.01)
                     continue
 
-                arrival_time = time.time()
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                capture_wall_ns = (read_start_wall_ns + read_end_wall_ns) // 2
+                capture_mono_ns = (read_start_mono_ns + read_end_mono_ns) // 2
 
                 with self.lock:
                     self.latest_data = np.ascontiguousarray(frame_rgb)
-                    self.latest_timestamp = arrival_time
+                    self.latest_timestamp = capture_wall_ns / 1_000_000_000.0
                     self.frame_count += 1
+                    self.latest_time_info = {
+                        "host_capture_time_ns": capture_wall_ns,
+                        "monotonic_capture_time_ns": capture_mono_ns,
+                        "host_arrival_time_ns": read_start_wall_ns,
+                        "host_read_start_time_ns": read_start_wall_ns,
+                        "host_read_end_time_ns": read_end_wall_ns,
+                    }
             except Exception as e:
                 print(f"[{self.name}] 运行时错误: {e}")
                 time.sleep(0.05)

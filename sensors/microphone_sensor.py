@@ -50,17 +50,29 @@ class MicrophoneSensor(BaseSensor):
 
         while self.running:
             try:
+                read_start_wall_ns = time.time_ns()
+                read_start_mono_ns = time.perf_counter_ns()
                 data_raw = self._stream.read(self.chunk, exception_on_overflow=False)
-                arrival_time = time.time()
+                read_end_wall_ns = time.time_ns()
+                read_end_mono_ns = time.perf_counter_ns()
 
                 frame = np.frombuffer(data_raw, dtype=np.int16).copy()
                 if self.channels > 1:
                     frame = frame.reshape(-1, self.channels)
 
+                capture_wall_ns = (read_start_wall_ns + read_end_wall_ns) // 2
+                capture_mono_ns = (read_start_mono_ns + read_end_mono_ns) // 2
                 with self.lock:
                     self.latest_data = frame
-                    self.latest_timestamp = arrival_time
+                    self.latest_timestamp = capture_wall_ns / 1_000_000_000.0
                     self.frame_count += 1
+                    self.latest_time_info = {
+                        "host_capture_time_ns": capture_wall_ns,
+                        "monotonic_capture_time_ns": capture_mono_ns,
+                        "host_arrival_time_ns": read_start_wall_ns,
+                        "host_read_start_time_ns": read_start_wall_ns,
+                        "host_read_end_time_ns": read_end_wall_ns,
+                    }
             except Exception as e:
                 print(f"[{self.name}] 运行时错误: {e}")
                 time.sleep(0.05)

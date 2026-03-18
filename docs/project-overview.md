@@ -103,7 +103,9 @@ record -> inspect -> process_trajectory -> export -> validate
 
 - 统一多传感器接入
 - 统一时间对齐
+- 纳秒级时间戳模型与采集时序记录
 - 统一 session schema
+- 串口类传感器多进程采集
 - ready / 校准等待
 - FT 重力补偿
 - ORB-SLAM3 软件接入
@@ -183,10 +185,13 @@ UMI_DataCollection/
   - `SensorFrame`
   - `AlignedFrame`
   - `TrajectoryFrame`
+  - 秒级字段与纳秒级字段共存
 - `clock.py`
   - host/device 时间捕获
+  - capture / arrival / read window 时间记录
 - `aligner.py`
   - 多传感器缓冲对齐
+  - 优先基于单调纳秒时间进行帧龄计算
 - `registry.py`
   - 统一注册、启动、停止、ready 等待
 - `session.py`
@@ -204,6 +209,16 @@ UMI_DataCollection/
   - RealSense RGB-D 真实适配
 - `fake.py`
   - fake FT / IMU / RealSense / Motors / Microphone / Camera
+
+#### `sensors/`
+
+负责底层设备实现：
+
+- `base_sensor.py`
+  - 通用线程式传感器抽象
+- `serial_base.py`
+  - 串口传感器多进程采集基类
+  - 维护最新帧、运行状态与时间窗口信息
 
 #### `sdk/processors/`
 
@@ -251,6 +266,7 @@ UMI_DataCollection/
 
 - 真实串口 FT 适配
 - fake FT 适配
+- 串口多进程采集
 - 3 秒零点校准
 - ready 等待
 - FT 重力补偿输入
@@ -270,6 +286,7 @@ UMI_DataCollection/
 
 - 真实串口 IMU 适配
 - fake IMU 适配
+- 串口多进程采集
 - 当前作为 FT 重力补偿姿态输入
 
 当前边界：
@@ -316,6 +333,7 @@ UMI_DataCollection/
 
 - 真实电机状态串口适配
 - fake Motors 适配
+- 串口多进程采集
 - 3 秒零点校准
 - ready 等待
 - `motor_state`、`motor_1`、`motor_2` payload

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 
 from sdk.core.clock import SystemClock
@@ -50,6 +49,45 @@ class CameraSensorConfig:
     fps: int = 30
 
 
+def _build_frame_time(
+    *,
+    clock: SystemClock,
+    time_info: dict[str, object] | None,
+    device_time: float | None = None,
+) -> object:
+    time_info = time_info or {}
+    host_capture_time_ns = time_info.get("host_capture_time_ns")
+    monotonic_capture_time_ns = time_info.get("monotonic_capture_time_ns")
+    host_arrival_time_ns = time_info.get("host_arrival_time_ns")
+    host_read_start_time_ns = time_info.get("host_read_start_time_ns")
+    host_read_end_time_ns = time_info.get("host_read_end_time_ns")
+
+    return clock.capture_at(
+        host_time_ns=int(host_capture_time_ns) if host_capture_time_ns is not None else None,
+        monotonic_time_ns=(
+            int(monotonic_capture_time_ns)
+            if monotonic_capture_time_ns is not None
+            else None
+        ),
+        device_time=device_time,
+        host_arrival_time_ns=(
+            int(host_arrival_time_ns)
+            if host_arrival_time_ns is not None
+            else None
+        ),
+        host_read_start_time_ns=(
+            int(host_read_start_time_ns)
+            if host_read_start_time_ns is not None
+            else None
+        ),
+        host_read_end_time_ns=(
+            int(host_read_end_time_ns)
+            if host_read_end_time_ns is not None
+            else None
+        ),
+    )
+
+
 class LegacyFTAdapter(SensorAdapter):
     def __init__(self, config: FTSensorConfig, clock: SystemClock | None = None) -> None:
         super().__init__(config.name, "ft_sensor", "force_torque")
@@ -70,12 +108,11 @@ class LegacyFTAdapter(SensorAdapter):
         self.sensor.stop()
 
     def read_frame(self) -> SensorFrame | None:
-        data, device_time, frame_id = self.sensor.get_data()
+        data, _timestamp, frame_id, time_info = self.sensor.get_data_with_time_info()
         if data is None:
             return None
 
-        host_time = device_time if device_time > 0 else time.time()
-        frame_time = self.clock.capture_at(host_time=host_time)
+        frame_time = _build_frame_time(clock=self.clock, time_info=time_info)
         return SensorFrame(
             sensor_name=self.name,
             sensor_type=self.sensor_type,
@@ -100,10 +137,11 @@ class LegacyFTAdapter(SensorAdapter):
         }
 
     def get_status(self) -> dict[str, object]:
+        runtime_status = self.sensor.get_runtime_status()
         return {
-            "running": self.sensor.running,
-            "frame_count": self.sensor.frame_count,
-            "latest_timestamp": self.sensor.latest_timestamp,
+            "running": runtime_status["running"],
+            "frame_count": runtime_status["frame_count"],
+            "latest_timestamp": runtime_status["latest_timestamp"],
             "calibration_finished": self.sensor.calibration_finished,
         }
 
@@ -130,12 +168,11 @@ class LegacyIMUAdapter(SensorAdapter):
         self.sensor.stop()
 
     def read_frame(self) -> SensorFrame | None:
-        data, device_time, frame_id = self.sensor.get_data()
+        data, _timestamp, frame_id, time_info = self.sensor.get_data_with_time_info()
         if data is None:
             return None
 
-        host_time = device_time if device_time > 0 else time.time()
-        frame_time = self.clock.capture_at(host_time=host_time)
+        frame_time = _build_frame_time(clock=self.clock, time_info=time_info)
         return SensorFrame(
             sensor_name=self.name,
             sensor_type=self.sensor_type,
@@ -164,10 +201,11 @@ class LegacyIMUAdapter(SensorAdapter):
         }
 
     def get_status(self) -> dict[str, object]:
+        runtime_status = self.sensor.get_runtime_status()
         return {
-            "running": self.sensor.running,
-            "frame_count": self.sensor.frame_count,
-            "latest_timestamp": self.sensor.latest_timestamp,
+            "running": runtime_status["running"],
+            "frame_count": runtime_status["frame_count"],
+            "latest_timestamp": runtime_status["latest_timestamp"],
         }
 
 
@@ -191,12 +229,11 @@ class LegacyMotorsAdapter(SensorAdapter):
         self.sensor.stop()
 
     def read_frame(self) -> SensorFrame | None:
-        data, device_time, frame_id = self.sensor.get_data()
+        data, _timestamp, frame_id, time_info = self.sensor.get_data_with_time_info()
         if data is None:
             return None
 
-        host_time = device_time if device_time > 0 else time.time()
-        frame_time = self.clock.capture_at(host_time=host_time)
+        frame_time = _build_frame_time(clock=self.clock, time_info=time_info)
         return SensorFrame(
             sensor_name=self.name,
             sensor_type=self.sensor_type,
@@ -238,10 +275,11 @@ class LegacyMotorsAdapter(SensorAdapter):
         }
 
     def get_status(self) -> dict[str, object]:
+        runtime_status = self.sensor.get_runtime_status()
         return {
-            "running": self.sensor.running,
-            "frame_count": self.sensor.frame_count,
-            "latest_timestamp": self.sensor.latest_timestamp,
+            "running": runtime_status["running"],
+            "frame_count": runtime_status["frame_count"],
+            "latest_timestamp": runtime_status["latest_timestamp"],
             "calibration_finished": self.sensor.calibration_finished,
         }
 
@@ -274,12 +312,11 @@ class LegacyMicrophoneAdapter(SensorAdapter):
         self.sensor.stop()
 
     def read_frame(self) -> SensorFrame | None:
-        data, device_time, frame_id = self.sensor.get_data()
+        data, _timestamp, frame_id, time_info = self.sensor.get_data_with_time_info()
         if data is None:
             return None
 
-        host_time = device_time if device_time > 0 else time.time()
-        frame_time = self.clock.capture_at(host_time=host_time)
+        frame_time = _build_frame_time(clock=self.clock, time_info=time_info)
         return SensorFrame(
             sensor_name=self.name,
             sensor_type=self.sensor_type,
@@ -335,12 +372,11 @@ class LegacyCameraAdapter(SensorAdapter):
         self.sensor.stop()
 
     def read_frame(self) -> SensorFrame | None:
-        data, device_time, frame_id = self.sensor.get_data()
+        data, _timestamp, frame_id, time_info = self.sensor.get_data_with_time_info()
         if data is None:
             return None
 
-        host_time = device_time if device_time > 0 else time.time()
-        frame_time = self.clock.capture_at(host_time=host_time)
+        frame_time = _build_frame_time(clock=self.clock, time_info=time_info)
         return SensorFrame(
             sensor_name=self.name,
             sensor_type=self.sensor_type,

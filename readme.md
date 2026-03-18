@@ -63,6 +63,7 @@ record -> inspect -> process_trajectory -> export -> validate
 - fake 数据源适配
 - 统一 registry 管理启动、停止与状态
 - 新增模态时尽量只新增 adapter，不修改核心主循环
+- 串口类传感器（FT / IMU / Motors）使用多进程采集，降低纯 Python 解析与主进程之间的 GIL 竞争
 
 ### 2. 多模态时间对齐
 
@@ -79,6 +80,14 @@ record -> inspect -> process_trajectory -> export -> validate
 - `missing_sensors`
 - `dropped_sensors`
 - `age_stats`
+
+当前时间模型还具备以下特性：
+
+- `FrameTime` 同时保留秒级字段与纳秒级字段
+- 采集侧显式区分 `host_capture_time`、`host_arrival_time`、`host_read_start/end`
+- 对齐器优先基于单调纳秒时间计算帧龄与最近帧
+
+这意味着当前 SDK 已经不再只是“记录一个 host_time 浮点秒”，而是会把采集时序本身写入 session。
 
 ### 3. 校准与 ready 等待
 
@@ -105,6 +114,17 @@ record -> inspect -> process_trajectory -> export -> validate
 - 重力补偿
 
 这里依赖的是“独立串口 IMU”的姿态输入，而不是 D435i 板载 IMU。
+
+### 4.1 当前时间戳实现状态
+
+当前软件侧已经完成的时间戳改造包括：
+
+- `FrameTime` 纳秒级字段落地
+- `SessionWriter / SessionReader` 保存并读取纳秒级时间信息
+- HDF5 / rosbag2 导出保留纳秒级时间字段
+- 串口类传感器记录 `capture / arrival / read window`
+
+因此，当前系统已经具备更适合多模态精细对齐的时间基础设施。
 
 ### 5. ORB-SLAM3 软件接入
 
@@ -185,7 +205,7 @@ UMI_DataCollection/
 - `scripts/`
   - 面向使用者的标准入口
 - `sensors/`
-  - 旧驱动来源与单设备调试工具
+  - 旧驱动来源、单设备调试工具，以及串口类传感器的多进程采集实现
 - `docs/`
   - 项目说明、边界和 I/O 契约
 - `tests/`

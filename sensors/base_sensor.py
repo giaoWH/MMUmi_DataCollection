@@ -18,6 +18,7 @@ class BaseSensor(abc.ABC):
         self.latest_data = None
         self.latest_timestamp = 0.0
         self.frame_count = 0
+        self.latest_time_info = {}
 
     def start(self):
         """启动采集线程"""
@@ -44,6 +45,15 @@ class BaseSensor(abc.ABC):
             # 返回数据的副本，防止外部修改影响内部
             data = self.latest_data.copy() if self.latest_data is not None else None
             return data, self.latest_timestamp, self.frame_count
+
+    def get_data_with_time_info(self):
+        """
+        线程安全地获取最新一帧数据及其时间窗口信息。
+        Return: (data, timestamp, frame_id, time_info)
+        """
+        with self.lock:
+            data = self.latest_data.copy() if self.latest_data is not None else None
+            return data, self.latest_timestamp, self.frame_count, dict(self.latest_time_info)
 
     def is_calibrated(self):
         """

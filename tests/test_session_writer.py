@@ -113,7 +113,13 @@ class SessionWriterTest(unittest.TestCase):
                 sensor_type="realsense",
                 modality="rgbd",
                 frame_id=1,
-                time=FrameTime(host_time=1.0, monotonic_time=2.0),
+                time=FrameTime(
+                    host_time=1.0,
+                    monotonic_time=2.0,
+                    host_arrival_time=1.0002,
+                    host_read_start_time_ns=999_900_000,
+                    host_read_end_time_ns=1_000_100_000,
+                ),
                 payload={
                     "depth": np.ones((2, 2), dtype=np.uint16),
                     "acceleration": np.array([1.0, 2.0, 3.0]),
@@ -136,6 +142,11 @@ class SessionWriterTest(unittest.TestCase):
             self.assertEqual(len(records), 1)
             record = json.loads(records[0])
             self.assertEqual(record["payload"]["acceleration"], [1.0, 2.0, 3.0])
+            self.assertEqual(record["time"]["host_time_ns"], 1_000_000_000)
+            self.assertEqual(record["time"]["monotonic_time_ns"], 2_000_000_000)
+            self.assertEqual(record["time"]["host_arrival_time_ns"], 1_000_200_000)
+            self.assertEqual(record["time"]["host_read_start_time_ns"], 999_900_000)
+            self.assertEqual(record["time"]["host_read_end_time_ns"], 1_000_100_000)
 
             depth_path = Path(session.output_dir) / record["payload"]["depth"]["path"]
             self.assertTrue(depth_path.exists())
@@ -143,6 +154,11 @@ class SessionWriterTest(unittest.TestCase):
             reader = SessionReader(session.output_dir)
             loaded_frame = next(reader.iter_sensor_frames("realsense", load_payload=True))
             self.assertEqual(loaded_frame.payload["acceleration"], [1.0, 2.0, 3.0])
+            self.assertEqual(loaded_frame.time.host_time_ns, 1_000_000_000)
+            self.assertEqual(loaded_frame.time.monotonic_time_ns, 2_000_000_000)
+            self.assertEqual(loaded_frame.time.host_arrival_time_ns, 1_000_200_000)
+            self.assertEqual(loaded_frame.time.host_read_start_time_ns, 999_900_000)
+            self.assertEqual(loaded_frame.time.host_read_end_time_ns, 1_000_100_000)
             np.testing.assert_array_equal(
                 loaded_frame.payload["depth"],
                 np.ones((2, 2), dtype=np.uint16),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import threading
 from dataclasses import dataclass
 
@@ -45,7 +46,7 @@ class RealSenseRGBDAdapter(SensorAdapter):
         self._frame_id = 0
         self._latest_payload: dict[str, object] | None = None
         self._latest_device_time: float | None = None
-        self._latest_host_time = 0.0
+        self._latest_time_info: dict[str, int] = {}
         self._intrinsics: dict[str, object] = {}
         self._depth_scale: float | None = None
 
@@ -107,11 +108,16 @@ class RealSenseRGBDAdapter(SensorAdapter):
                     payload[key] = value
             frame_id = self._frame_id
             device_time = self._latest_device_time
-            host_time = self._latest_host_time
+            time_info = dict(self._latest_time_info)
 
         frame_time = self.clock.capture_at(
-            host_time=host_time,
+            host_time_ns=time_info.get("host_capture_time_ns"),
+            monotonic_time_ns=time_info.get("monotonic_capture_time_ns"),
             device_time=device_time,
+            device_time_ns=int(round(device_time * 1_000_000_000)) if device_time is not None else None,
+            host_arrival_time_ns=time_info.get("host_arrival_time_ns"),
+            host_read_start_time_ns=time_info.get("host_read_start_time_ns"),
+            host_read_end_time_ns=time_info.get("host_read_end_time_ns"),
         )
         return SensorFrame(
             sensor_name=self.name,
@@ -148,7 +154,7 @@ class RealSenseRGBDAdapter(SensorAdapter):
         return {
             "running": self._running,
             "frame_count": self._frame_id,
-            "latest_timestamp": self._latest_host_time,
+            "latest_timestamp": self._latest_time_info.get("host_capture_time_ns", 0) / 1_000_000_000.0,
         }
 
     def _worker(self) -> None:  # pragma: no cover
@@ -156,7 +162,11 @@ class RealSenseRGBDAdapter(SensorAdapter):
         assert self._pipeline is not None
 
         while self._running:
+            read_start_wall_ns = time.time_ns()
+            read_start_mono_ns = time.perf_counter_ns()
             frames = self._pipeline.wait_for_frames(timeout_ms=1000)
+            read_end_wall_ns = time.time_ns()
+            read_end_mono_ns = time.perf_counter_ns()
             if self._align is not None:
                 frames = self._align.process(frames)
 
@@ -177,11 +187,19 @@ class RealSenseRGBDAdapter(SensorAdapter):
                 if device_time is None:
                     device_time = depth_frame.get_timestamp() / 1000.0
 
+            capture_wall_ns = (read_start_wall_ns + read_end_wall_ns) // 2
+            capture_mono_ns = (read_start_mono_ns + read_end_mono_ns) // 2
             with self._lock:
                 self._frame_id += 1
                 self._latest_payload = payload
                 self._latest_device_time = device_time
-                self._latest_host_time = self.clock.capture(device_time=device_time).host_time
+                self._latest_time_info = {
+                    "host_capture_time_ns": capture_wall_ns,
+                    "monotonic_capture_time_ns": capture_mono_ns,
+                    "host_arrival_time_ns": read_start_wall_ns,
+                    "host_read_start_time_ns": read_start_wall_ns,
+                    "host_read_end_time_ns": read_end_wall_ns,
+                }
 
     def _extract_intrinsics(self, profile: object) -> dict[str, object]:
         intrinsics: dict[str, object] = {}

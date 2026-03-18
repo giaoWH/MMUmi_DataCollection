@@ -49,12 +49,20 @@ class Rosbag2SessionExporter(SessionExporter):
             for frame in reader.iter_sensor_frames(sensor_name, load_payload=False):
                 msg = String()
                 msg.data = json.dumps(self._frame_payload(frame), ensure_ascii=False)
-                writer.write(f"/sdk/{sensor_name}", serialize_message(msg), int(frame.time.host_time * 1_000_000_000))
+                writer.write(
+                    f"/sdk/{sensor_name}",
+                    serialize_message(msg),
+                    self._timestamp_ns(frame.time.host_time_ns, frame.time.host_time),
+                )
 
         for record in reader.iter_aligned_records():
             msg = String()
             msg.data = json.dumps(record, ensure_ascii=False)
-            writer.write("/sdk/aligned", serialize_message(msg), int(record["aligned_time"] * 1_000_000_000))
+            writer.write(
+                "/sdk/aligned",
+                serialize_message(msg),
+                self._timestamp_ns(record.get("aligned_time_ns"), record["aligned_time"]),
+            )
 
         for frame in reader.iter_trajectory_frames():
             msg = String()
@@ -68,7 +76,11 @@ class Rosbag2SessionExporter(SessionExporter):
                 },
                 ensure_ascii=False,
             )
-            writer.write("/sdk/trajectory", serialize_message(msg), int(frame.time.host_time * 1_000_000_000))
+            writer.write(
+                "/sdk/trajectory",
+                serialize_message(msg),
+                self._timestamp_ns(frame.time.host_time_ns, frame.time.host_time),
+            )
 
         del writer
         return ExportResult(export_format=self.export_format, output_path=target)
@@ -81,10 +93,25 @@ class Rosbag2SessionExporter(SessionExporter):
             "frame_id": frame.frame_id,
             "time": {
                 "host_time": frame.time.host_time,
+                "host_time_ns": frame.time.host_time_ns,
                 "monotonic_time": frame.time.monotonic_time,
+                "monotonic_time_ns": frame.time.monotonic_time_ns,
                 "device_time": frame.time.device_time,
+                "device_time_ns": frame.time.device_time_ns,
                 "aligned_time": frame.time.aligned_time,
+                "aligned_time_ns": frame.time.aligned_time_ns,
+                "host_arrival_time": frame.time.host_arrival_time,
+                "host_arrival_time_ns": frame.time.host_arrival_time_ns,
+                "host_read_start_time_ns": frame.time.host_read_start_time_ns,
+                "host_read_end_time_ns": frame.time.host_read_end_time_ns,
             },
             "payload": frame.payload,
             "metadata": frame.metadata,
         }
+
+    def _timestamp_ns(self, value_ns: int | None, value_sec: float | None) -> int:
+        if value_ns is not None:
+            return int(value_ns)
+        if value_sec is None:
+            return 0
+        return int(value_sec * 1_000_000_000)

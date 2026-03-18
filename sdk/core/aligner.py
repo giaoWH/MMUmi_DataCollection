@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Deque
 
-from .frame import AlignedFrame, SensorFrame
+from .frame import AlignedFrame, SensorFrame, ns_to_seconds, seconds_to_ns
 
 
 class BufferedFrameAligner:
@@ -31,19 +31,39 @@ class BufferedFrameAligner:
             self._buffers[frame.sensor_name] = deque(maxlen=256)
         self._buffers[frame.sensor_name].append(frame)
 
-    def align(self, aligned_time: float) -> AlignedFrame:
+    def align(
+        self,
+        aligned_time: float,
+        *,
+        aligned_time_ns: int | None = None,
+        aligned_monotonic_time_ns: int | None = None,
+    ) -> AlignedFrame:
+        aligned_time_ns = aligned_time_ns if aligned_time_ns is not None else seconds_to_ns(aligned_time)
+        if aligned_time_ns is None:
+            raise ValueError("aligned_time 或 aligned_time_ns 必须至少提供一个")
+        aligned_monotonic_time_ns = (
+            aligned_monotonic_time_ns
+            if aligned_monotonic_time_ns is not None
+            else aligned_time_ns
+        )
+
         frames: dict[str, SensorFrame] = {}
         missing: list[str] = []
         dropped: list[str] = []
         age_by_sensor: dict[str, float] = {}
+        age_by_sensor_ns: dict[str, int] = {}
 
         for sensor_name in self.required_sensors:
-            frame = self._select_frame(sensor_name, aligned_time)
+            frame = self._select_frame(sensor_name, aligned_monotonic_time_ns)
             if frame is None:
                 missing.append(sensor_name)
                 continue
 
-            age = aligned_time - frame.time.host_time
+            age_ns = aligned_monotonic_time_ns - self._frame_reference_time_ns(frame)
+            age = ns_to_seconds(age_ns)
+            if age is None:
+                missing.append(sensor_name)
+                continue
             if self.max_frame_age is not None and abs(age) > self.max_frame_age:
                 missing.append(sensor_name)
                 dropped.append(sensor_name)
@@ -51,17 +71,23 @@ class BufferedFrameAligner:
 
             frames[sensor_name] = frame
             age_by_sensor[sensor_name] = age
+            age_by_sensor_ns[sensor_name] = age_ns
 
-        absolute_ages = [abs(age) for age in age_by_sensor.values()]
+        absolute_age_ns = [abs(age_ns) for age_ns in age_by_sensor_ns.values()]
         age_stats = {
-            "count": len(absolute_ages),
-            "max_abs_age": max(absolute_ages) if absolute_ages else 0.0,
-            "mean_abs_age": sum(absolute_ages) / len(absolute_ages) if absolute_ages else 0.0,
+            "count": len(absolute_age_ns),
+            "max_abs_age": ns_to_seconds(max(absolute_age_ns)) if absolute_age_ns else 0.0,
+            "mean_abs_age": (
+                ns_to_seconds(sum(absolute_age_ns) // len(absolute_age_ns))
+                if absolute_age_ns
+                else 0.0
+            ),
         }
 
         aligned = AlignedFrame(
             sequence_id=self._sequence_id,
             aligned_time=aligned_time,
+            aligned_time_ns=aligned_time_ns,
             frames=frames,
             missing_sensors=missing,
             age_by_sensor=age_by_sensor,
@@ -69,23 +95,45 @@ class BufferedFrameAligner:
                 "strategy": self.strategy,
                 "present_sensors": sorted(frames.keys()),
                 "dropped_sensors": dropped,
+                "aligned_monotonic_time_ns": aligned_monotonic_time_ns,
+                "age_by_sensor_ns": age_by_sensor_ns,
                 "age_stats": age_stats,
+                "age_stats_ns": {
+                    "count": len(absolute_age_ns),
+                    "max_abs_age_ns": max(absolute_age_ns) if absolute_age_ns else 0,
+                    "mean_abs_age_ns": (
+                        sum(absolute_age_ns) // len(absolute_age_ns)
+                        if absolute_age_ns
+                        else 0
+                    ),
+                },
             },
         )
         self._sequence_id += 1
         return aligned
 
-    def _select_frame(self, sensor_name: str, aligned_time: float) -> SensorFrame | None:
+    def _select_frame(self, sensor_name: str, aligned_monotonic_time_ns: int) -> SensorFrame | None:
         buffer = self._buffers.get(sensor_name)
         if not buffer:
             return None
 
         candidates = list(buffer)
         if self.strategy == "latest_before":
-            valid = [frame for frame in candidates if frame.time.host_time <= aligned_time]
+            valid = [
+                frame
+                for frame in candidates
+                if self._frame_reference_time_ns(frame) <= aligned_monotonic_time_ns
+            ]
             return valid[-1] if valid else None
 
         return min(
             candidates,
-            key=lambda frame: abs(frame.time.host_time - aligned_time),
+            key=lambda frame: abs(self._frame_reference_time_ns(frame) - aligned_monotonic_time_ns),
         )
+
+    def _frame_reference_time_ns(self, frame: SensorFrame) -> int:
+        if frame.time.monotonic_time_ns is not None:
+            return frame.time.monotonic_time_ns
+        if frame.time.host_time_ns is not None:
+            return frame.time.host_time_ns
+        raise ValueError(f"帧缺少可用于对齐的纳秒级时间戳: {frame.sensor_name}")

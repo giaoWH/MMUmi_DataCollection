@@ -69,13 +69,13 @@ class _BaseFakeAdapter(SensorAdapter):
         self.sample_rate_hz = sample_rate_hz
         self._running = False
         self._frame_id = 0
-        self._started_at = 0.0
-        self._last_emitted_at = 0.0
+        self._started_at_monotonic_ns = 0
+        self._last_emitted_at_monotonic_ns = 0
 
     def start(self) -> None:
         self._running = True
-        self._started_at = time.time()
-        self._last_emitted_at = 0.0
+        self._started_at_monotonic_ns = time.perf_counter_ns()
+        self._last_emitted_at_monotonic_ns = 0
         self._frame_id = 0
 
     def stop(self) -> None:
@@ -85,22 +85,34 @@ class _BaseFakeAdapter(SensorAdapter):
         return {
             "running": self._running,
             "frame_count": self._frame_id,
-            "latest_timestamp": self._last_emitted_at,
+            "latest_timestamp": self._last_emitted_at_monotonic_ns / 1_000_000_000.0,
         }
 
     def read_frame(self) -> SensorFrame | None:
         if not self._running:
             return None
 
-        now = time.time()
+        now_wall_ns = time.time_ns()
+        now_mono_ns = time.perf_counter_ns()
         min_interval = 1.0 / self.sample_rate_hz if self.sample_rate_hz > 0 else 0.0
-        if self._last_emitted_at > 0 and (now - self._last_emitted_at) < min_interval:
+        if (
+            self._last_emitted_at_monotonic_ns > 0
+            and (now_mono_ns - self._last_emitted_at_monotonic_ns) < int(min_interval * 1_000_000_000)
+        ):
             return None
 
         self._frame_id += 1
-        self._last_emitted_at = now
-        phase = now - self._started_at
-        frame_time = self.clock.capture_at(host_time=now, device_time=phase)
+        self._last_emitted_at_monotonic_ns = now_mono_ns
+        phase = (now_mono_ns - self._started_at_monotonic_ns) / 1_000_000_000.0
+        frame_time = self.clock.capture_at(
+            host_time_ns=now_wall_ns,
+            monotonic_time_ns=now_mono_ns,
+            device_time=phase,
+            device_time_ns=int(round(phase * 1_000_000_000)),
+            host_arrival_time_ns=now_wall_ns,
+            host_read_start_time_ns=now_wall_ns,
+            host_read_end_time_ns=now_wall_ns,
+        )
         return self._build_frame(frame_time=frame_time, phase=phase)
 
     def _build_frame(self, *, frame_time: object, phase: float) -> SensorFrame:
