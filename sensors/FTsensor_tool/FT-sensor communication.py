@@ -5,7 +5,7 @@ import csv
 import sys
 
 # ================= 用户配置 =================
-SERIAL_PORT = '/dev/ttyACM0'
+SERIAL_PORT = '/dev/ttyACM1'
 BAUD_RATE = 115200
 CMD_START_100HZ = bytes.fromhex("09 10 01 9A 00 01 02 02 00 CD CA")
 CMD_STOP = b'\xFF' * 55
@@ -14,6 +14,7 @@ FRAME_LEN = 16
 
 # 滤波参数配置：一阶低通滤波，FILTER_ALPHA越小/滤波越强/延迟越大
 FILTER_ALPHA = 0.5
+CALIBRATION_DURATION = 3.0
 
 
 def main():
@@ -48,6 +49,11 @@ def main():
     DT = 0.01
     virtual_time = time.time()
     last_filtered_values = None
+    calibration_start_time = time.time()
+    calibration_sum = [0.0] * 6
+    calibration_count = 0
+    baseline_values = None
+    calibration_finished = False
 
     try:
         while True:
@@ -81,20 +87,59 @@ def main():
                         raw_values[5] / 1000.0  # Tz
                     ]
 
+                    current_real_time = time.time()
+
+                    # === 初始静态校准 ===
+                    if not calibration_finished:
+                        calibration_count += 1
+                        for i, value in enumerate(current_raw_list):
+                            calibration_sum[i] += value
+
+                        elapsed = current_real_time - calibration_start_time
+                        if elapsed < CALIBRATION_DURATION:
+                            progress = min(elapsed / CALIBRATION_DURATION * 100.0, 100.0)
+                            line = (
+                                f"\r正在校准零点... {elapsed:4.2f}/{CALIBRATION_DURATION:.2f}s "
+                                f"({progress:5.1f}%)"
+                            )
+                            sys.stdout.write(line)
+                            sys.stdout.flush()
+                            continue
+
+                        baseline_values = [
+                            value_sum / calibration_count for value_sum in calibration_sum
+                        ]
+                        calibration_finished = True
+                        last_filtered_values = None
+
+                        print("\n零点校准完成，基线为:")
+                        print(
+                            "  "
+                            f"F(N): {baseline_values[0]:7.3f} {baseline_values[1]:7.3f} {baseline_values[2]:7.3f}"
+                        )
+                        print(
+                            "  "
+                            f"T(Nm): {baseline_values[3]:7.4f} {baseline_values[4]:7.4f} {baseline_values[5]:7.4f}"
+                        )
+                        print("开始记录去基线后的交互力数据...")
+
+                    compensated_raw_list = [
+                        current_raw_list[i] - baseline_values[i] for i in range(6)
+                    ]
+
                     # === 滤波 ===
                     if last_filtered_values is None:
-                        last_filtered_values = current_raw_list
-                        filtered_values = current_raw_list
+                        last_filtered_values = compensated_raw_list
+                        filtered_values = compensated_raw_list
                     else:
                         filtered_values = []
                         for i in range(6):
-                            val = (FILTER_ALPHA * current_raw_list[i]) + \
+                            val = (FILTER_ALPHA * compensated_raw_list[i]) + \
                                   ((1 - FILTER_ALPHA) * last_filtered_values[i])
                             filtered_values.append(val)
                         last_filtered_values = filtered_values
 
                     # === 时间戳 ===
-                    current_real_time = time.time()
                     virtual_time += DT
                     if abs(current_real_time - virtual_time) > 0.1:
                         virtual_time = current_real_time

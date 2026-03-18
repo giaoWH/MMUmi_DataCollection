@@ -2,6 +2,7 @@ import abc
 import threading
 import numpy as np
 
+
 class BaseSensor(abc.ABC):
     """
     所有传感器的抽象基类。
@@ -43,6 +44,22 @@ class BaseSensor(abc.ABC):
             # 返回数据的副本，防止外部修改影响内部
             data = self.latest_data.copy() if self.latest_data is not None else None
             return data, self.latest_timestamp, self.frame_count
+
+    def is_calibrated(self):
+        """
+        默认认为无需校准，子类可覆盖。
+        """
+        return True
+
+    def wait_until_calibrated(self, timeout=None):
+        """
+        默认无需等待，子类可覆盖为阻塞等待。
+        """
+        return True
+
+    @property
+    def calibration_finished(self):
+        return self.is_calibrated()
 
     @abc.abstractmethod
     def _worker(self):

@@ -7,6 +7,7 @@ import re
 # ================= 用户配置 =================
 SERIAL_PORT = 'COM5'  # 请根据实际情况修改
 BAUD_RATE = 115200
+CALIBRATION_DURATION = 3.0
 # ============================================
 
 def main():
@@ -34,6 +35,12 @@ def main():
             csv_writer = csv.writer(csv_file)
             header = ["Timestamp", "M1_P", "M1_V", "M1_T", "M2_P", "M2_V", "M2_T"]
             csv_writer.writerow(header)
+
+            calibration_start_time = time.time()
+            calibration_sum = [0.0] * 6
+            calibration_count = 0
+            baseline_values = None
+            calibration_finished = False
             
             print(f"电机数据将保存至: {csv_filename}")
             print("按 Ctrl+C 停止采集...")
@@ -47,7 +54,39 @@ def main():
 
                     match = pattern.search(line)
                     if match:
-                        m1_p, m1_v, m1_t, m2_p, m2_v, m2_t = match.groups()
+                        raw_values = [float(value) for value in match.groups()]
+
+                        if not calibration_finished:
+                            calibration_count += 1
+                            for i, value in enumerate(raw_values):
+                                calibration_sum[i] += value
+
+                            elapsed = time.time() - calibration_start_time
+                            if elapsed < CALIBRATION_DURATION:
+                                progress = min(elapsed / CALIBRATION_DURATION * 100.0, 100.0)
+                                sys.stdout.write(
+                                    f"\r正在校准零点... {elapsed:4.2f}/{CALIBRATION_DURATION:.2f}s "
+                                    f"({progress:5.1f}%)"
+                                )
+                                sys.stdout.flush()
+                                continue
+
+                            baseline_values = [
+                                value_sum / calibration_count for value_sum in calibration_sum
+                            ]
+                            calibration_finished = True
+                            print("\n零点校准完成，基线为:")
+                            print(
+                                "  "
+                                f"[{', '.join(f'{value:.4f}' for value in baseline_values)}]"
+                            )
+                            print("开始记录去基线后的电机数据...")
+
+                        corrected_values = [
+                            raw_values[i] - baseline_values[i] for i in range(6)
+                        ]
+                        formatted_values = [f"{value:.4f}" for value in corrected_values]
+                        m1_p, m1_v, m1_t, m2_p, m2_v, m2_t = formatted_values
 
                         # === 时间戳 ===
                         ts = time.time()

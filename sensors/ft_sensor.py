@@ -1,5 +1,6 @@
 import struct
 import time
+import threading
 import numpy as np
 from .serial_base import SerialBaseSensor
 
@@ -9,14 +10,27 @@ class FTSensor(SerialBaseSensor):
     FRAME_HEADER = b'\x20\x4E'
     FRAME_LEN = 16
 
-    def __init__(self, port='COM3', baudrate=115200):
+    def __init__(self, port='COM3', baudrate=115200, calibration_duration=3.0):
         # 数据: [Fx, Fy, Fz, Tx, Ty, Tz]
         super().__init__("FT_Sensor", port, baudrate, data_length=6)
+        self.calibration_duration = calibration_duration
+        self._calibration_start_time = None
+        self._calibration_sum = np.zeros(6, dtype=np.float64)
+        self._calibration_count = 0
+        self._baseline = np.zeros(6, dtype=np.float64)
+        self._calibration_finished = False
+        self._calibration_event = threading.Event()
 
     def _on_open(self):
         if self._ser:
             time.sleep(0.1)
             self._ser.reset_input_buffer()
+            self._calibration_start_time = time.time()
+            self._calibration_sum.fill(0.0)
+            self._calibration_count = 0
+            self._baseline.fill(0.0)
+            self._calibration_finished = False
+            self._calibration_event.clear()
             self._ser.write(self.CMD_START)
 
     def _on_close(self):
@@ -56,8 +70,34 @@ class FTSensor(SerialBaseSensor):
                     vals[0]/100.0, vals[1]/100.0, vals[2]/100.0,
                     vals[3]/1000.0, vals[4]/1000.0, vals[5]/1000.0
                 ])
-                last_valid_frame = frame
+                if not self._calibration_finished:
+                    if self._calibration_start_time is None:
+                        self._calibration_start_time = time.time()
+
+                    self._calibration_sum += frame
+                    self._calibration_count += 1
+
+                    elapsed = time.time() - self._calibration_start_time
+                    if elapsed < self.calibration_duration:
+                        continue
+
+                    self._baseline = self._calibration_sum / max(self._calibration_count, 1)
+                    self._calibration_finished = True
+                    self._calibration_event.set()
+                    print(
+                        f"[{self.name}] 零点校准完成，基线: "
+                        f"F={self._baseline[:3].round(3).tolist()} "
+                        f"T={self._baseline[3:].round(4).tolist()}"
+                    )
+
+                last_valid_frame = frame - self._baseline
             except struct.error:
                 pass
             
         return last_valid_frame, buffer
+
+    def is_calibrated(self):
+        return self._calibration_finished
+
+    def wait_until_calibrated(self, timeout=None):
+        return self._calibration_event.wait(timeout=timeout)
