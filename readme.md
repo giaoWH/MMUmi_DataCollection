@@ -14,6 +14,13 @@ UMI Data Collection SDK
 record -> inspect -> process_trajectory -> export -> validate
 ```
 
+当前推荐使用方式也已经从“长串 CLI 参数”转成“以配置文件为主”：
+
+1. 编辑 `configs/record.yaml`
+2. 首次安装时按需运行 `python scripts/sdk_discover_ports.py`
+3. 运行 `python scripts/sdk_record.py`
+4. 按配置决定是否在录制结束后自动解算轨迹
+
 ## 当前支持的传感器
 
 当前已经接入 SDK 录制层的模态包括：
@@ -24,6 +31,12 @@ record -> inspect -> process_trajectory -> export -> validate
 - 电机状态
 - 麦克风
 - 通用 RGB 相机
+
+其中视觉链路需要明确区分：
+
+- `realsense` 指 D435i 这类 RGB-D 设备
+- `camera` 指独立的普通 RGB 相机
+- 两者是并列的独立模态，可以同时启用并同步录制
 
 其中有一个很重要的边界需要明确：
 
@@ -51,7 +64,8 @@ record -> inspect -> process_trajectory -> export -> validate
 - `tests/`
   - 关键能力回归测试
 
-视觉主路径仍优先收口到 RealSense。普通 RGB 相机现在已经进入 SDK 录制层，但不是 ORB-SLAM3 默认视觉输入主链。
+RealSense RGB-D 和普通 RGB 相机是两条独立的视觉接入链路，可以同时接入并同步录制。
+当前 ORB-SLAM3 默认使用 RealSense 作为 RGB-D 输入；普通 RGB 相机当前仍主要作为独立录制模态，而不是 ORB-SLAM3 默认输入主链。
 
 ## 当前已经具备的能力
 
@@ -165,12 +179,14 @@ record -> inspect -> process_trajectory -> export -> validate
 ```text
 UMI_DataCollection/
 ├── configs/
-│   └── orbslam3/
+│   ├── orbslam3/
+│   └── record.yaml
 ├── docs/
 │   ├── orbslam3-io-contract.md
 │   └── project-overview.md
 ├── plan.md
 ├── scripts/
+│   ├── sdk_discover_ports.py
 │   ├── sdk_record.py
 │   ├── sdk_inspect.py
 │   ├── sdk_export.py
@@ -223,6 +239,8 @@ conda activate umi_sdk
 pip install numpy pyyaml
 ```
 
+本文档默认后续命令都在 `conda activate umi_sdk` 之后执行。
+
 按需安装的依赖：
 
 - RealSense 采集：`pip install pyrealsense2`
@@ -234,7 +252,63 @@ pip install numpy pyyaml
 
 ## 快速开始
 
-### 1. 最短 fake 闭环
+### 1. 推荐：先编辑配置文件
+
+录制入口现在会默认自动读取：
+
+- `configs/record.yaml`
+
+也就是说，通常只需要先把这个文件里的传感器开关、串口、输出目录和时长改好，然后直接运行：
+
+```bash
+python scripts/sdk_record.py
+```
+
+如果你想使用另一份配置文件，也可以显式指定：
+
+```bash
+python scripts/sdk_record.py --config configs/record.yaml
+```
+
+CLI 参数仍然保留，但更适合只做少量临时覆盖。
+
+如果你希望把 ORB-SLAM3 轨迹也作为一种可选模态纳入录制配置，可以在 `record.yaml` 中设置：
+
+- `enable_trajectory: true`
+- `trajectory.command`
+
+这样 `python scripts/sdk_record.py` 会在采集结束后自动执行轨迹解算并把结果写回当前 session；如果 `enable_trajectory: false`，则只录制原始数据，不会自动解算轨迹。
+
+一个最小配置思路如下：
+
+- `enable_ft / enable_imu / enable_realsense` 控制默认主链路
+- `enable_camera` 控制独立普通 RGB 相机
+- `enable_motors / enable_microphone` 控制可选扩展模态
+- `enable_trajectory` 控制录制结束后是否自动执行 ORB-SLAM3
+
+### 2. 首次安装时可选：自动发现串口
+
+如果你第一次装设备，不想手动去试 `FT / IMU / Motors` 的串口号，可以运行：
+
+```bash
+python scripts/sdk_discover_ports.py
+```
+
+这个脚本会：
+
+- 读取 `configs/record.yaml`
+- 按 `record.yaml` 里已启用的串口传感器顺序引导你逐个插上设备
+- 检测新出现的串口
+- 把识别出的 `port` 自动写回 `record.yaml`
+
+说明：
+
+- 这是首次安装或重新接线时的可选工具，不是每次采集前都要运行
+- 当前只会自动发现串口类传感器：`FT`、`IMU`、`Motors`
+- `RealSense`、`Microphone`、`Camera` 不走这个串口发现流程
+- 写回前会自动生成一个 `record.yaml.bak` 备份
+
+### 3. 最短 fake 闭环
 
 先跑默认 fake 录制：
 
@@ -250,7 +324,9 @@ python scripts/sdk_record.py --sensor-source fake --duration 2
 
 的 fake session。
 
-### 2. 验证新增传感器接入路径
+如果你要连独立普通 RGB 相机链路也一起验证，可以额外打开 `--enable-camera`，这不会替代 RealSense，而是并行多录一个 `camera` stream。
+
+### 4. 验证新增传感器接入路径
 
 如果想连 motors / microphone / camera 的 SDK 接入路径一起验证：
 
@@ -263,13 +339,15 @@ python scripts/sdk_record.py \
   --enable-camera
 ```
 
-### 3. 查看 session 摘要
+### 5. 查看 session 摘要
 
 ```bash
 python scripts/sdk_inspect.py sessions/session_<YOUR_SESSION_ID>
 ```
 
-### 4. 处理轨迹
+### 6. 处理轨迹
+
+如果你没有在 `record.yaml` 里开启 `enable_trajectory`，也可以事后手动处理轨迹：
 
 ```bash
 python scripts/sdk_process_trajectory.py sessions/session_<YOUR_SESSION_ID> \
@@ -277,7 +355,13 @@ python scripts/sdk_process_trajectory.py sessions/session_<YOUR_SESSION_ID> \
   --command "python -c \"import json,sys; sys.stdout.write(json.dumps({'timestamp':0.0, 'position':[0,0,0], 'quaternion':[1,0,0,0]}) + '\\n')\""
 ```
 
-### 5. 导出与校验
+`sdk_process_trajectory.py` 也支持直接读取 `record.yaml` 里的 `trajectory` 段：
+
+```bash
+python scripts/sdk_process_trajectory.py sessions/session_<YOUR_SESSION_ID> --config configs/record.yaml
+```
+
+### 7. 导出与校验
 
 ```bash
 python scripts/sdk_export.py sessions/session_<YOUR_SESSION_ID> --format csv
@@ -292,16 +376,39 @@ python scripts/sdk_validate_export.py sessions/session_<YOUR_SESSION_ID> --forma
 python scripts/sdk_record.py
 ```
 
-当前支持的主要开关有：
+当前默认会自动加载：
 
+- `configs/record.yaml`
+
+如果你希望切换到另一份配置文件：
+
+```bash
+python scripts/sdk_record.py --config path/to/record.yaml
+```
+
+首次安装时，如果你想自动写入串口配置，可以先执行：
+
+```bash
+python scripts/sdk_discover_ports.py
+```
+
+如果你只想临时覆盖少量配置，当前支持的主要开关有：
+
+- `--config`
 - `--sensor-source real`
 - `--sensor-source fake`
+- `--enable-ft`
 - `--disable-ft`
+- `--enable-imu`
 - `--disable-imu`
+- `--enable-realsense`
 - `--disable-realsense`
 - `--enable-motors`
+- `--disable-motors`
 - `--enable-microphone`
+- `--disable-microphone`
 - `--enable-camera`
+- `--disable-camera`
 
 当前支持的主要配置项有：
 
@@ -326,20 +433,20 @@ python scripts/sdk_record.py
   - `--camera-height`
   - `--camera-fps`
 
+但日常推荐仍然是直接编辑 `configs/record.yaml`，CLI 只做临时覆盖。
+
 真机录制最基本示例：
 
 ```bash
-python scripts/sdk_record.py --sensor-source real
+python scripts/sdk_record.py
 ```
 
 如果要把 camera / microphone / motors 一起打开：
 
 ```bash
-python scripts/sdk_record.py \
-  --sensor-source real \
-  --enable-motors \
-  --enable-microphone \
-  --enable-camera
+# edit configs/record.yaml
+# then run
+python scripts/sdk_record.py
 ```
 
 ## 当前 session 结构
@@ -368,6 +475,7 @@ session_xxx/
 - 实际会出现哪些 `streams/<sensor>/`，取决于本次录制启用了哪些传感器
 - 二维和三维数组 payload 会落为 `png` 或 `npy`
 - 小向量和标量会直接进入 `frames.jsonl`
+- `trajectory/` 中是否有实际轨迹内容，取决于你是否启用了 `enable_trajectory`，或者之后手动执行了 `sdk_process_trajectory.py`
 
 ## 当前测试状态
 
@@ -379,7 +487,7 @@ session_xxx/
 - 导出一致性
 - fake 端到端闭环
 - fake 全传感器 registry 扩展测试
-- `CameraSensor` 不从 `sensors/__init__.py` 暴露的约束测试
+- legacy `sensors` 包根入口保持最小暴露面的约束测试
 
 ## 当前还没做完的事
 
@@ -394,4 +502,4 @@ session_xxx/
 
 ## 一句话总结
 
-当前项目已经是一套可运行的统一多模态采集 SDK。FT / 独立 IMU / RealSense / Motors / Microphone / Camera 都已进入录制体系；其中独立 IMU 当前服务于 FT 重力补偿，D435i 板载 IMU 仍待接入以服务 SLAM。
+当前项目已经是一套可运行的统一多模态采集 SDK。FT / 独立 IMU / RealSense / Motors / Microphone / Camera 都已进入录制体系，当前推荐通过 `configs/record.yaml` 驱动采集，并可在首次安装时用 `sdk_discover_ports.py` 自动写入串口，在录制结束后按配置决定是否自动解算 ORB-SLAM3 轨迹。

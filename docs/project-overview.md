@@ -12,6 +12,13 @@
 
 当前项目已经完成收口，只保留一套新的 SDK 主系统。
 
+当前推荐使用方式已经切换到“配置文件优先”：
+
+1. 编辑 `configs/record.yaml`
+2. 首次安装时按需运行 `scripts/sdk_discover_ports.py`
+3. 运行 `scripts/sdk_record.py`
+4. 按配置决定是否在录制结束后自动执行轨迹解算
+
 ---
 
 ## 2. 当前纳入的传感器
@@ -24,6 +31,12 @@
 - 电机状态
 - 麦克风
 - 通用 RGB 相机
+
+这里的 RealSense 与普通 RGB 相机是两套独立设备：
+
+- RealSense 负责 RGB-D 链路
+- `camera` 指普通 RGB 相机
+- 两者可以同时接入 SDK 并同步录制
 
 ### 重要边界：这里有两套不同用途的 IMU
 
@@ -61,11 +74,14 @@ record -> inspect -> process_trajectory -> export -> validate
 
 当前已经支持：
 
+- 默认从 `configs/record.yaml` 读取配置
 - FT / IMU / RealSense / Motors / Microphone / Camera 的统一注册
 - `real` / `fake` 两种数据源
 - 录制前 ready 等待
 - FT / Motors 零点校准
 - FT 静态校准与重力补偿
+- 首次安装时通过 `sdk_discover_ports.py` 自动发现 FT / IMU / Motors 串口
+- 可按配置决定是否在录制结束后自动执行 ORB-SLAM3 轨迹解算
 
 ### `inspect`
 
@@ -78,6 +94,8 @@ record -> inspect -> process_trajectory -> export -> validate
 - 从 session 导出 ORB-SLAM3 所需 bundle
 - 调用外部 ORB-SLAM3 命令
 - 将轨迹结果回写到 session
+
+这个环节既可以独立手动执行，也可以通过 `record.yaml` 中的轨迹配置在录制结束后自动执行。
 
 ### `export`
 
@@ -99,7 +117,7 @@ record -> inspect -> process_trajectory -> export -> validate
 
 ## 4. 当前总体结论
 
-截至 2026-03-18，软件侧可以认为已经完成的部分包括：
+截至 2026-03-20，软件侧可以认为已经完成的部分包括：
 
 - 统一多传感器接入
 - 统一时间对齐
@@ -109,6 +127,8 @@ record -> inspect -> process_trajectory -> export -> validate
 - ready / 校准等待
 - FT 重力补偿
 - ORB-SLAM3 软件接入
+- 首次安装时的串口自动发现与配置写回
+- 录制结束后按配置自动执行轨迹解算
 - 多格式导出
 - fake 模式下的闭环验证
 
@@ -141,12 +161,14 @@ sensor adapters
 ```text
 UMI_DataCollection/
 ├── configs/
-│   └── orbslam3/
+│   ├── orbslam3/
+│   └── record.yaml
 ├── docs/
 │   ├── orbslam3-io-contract.md
 │   └── project-overview.md
 ├── plan.md
 ├── scripts/
+│   ├── sdk_discover_ports.py
 │   ├── sdk_record.py
 │   ├── sdk_inspect.py
 │   ├── sdk_export.py
@@ -243,6 +265,7 @@ UMI_DataCollection/
 - bundle 导出
 - 命令执行
 - 轨迹写回
+- session 级轨迹后处理复用
 
 #### `sdk/exporters/`
 
@@ -317,6 +340,7 @@ UMI_DataCollection/
 
 - 当前只接入 RGB + Depth
 - 尚未接入 D435i 板载 IMU
+- 当前它是 ORB-SLAM3 默认使用的 RGB-D 输入链路
 - 因此当前还没有形成“D435i RGB-D + D435i IMU”的原生惯性 SLAM 组合
 
 对应代码：
@@ -375,8 +399,9 @@ UMI_DataCollection/
 当前边界：
 
 - 已接入录制层
-- 不是 ORB-SLAM3 默认视觉主路径
-- `CameraSensor` 仍不从 `sensors/__init__.py` 暴露
+- 可与 RealSense 同时接入和同步录制
+- 当前不作为 ORB-SLAM3 默认输入链路
+- `CameraSensor` 仍不从 `sensors/__init__.py` 暴露，以保持 legacy 包入口最小化
 
 对应代码：
 
@@ -397,6 +422,14 @@ UMI_DataCollection/
 python scripts/sdk_record.py
 ```
 
+默认配置文件：
+
+- `configs/record.yaml`
+
+首次安装可选辅助脚本：
+
+- `python scripts/sdk_discover_ports.py`
+
 支持的数据源：
 
 - `--sensor-source real`
@@ -411,6 +444,8 @@ python scripts/sdk_record.py
 - `--enable-microphone`
 - `--enable-camera`
 
+当前更推荐把大部分配置放进 `record.yaml`，CLI 只用于临时覆盖。
+
 支持的主要配置项：
 
 - FT：`--ft-port`
@@ -419,6 +454,13 @@ python scripts/sdk_record.py
 - Motors：`--motors-port`
 - Microphone：`--microphone-device-index` / `--microphone-channels` / `--microphone-rate` / `--microphone-chunk`
 - Camera：`--camera-device-index` / `--camera-width` / `--camera-height` / `--camera-fps`
+
+当前还支持：
+
+- `enable_trajectory`
+- `trajectory.command`
+
+也就是说，轨迹已经被纳入同一份录制配置里，但它是“录制结束后才执行的后处理模态”，不是录制期间实时采集的原始流。
 
 ### 7.2 ready / 校准等待
 
@@ -480,6 +522,7 @@ session_xxx/
 - 实际创建哪些 `streams/<sensor>/`，取决于本次录制启用了哪些传感器
 - 多维数组 payload 会落为 `png` 或 `npy`
 - 标量和小向量会直接写入 `frames.jsonl`
+- `trajectory/` 中只有在启用自动轨迹后处理，或后续手动执行 `sdk_process_trajectory.py` 时，才会出现实际轨迹帧
 
 对应代码：
 
@@ -503,7 +546,7 @@ session_xxx/
 - 默认视觉数据来自 RealSense
 - 理想的 `rgbd_inertial` 惯性来源应为 D435i 板载 IMU
 - 当前 `rgbd_inertial` 惯性来源仍是独立 IMU
-- 普通 camera 当前不作为 ORB-SLAM3 默认输入链路
+- 普通 camera 是独立录制模态，可与 RealSense 同时存在，但当前不作为 ORB-SLAM3 默认输入链路
 
 对应代码与文档：
 
@@ -538,9 +581,11 @@ session_xxx/
 - 重力补偿测试
 - session writer / reader 测试
 - 导出校验测试
+- 配置文件加载与 CLI 覆盖测试
+- 自动串口发现测试
 - fake 端到端测试
 - fake 全传感器 registry 扩展测试
-- `CameraSensor` 不继续从 `sensors/__init__.py` 暴露的约束测试
+- legacy `sensors` 包根入口保持最小暴露面的约束测试
 
 对应测试：
 
@@ -548,6 +593,8 @@ session_xxx/
 - `tests/test_gravity_compensation.py`
 - `tests/test_session_writer.py`
 - `tests/test_export_validation.py`
+- `tests/test_record_config_loading.py`
+- `tests/test_port_discovery.py`
 - `tests/test_sdk_e2e.py`
 - `tests/test_sensor_registry_extensions.py`
 - `tests/test_legacy_cleanup.py`
@@ -558,13 +605,16 @@ session_xxx/
 
 当前软件系统已经达到的验收标准：
 
+- `scripts/sdk_record.py` 默认读取 `configs/record.yaml`
 - `scripts/sdk_record.py` 能生成规范 session
 - `scripts/sdk_record.py` 能按配置启用 FT / IMU / RealSense / Motors / Microphone / Camera
 - `scripts/sdk_record.py --sensor-source fake` 能在无真机条件下生成多模态 session
 - Motors / Microphone / Camera 已进入 SDK 主录制入口
+- `scripts/sdk_discover_ports.py` 能在首次安装时按启用顺序引导识别 FT / IMU / Motors 串口并写回配置
 - 需要校准的传感器会在 ready / 零点校准后再进入正式录制
 - `scripts/sdk_inspect.py` 能读取 session 摘要
 - `scripts/sdk_process_trajectory.py` 能导出 ORB-SLAM3 bundle 并写回轨迹
+- `enable_trajectory=true` 时能在录制结束后自动执行同一套轨迹处理链
 - `scripts/sdk_export.py` 能导出多种格式
 - `scripts/sdk_validate_export.py` 能校验导出结果
 - 新增模态时不需要改动核心主循环
@@ -586,4 +636,4 @@ session_xxx/
 
 ## 14. 一句话总结
 
-当前仓库已经是一套可运行的统一多模态采集 SDK。FT / 独立 IMU / RealSense / Motors / Microphone / Camera 都已进入录制体系；其中独立 IMU 当前服务于 FT 重力补偿，D435i 板载 IMU 仍待接入以服务 SLAM。
+当前仓库已经是一套可运行的统一多模态采集 SDK。FT / 独立 IMU / RealSense / Motors / Microphone / Camera 都已进入录制体系，采集默认由 `configs/record.yaml` 驱动，首次安装可选自动发现串口，并能在录制结束后按配置决定是否自动解算 ORB-SLAM3 轨迹。

@@ -22,7 +22,7 @@
 - `rgbd_inertial`
 - `mono_inertial`
 
-当前项目的视觉主路径已经明确收口到 RealSense，因此推荐优先使用：
+当前 ORB-SLAM3 软件链默认以 RealSense RGB-D 作为输入来源，因此当前推荐优先使用：
 
 - `rgbd`
 - `rgbd_inertial`
@@ -154,7 +154,7 @@ ORB-SLAM3 外部程序或 wrapper 脚本最终必须输出 JSONL。
 ```json
 {
   "coordinate_frame": "orbslam3_world",
-  "camera_frame": "realsense_color_optical_frame",
+  "camera_frame": "rgbd_color_optical_frame",
   "transform_note": "raw_orbslam3_output"
 }
 ```
@@ -172,8 +172,8 @@ ORB-SLAM3 外部程序或 wrapper 脚本最终必须输出 JSONL。
 
 ```json
 {
-  "settings_path": "/abs/path/to/realsense_rgbd_inertial.yaml",
-  "extrinsics_id": "realsense_factory_or_user_calibrated"
+  "settings_path": "/abs/path/to/rgbd_inertial.yaml",
+  "extrinsics_id": "rgbd_sensor_factory_or_user_calibrated"
 }
 ```
 

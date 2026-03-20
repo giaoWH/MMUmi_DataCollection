@@ -388,6 +388,60 @@ class SessionWriterTest(unittest.TestCase):
             self.assertEqual(manifest_payload["notes"]["trajectory_source"], "orbslam3_config")
             self.assertEqual(manifest_payload["notes"]["orbslam3_bundle"], str(bundle_dir))
 
+    @unittest.skipIf(cv2 is None, "未安装 opencv-python")
+    def test_sdk_process_trajectory_cli_supports_record_config_trajectory_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_orbslam3_session(tmp_dir)
+            bundle_dir = Path(tmp_dir) / "orb_bundle_record_cfg"
+            config_path = Path(tmp_dir) / "record.yaml"
+            script = (
+                "import json; "
+                "payload = {"
+                "'timestamp': 6.5, "
+                "'position': [6.0, 5.0, 4.0], "
+                "'quaternion': [1.0, 0.0, 0.0, 0.0], "
+                "'tracking_state': 'FROM_RECORD_CONFIG'"
+                "}; "
+                "print(json.dumps(payload, ensure_ascii=False))"
+            )
+            command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "enable_trajectory: true",
+                        "trajectory:",
+                        f"  command: {json.dumps(command)}",
+                        "  mode: rgbd_inertial",
+                        "  output_mode: stdout_jsonl",
+                        "  source_name: orbslam3_record_config",
+                        f"  bundle_dir: {bundle_dir}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = __import__("subprocess").run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve().parents[1] / "scripts" / "sdk_process_trajectory.py"),
+                    str(session_dir),
+                    "--config",
+                    str(config_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=str(Path(__file__).resolve().parents[1]),
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+            reader = SessionReader(session_dir)
+            trajectory_frames = list(reader.iter_trajectory_frames())
+            self.assertEqual(len(trajectory_frames), 1)
+            self.assertEqual(trajectory_frames[0].source, "orbslam3_record_config")
+            self.assertEqual(trajectory_frames[0].tracking_state, "FROM_RECORD_CONFIG")
+
     @unittest.skipIf(h5py is None, "未安装 h5py")
     def test_export_hdf5(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -564,9 +618,18 @@ class SessionWriterTest(unittest.TestCase):
                 time=FrameTime(host_time=1.02, monotonic_time=1.02),
                 payload={"color": np.zeros((2, 2, 3), dtype=np.uint8)},
             )
+            camera_frame = SensorFrame(
+                sensor_name="camera",
+                sensor_type="camera_sensor",
+                modality="rgb",
+                frame_id=4,
+                time=FrameTime(host_time=1.03, monotonic_time=1.03),
+                payload={"color": np.zeros((2, 2, 3), dtype=np.uint8)},
+            )
             writer.write_sensor_frame(ft_frame)
             writer.write_sensor_frame(imu_frame)
             writer.write_sensor_frame(realsense_frame)
+            writer.write_sensor_frame(camera_frame)
             writer.write_aligned_frame(
                 AlignedFrame(
                     sequence_id=0,
@@ -575,9 +638,10 @@ class SessionWriterTest(unittest.TestCase):
                         "ft": ft_frame,
                         "imu": imu_frame,
                         "realsense": realsense_frame,
+                        "camera": camera_frame,
                     },
                     missing_sensors=[],
-                    age_by_sensor={"ft": 0.05, "imu": 0.04, "realsense": 0.03},
+                    age_by_sensor={"ft": 0.05, "imu": 0.04, "realsense": 0.03, "camera": 0.02},
                     metadata={
                         "gravity_compensation": {
                             "applied": True,
@@ -597,6 +661,7 @@ class SessionWriterTest(unittest.TestCase):
             self.assertIn("Fx_Pure", header)
             self.assertIn("Gravity_Fz", header)
             self.assertIn("RealSense_Frame_ID", header)
+            self.assertIn("Camera_Frame_ID", header)
             self.assertIn("Missing_Sensors", header)
             self.assertIn("1.050000", lines[1])
 

@@ -1,0 +1,78 @@
+# Edit this file and run:
+#   python scripts/sdk_record.py
+# Optional first-time serial port setup:
+#   python scripts/sdk_discover_ports.py
+
+output_root: sessions
+sensor_source: real
+align_rate_hz: 30.0
+duration_sec: 0.0
+max_frame_age: 0.2
+
+enable_ft: true
+enable_imu: true
+enable_realsense: true
+enable_motors: false
+enable_microphone: false
+enable_camera: false
+enable_trajectory: false
+
+ft:
+  name: ft
+  port: COM3
+  baudrate: 115200
+  calibration_duration: 3.0
+
+imu:
+  name: imu
+  port: COM4
+  baudrate: 115200
+
+realsense:
+  name: realsense
+  width: 640
+  height: 480
+  fps: 30
+  enable_depth: true
+  enable_color: true
+  serial_number: null
+  align_to_color: true
+
+motors:
+  name: motors
+  port: /dev/ttyUSB0
+  baudrate: 115200
+  calibration_duration: 3.0
+
+microphone:
+  name: microphone
+  channels: 1
+  rate: 44100
+  chunk: 1024
+  device_index: null
+
+camera:
+  # Independent RGB camera, unrelated to the RealSense device.
+  name: camera
+  device_index: 0
+  width: 640
+  height: 480
+  fps: 30
+
+gravity_compensation:
+  enabled: false
+  mass: 0.25
+  com: [0.0, 0.0, 0.0]
+  stabilization_sec: 2.0
+  calibration_duration_sec: 3.0
+  minimum_samples: 10
+
+trajectory:
+  # If enable_trajectory is true, ORB-SLAM3 post-processing will run after recording ends.
+  command: null
+  mode: rgbd_inertial
+  output_mode: stdout_jsonl
+  source_name: orbslam3
+  working_dir: null
+  bundle_dir: null
+  env: {}

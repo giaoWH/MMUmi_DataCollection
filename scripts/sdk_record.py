@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 from sdk.config import deep_merge, load_config_file
 from sdk.core import BufferedFrameAligner, SensorRegistry, SystemClock, create_session_info
 from sdk.logging import build_logger
+from sdk.perception import OrbSlam3SessionProcessConfig, process_orbslam3_session
 from sdk.processors import GravityCompensationConfig, GravityCompensator
 from sdk.sensors.fake import (
     FakeCameraAdapter,
@@ -47,6 +48,12 @@ from sdk.sensors.legacy import (
 from sdk.sensors.realsense import RealSenseConfig, RealSenseRGBDAdapter
 from sdk.storage import SessionWriter
 
+DEFAULT_RECORD_CONFIG_CANDIDATES = (
+    REPO_ROOT / "configs" / "record.yaml",
+    REPO_ROOT / "configs" / "record.yml",
+    REPO_ROOT / "configs" / "record.json",
+)
+
 
 @dataclass(frozen=True)
 class RecorderConfig:
@@ -61,6 +68,7 @@ class RecorderConfig:
     enable_motors: bool = False
     enable_microphone: bool = False
     enable_camera: bool = False
+    enable_trajectory: bool = False
     ft: FTSensorConfig = FTSensorConfig()
     imu: IMUSensorConfig = IMUSensorConfig()
     realsense: RealSenseConfig = RealSenseConfig()
@@ -68,6 +76,7 @@ class RecorderConfig:
     microphone: MicrophoneSensorConfig = MicrophoneSensorConfig()
     camera: CameraSensorConfig = CameraSensorConfig()
     gravity_compensation: GravityCompensationConfig = GravityCompensationConfig()
+    trajectory: OrbSlam3SessionProcessConfig = OrbSlam3SessionProcessConfig()
 
 
 is_running = True
@@ -213,81 +222,127 @@ def run_static_calibration(
     return compensator, notes
 
 
-def parse_args() -> RecorderConfig:
-    parser = argparse.ArgumentParser(description="多模态 SDK 录制入口")
-    parser.add_argument("--config", default=None)
-    parser.add_argument("--output-root", default="sessions")
-    parser.add_argument("--sensor-source", choices=["real", "fake"], default="real")
-    parser.add_argument("--align-rate", type=float, default=30.0)
-    parser.add_argument("--duration", type=float, default=0.0)
-    parser.add_argument("--max-frame-age", type=float, default=0.2)
-    parser.add_argument("--disable-ft", action="store_true")
-    parser.add_argument("--disable-imu", action="store_true")
-    parser.add_argument("--disable-realsense", action="store_true")
-    parser.add_argument("--enable-motors", action="store_true")
-    parser.add_argument("--enable-microphone", action="store_true")
-    parser.add_argument("--enable-camera", action="store_true")
-    parser.add_argument("--ft-port", default="COM3")
-    parser.add_argument("--imu-port", default="COM4")
-    parser.add_argument("--motors-port", default="/dev/ttyUSB0")
-    parser.add_argument("--microphone-device-index", type=int, default=None)
-    parser.add_argument("--microphone-channels", type=int, default=1)
-    parser.add_argument("--microphone-rate", type=int, default=44100)
-    parser.add_argument("--microphone-chunk", type=int, default=1024)
-    parser.add_argument("--camera-device-index", type=int, default=0)
-    parser.add_argument("--camera-width", type=int, default=640)
-    parser.add_argument("--camera-height", type=int, default=480)
-    parser.add_argument("--camera-fps", type=int, default=30)
-    parser.add_argument("--realsense-width", type=int, default=640)
-    parser.add_argument("--realsense-height", type=int, default=480)
-    parser.add_argument("--realsense-fps", type=int, default=30)
-    args = parser.parse_args()
+def _build_default_payload() -> dict[str, object]:
+    return asdict(RecorderConfig())
 
-    payload = {
-        "output_root": args.output_root,
-        "sensor_source": args.sensor_source,
-        "align_rate_hz": args.align_rate,
-        "duration_sec": args.duration,
-        "max_frame_age": args.max_frame_age,
-        "enable_ft": not args.disable_ft,
-        "enable_imu": not args.disable_imu,
-        "enable_realsense": not args.disable_realsense,
-        "enable_motors": args.enable_motors,
-        "enable_microphone": args.enable_microphone,
-        "enable_camera": args.enable_camera,
-        "ft": {"port": args.ft_port},
-        "imu": {"port": args.imu_port},
-        "motors": {"port": args.motors_port},
-        "microphone": {
-            "device_index": args.microphone_device_index,
-            "channels": args.microphone_channels,
-            "rate": args.microphone_rate,
-            "chunk": args.microphone_chunk,
-        },
-        "camera": {
-            "device_index": args.camera_device_index,
-            "width": args.camera_width,
-            "height": args.camera_height,
-            "fps": args.camera_fps,
-        },
-        "realsense": {
-            "width": args.realsense_width,
-            "height": args.realsense_height,
-            "fps": args.realsense_fps,
-        },
-        "gravity_compensation": {
-            "enabled": False,
-            "mass": 0.25,
-            "com": [0.0, 0.0, 0.0],
-            "stabilization_sec": 2.0,
-            "calibration_duration_sec": 3.0,
-            "minimum_samples": 10,
-        },
+
+def _resolve_record_config_path(config_path: str | None) -> Path | None:
+    if config_path:
+        raw_path = Path(config_path)
+        candidates = [raw_path]
+        if not raw_path.is_absolute():
+            candidates.append(REPO_ROOT / raw_path)
+
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate.resolve()
+
+        raise FileNotFoundError(f"配置文件不存在: {config_path}")
+
+    for candidate in DEFAULT_RECORD_CONFIG_CANDIDATES:
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
+def _set_nested_value(payload: dict[str, object], path: tuple[str, ...], value: object) -> None:
+    cursor = payload
+    for key in path[:-1]:
+        next_value = cursor.get(key)
+        if not isinstance(next_value, dict):
+            next_value = {}
+            cursor[key] = next_value
+        cursor = next_value
+    cursor[path[-1]] = value
+
+
+def _build_cli_overrides(args: argparse.Namespace) -> dict[str, object]:
+    overrides: dict[str, object] = {}
+    mapping = {
+        "output_root": ("output_root",),
+        "sensor_source": ("sensor_source",),
+        "align_rate_hz": ("align_rate_hz",),
+        "duration_sec": ("duration_sec",),
+        "max_frame_age": ("max_frame_age",),
+        "enable_ft": ("enable_ft",),
+        "enable_imu": ("enable_imu",),
+        "enable_realsense": ("enable_realsense",),
+        "enable_motors": ("enable_motors",),
+        "enable_microphone": ("enable_microphone",),
+        "enable_camera": ("enable_camera",),
+        "enable_trajectory": ("enable_trajectory",),
+        "ft_port": ("ft", "port"),
+        "imu_port": ("imu", "port"),
+        "motors_port": ("motors", "port"),
+        "microphone_device_index": ("microphone", "device_index"),
+        "microphone_channels": ("microphone", "channels"),
+        "microphone_rate": ("microphone", "rate"),
+        "microphone_chunk": ("microphone", "chunk"),
+        "camera_device_index": ("camera", "device_index"),
+        "camera_width": ("camera", "width"),
+        "camera_height": ("camera", "height"),
+        "camera_fps": ("camera", "fps"),
+        "realsense_width": ("realsense", "width"),
+        "realsense_height": ("realsense", "height"),
+        "realsense_fps": ("realsense", "fps"),
     }
-    if args.config:
-        payload = deep_merge(payload, load_config_file(args.config))
 
-    return RecorderConfig(
+    for attr_name, path in mapping.items():
+        if hasattr(args, attr_name):
+            _set_nested_value(overrides, path, getattr(args, attr_name))
+    return overrides
+
+
+def _add_toggle_arguments(parser: argparse.ArgumentParser, sensor_name: str, dest: str) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(f"--enable-{sensor_name}", dest=dest, action="store_true")
+    group.add_argument(f"--disable-{sensor_name}", dest=dest, action="store_false")
+
+
+def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | None]:
+    parser = argparse.ArgumentParser(
+        description="多模态 SDK 录制入口",
+        argument_default=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--config",
+        help="录制配置文件路径；未提供时会自动尝试 configs/record.yaml",
+    )
+    parser.add_argument("--output-root")
+    parser.add_argument("--sensor-source", choices=["real", "fake"])
+    parser.add_argument("--align-rate", dest="align_rate_hz", type=float)
+    parser.add_argument("--duration", dest="duration_sec", type=float)
+    parser.add_argument("--max-frame-age", type=float)
+    _add_toggle_arguments(parser, "ft", "enable_ft")
+    _add_toggle_arguments(parser, "imu", "enable_imu")
+    _add_toggle_arguments(parser, "realsense", "enable_realsense")
+    _add_toggle_arguments(parser, "motors", "enable_motors")
+    _add_toggle_arguments(parser, "microphone", "enable_microphone")
+    _add_toggle_arguments(parser, "camera", "enable_camera")
+    _add_toggle_arguments(parser, "trajectory", "enable_trajectory")
+    parser.add_argument("--ft-port", dest="ft_port")
+    parser.add_argument("--imu-port", dest="imu_port")
+    parser.add_argument("--motors-port", dest="motors_port")
+    parser.add_argument("--microphone-device-index", dest="microphone_device_index", type=int)
+    parser.add_argument("--microphone-channels", dest="microphone_channels", type=int)
+    parser.add_argument("--microphone-rate", dest="microphone_rate", type=int)
+    parser.add_argument("--microphone-chunk", dest="microphone_chunk", type=int)
+    parser.add_argument("--camera-device-index", dest="camera_device_index", type=int)
+    parser.add_argument("--camera-width", dest="camera_width", type=int)
+    parser.add_argument("--camera-height", dest="camera_height", type=int)
+    parser.add_argument("--camera-fps", dest="camera_fps", type=int)
+    parser.add_argument("--realsense-width", dest="realsense_width", type=int)
+    parser.add_argument("--realsense-height", dest="realsense_height", type=int)
+    parser.add_argument("--realsense-fps", dest="realsense_fps", type=int)
+    args = parser.parse_args(argv)
+
+    config_path = _resolve_record_config_path(getattr(args, "config", None))
+    payload = _build_default_payload()
+    if config_path is not None:
+        payload = deep_merge(payload, load_config_file(config_path))
+    payload = deep_merge(payload, _build_cli_overrides(args))
+
+    config = RecorderConfig(
         output_root=payload["output_root"],
         sensor_source=payload.get("sensor_source", "real"),
         align_rate_hz=payload["align_rate_hz"],
@@ -299,6 +354,7 @@ def parse_args() -> RecorderConfig:
         enable_motors=payload.get("enable_motors", False),
         enable_microphone=payload.get("enable_microphone", False),
         enable_camera=payload.get("enable_camera", False),
+        enable_trajectory=payload.get("enable_trajectory", False),
         ft=FTSensorConfig(**payload.get("ft", {})),
         imu=IMUSensorConfig(**payload.get("imu", {})),
         realsense=RealSenseConfig(**payload.get("realsense", {})),
@@ -306,7 +362,9 @@ def parse_args() -> RecorderConfig:
         microphone=MicrophoneSensorConfig(**payload.get("microphone", {})),
         camera=CameraSensorConfig(**payload.get("camera", {})),
         gravity_compensation=GravityCompensationConfig(**payload.get("gravity_compensation", {})),
+        trajectory=OrbSlam3SessionProcessConfig(**payload.get("trajectory", {})),
     )
+    return config, config_path
 
 
 def main() -> None:
@@ -314,11 +372,15 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    config = parse_args()
+    config, config_path = parse_args()
+    if config.enable_trajectory and not config.trajectory.command:
+        raise ValueError("enable_trajectory=true 时必须在 trajectory.command 中提供 ORB-SLAM3 命令")
     clock = SystemClock()
     registry = build_registry(config, clock)
 
     print("=== SDK 录制启动中 ===")
+    if config_path is not None:
+        print(f"配置文件: {config_path}")
     print(f"数据源: {config.sensor_source}")
     registry.start_all()
     print("等待传感器就绪...")
@@ -333,10 +395,15 @@ def main() -> None:
         config.output_root,
         sensors=registry.get_metadata(),
         config=asdict(config),
-        notes={"entrypoint": "scripts/sdk_record.py"},
+        notes={
+            "entrypoint": "scripts/sdk_record.py",
+            "config_file": str(config_path) if config_path is not None else None,
+        },
     )
     logger = build_logger("sdk.record", log_file=session_info.output_dir / "logs" / "sdk_record.log")
     logger.info("SDK 录制启动，数据源=%s", config.sensor_source)
+    if config_path is not None:
+        logger.info("加载配置文件: %s", config_path)
     compensator, calibration_notes = run_static_calibration(registry, config.gravity_compensation, logger)
     session_info.notes["gravity_compensation"] = calibration_notes
     writer = SessionWriter(session_info)
@@ -420,7 +487,24 @@ def main() -> None:
         registry.stop_all()
         writer.close()
         logger.info("录制结束")
-        print("完成。")
+
+    if config.enable_trajectory:
+        print("开始轨迹解算...")
+        logger.info("开始录制后轨迹解算，mode=%s", config.trajectory.mode)
+        try:
+            result = process_orbslam3_session(session_info.output_dir, config.trajectory)
+        except Exception:
+            logger.exception("录制后轨迹解算失败")
+            print(f"轨迹解算失败，session 已保存在: {session_info.output_dir}")
+            raise
+        logger.info(
+            "录制后轨迹解算完成，bundle=%s, frames=%d",
+            result.bundle_dir,
+            result.trajectory_frames,
+        )
+        print(f"轨迹写入完成: {session_info.output_dir / 'trajectory' / 'frames.jsonl'}")
+
+    print("完成。")
 
 
 if __name__ == "__main__":

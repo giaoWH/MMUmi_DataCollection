@@ -51,6 +51,8 @@ class CSVSnapshotExporter(SessionExporter):
             "Qz",
             "RealSense_Time",
             "RealSense_Frame_ID",
+            "Camera_Time",
+            "Camera_Frame_ID",
             "Missing_Sensors",
         ]
 
@@ -67,14 +69,14 @@ class CSVSnapshotExporter(SessionExporter):
             "FT_Time", "Fx_Raw", "Fy_Raw", "Fz_Raw", "Tx", "Ty", "Tz",
             "Fx_Pure", "Fy_Pure", "Fz_Pure", "Gravity_Fx", "Gravity_Fy", "Gravity_Fz",
             "IMU_Time", "Ax", "Ay", "Az", "Gx", "Gy", "Gz", "Qw", "Qx", "Qy", "Qz",
-            "RealSense_Time", "RealSense_Frame_ID",
+            "RealSense_Time", "RealSense_Frame_ID", "Camera_Time", "Camera_Frame_ID",
         ]}
         row["Aligned_Time"] = f"{float(aligned_record['aligned_time']):.6f}"
         row["Missing_Sensors"] = "|".join(aligned_record.get("missing_sensors", []))
 
         self._fill_force_torque(row, aligned_record, frame_index)
         self._fill_imu(row, aligned_record, frame_index)
-        self._fill_realsense(row, aligned_record)
+        self._fill_visual_streams(row, aligned_record, frame_index)
         self._fill_compensation(row, aligned_record)
         return row
 
@@ -107,13 +109,23 @@ class CSVSnapshotExporter(SessionExporter):
                 row["Qw"], row["Qx"], row["Qy"], row["Qz"] = [f"{float(value):.6f}" for value in quaternion[:4]]
             return
 
-    def _fill_realsense(self, row: dict[str, Any], aligned_record: dict[str, Any]) -> None:
+    def _fill_visual_streams(
+        self,
+        row: dict[str, Any],
+        aligned_record: dict[str, Any],
+        frame_index: dict[str, dict[int, Any]],
+    ) -> None:
         for sensor_name, frame_info in aligned_record.get("frames", {}).items():
-            if sensor_name != "realsense":
+            frame = frame_index.get(sensor_name, {}).get(frame_info["frame_id"])
+            if frame is None:
                 continue
-            row["RealSense_Time"] = f"{float(frame_info['host_time']):.6f}"
-            row["RealSense_Frame_ID"] = str(frame_info["frame_id"])
-            return
+            if frame.modality == "rgbd" and not row["RealSense_Frame_ID"]:
+                row["RealSense_Time"] = f"{float(frame_info['host_time']):.6f}"
+                row["RealSense_Frame_ID"] = str(frame_info["frame_id"])
+                continue
+            if frame.modality == "rgb" and not row["Camera_Frame_ID"]:
+                row["Camera_Time"] = f"{float(frame_info['host_time']):.6f}"
+                row["Camera_Frame_ID"] = str(frame_info["frame_id"])
 
     def _fill_compensation(self, row: dict[str, Any], aligned_record: dict[str, Any]) -> None:
         compensation = aligned_record.get("metadata", {}).get("gravity_compensation")

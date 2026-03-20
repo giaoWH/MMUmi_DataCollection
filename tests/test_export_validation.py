@@ -28,6 +28,7 @@ class SessionExportValidationTest(unittest.TestCase):
                 "ft": {"sensor_type": "ft_sensor", "modality": "force_torque"},
                 "imu": {"sensor_type": "imu_sensor", "modality": "imu"},
                 "realsense": {"sensor_type": "realsense", "modality": "rgbd"},
+                "camera": {"sensor_type": "camera_sensor", "modality": "rgb"},
             },
             config={"align_rate_hz": 30},
         )
@@ -70,6 +71,17 @@ class SessionExportValidationTest(unittest.TestCase):
                 metadata={"intrinsics": {"color": {"fx": 1.0, "fy": 1.0}}},
             )
         )
+        writer.write_sensor_frame(
+            SensorFrame(
+                sensor_name="camera",
+                sensor_type="camera_sensor",
+                modality="rgb",
+                frame_id=1,
+                time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+                payload={"color": np.full((2, 2, 3), 32, dtype=np.uint8)},
+                metadata={"device_index": 0},
+            )
+        )
         writer.write_aligned_frame(
             AlignedFrame(
                 sequence_id=0,
@@ -103,9 +115,17 @@ class SessionExportValidationTest(unittest.TestCase):
                         time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
                         payload={},
                     ),
+                    "camera": SensorFrame(
+                        sensor_name="camera",
+                        sensor_type="camera_sensor",
+                        modality="rgb",
+                        frame_id=1,
+                        time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+                        payload={},
+                    ),
                 },
                 missing_sensors=[],
-                age_by_sensor={"ft": 0.0, "imu": 0.0, "realsense": 0.0},
+                age_by_sensor={"ft": 0.0, "imu": 0.0, "realsense": 0.0, "camera": 0.0},
                 metadata={
                     "gravity_compensation": {
                         "applied": True,
@@ -124,9 +144,11 @@ class SessionExportValidationTest(unittest.TestCase):
             session_dir = self._create_session(tmp_dir)
 
             csv_result = CSVSnapshotExporter().export(session_dir)
+            csv_header = csv_result.output_path.read_text(encoding="utf-8").splitlines()[0].split(",")
             rlds_result = RLDSSessionExporter().export(session_dir)
             lerobot_result = LeRobotSessionExporter().export(session_dir)
 
+            self.assertIn("Camera_Frame_ID", csv_header)
             validator = SessionExportValidator(session_dir)
             self.assertEqual(validator.validate("csv", csv_result.output_path).issues, [])
             self.assertEqual(validator.validate("rlds", rlds_result.output_path).issues, [])

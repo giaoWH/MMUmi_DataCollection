@@ -73,10 +73,16 @@ class SessionExportValidator:
         if not target.exists():
             return [f"未找到 CSV 文件: {target}"]
 
+        required_columns = {"Aligned_Time", "FT_Time", "IMU_Time", "Missing_Sensors"}
+        sensor_modalities = {stream.modality for stream in self.reader.manifest.sensors.values()}
+        if "rgbd" in sensor_modalities:
+            required_columns.add("RealSense_Frame_ID")
+        if "rgb" in sensor_modalities:
+            required_columns.add("Camera_Frame_ID")
+
         with target.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             rows = list(reader)
-            required_columns = {"Aligned_Time", "FT_Time", "IMU_Time", "RealSense_Frame_ID", "Missing_Sensors"}
             missing_columns = sorted(required_columns - set(reader.fieldnames or []))
             if missing_columns:
                 issues.append(f"CSV 缺少字段: {', '.join(missing_columns)}")

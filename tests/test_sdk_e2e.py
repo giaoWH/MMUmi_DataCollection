@@ -21,6 +21,80 @@ except ImportError:  # pragma: no cover
 
 class SDKEndToEndTest(unittest.TestCase):
     @unittest.skipIf(cv2 is None, "未安装 opencv-python")
+    def test_fake_record_can_auto_process_trajectory_from_record_config(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_root = Path(tmp_dir) / "sessions"
+            bundle_dir = Path(tmp_dir) / "bundle"
+            config_path = Path(tmp_dir) / "record_config.json"
+            orb_script = (
+                "import json, pathlib; "
+                "manifest = json.loads(pathlib.Path(r'{bundle_manifest}').read_text(encoding='utf-8')); "
+                "payload = {"
+                "'timestamp': 7.0, "
+                "'position': [manifest['frame_count'], manifest['imu_rows'], 2.0], "
+                "'quaternion': [1.0, 0.0, 0.0, 0.0], "
+                "'tracking_state': 'AUTO_OK'"
+                "}; "
+                "print(json.dumps(payload, ensure_ascii=False))"
+            )
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "output_root": str(output_root),
+                        "sensor_source": "fake",
+                        "duration_sec": 0.2,
+                        "enable_camera": True,
+                        "enable_trajectory": True,
+                        "gravity_compensation": {
+                            "enabled": False,
+                            "stabilization_sec": 0.0,
+                            "calibration_duration_sec": 0.0,
+                            "minimum_samples": 5,
+                        },
+                        "trajectory": {
+                            "command": f"{sys.executable} -c \"{orb_script}\"",
+                            "mode": "rgbd_inertial",
+                            "output_mode": "stdout_jsonl",
+                            "source_name": "orbslam3_auto",
+                            "bundle_dir": str(bundle_dir),
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            record_result = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "scripts" / "sdk_record.py"),
+                    "--config",
+                    str(config_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=str(repo_root),
+            )
+            self.assertEqual(record_result.returncode, 0, msg=record_result.stderr)
+
+            sessions = sorted(output_root.glob("session_*"))
+            self.assertEqual(len(sessions), 1)
+            session_dir = sessions[0]
+
+            reader = SessionReader(session_dir)
+            trajectory_frames = list(reader.iter_trajectory_frames())
+            self.assertEqual(len(trajectory_frames), 1)
+            self.assertEqual(trajectory_frames[0].source, "orbslam3_auto")
+            self.assertEqual(trajectory_frames[0].tracking_state, "AUTO_OK")
+
+            manifest_payload = json.loads((session_dir / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest_payload["notes"]["trajectory_source"], "orbslam3_auto")
+            self.assertEqual(manifest_payload["notes"]["orbslam3_bundle"], str(bundle_dir))
+
+    @unittest.skipIf(cv2 is None, "未安装 opencv-python")
     @unittest.skipIf(h5py is None, "未安装 h5py")
     def test_fake_record_to_trajectory_and_exports(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
@@ -35,6 +109,7 @@ class SDKEndToEndTest(unittest.TestCase):
                         "sensor_source": "fake",
                         "align_rate_hz": 20,
                         "duration_sec": 0.2,
+                        "enable_camera": True,
                         "gravity_compensation": {
                             "enabled": True,
                             "mass": 0.25,
@@ -84,6 +159,7 @@ class SDKEndToEndTest(unittest.TestCase):
             self.assertIn("ft", summary["sensor_names"])
             self.assertIn("imu", summary["sensor_names"])
             self.assertIn("realsense", summary["sensor_names"])
+            self.assertIn("camera", summary["sensor_names"])
             self.assertTrue((session_dir / "logs" / "sdk_record.log").exists())
 
             reader = SessionReader(session_dir)

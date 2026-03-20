@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -11,9 +10,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from sdk.config import load_config_file
 from sdk.logging import build_logger
-from sdk.perception import OrbSlam3Pipeline, OrbSlam3PipelineConfig
-from sdk.storage import SessionWriter
-from sdk.storage.schema import manifest_path_for
+from sdk.perception import OrbSlam3SessionProcessConfig, process_orbslam3_session
 
 
 def main() -> None:
@@ -29,44 +26,28 @@ def main() -> None:
     args = parser.parse_args()
 
     config_payload = load_config_file(args.config) if args.config else {}
-    command = config_payload.get("command", args.command)
-    if not command:
+    raw_process_payload = config_payload.get("trajectory", config_payload)
+    if not isinstance(raw_process_payload, dict):
+        raise ValueError("轨迹处理配置必须是对象")
+    process_config = OrbSlam3SessionProcessConfig(
+        command=raw_process_payload.get("command", args.command),
+        mode=raw_process_payload.get("mode", args.mode),
+        output_mode=raw_process_payload.get("output_mode", args.output_mode),
+        source_name=raw_process_payload.get("source_name", args.source_name),
+        working_dir=raw_process_payload.get("working_dir", args.working_dir),
+        bundle_dir=raw_process_payload.get("bundle_dir", args.bundle_dir),
+        env=raw_process_payload.get("env"),
+    )
+    if not process_config.command:
         raise ValueError("必须通过 --command 或 --config 提供 ORB-SLAM3 命令")
 
     logger = build_logger(
         "sdk.process_trajectory",
         log_file=Path(args.session_dir) / "logs" / "sdk_process_trajectory.log",
     )
-    logger.info("开始轨迹处理，mode=%s", config_payload.get("mode", args.mode))
-    pipeline = OrbSlam3Pipeline(
-        OrbSlam3PipelineConfig(
-            command=command,
-            mode=config_payload.get("mode", args.mode),
-            output_mode=config_payload.get("output_mode", args.output_mode),
-            source_name=config_payload.get("source_name", args.source_name),
-            working_dir=config_payload.get("working_dir", args.working_dir),
-            bundle_dir=config_payload.get("bundle_dir", args.bundle_dir),
-            env=config_payload.get("env"),
-        )
-    )
-    bundle, trajectory_frames = pipeline.run(args.session_dir)
-
-    writer = SessionWriter.open_existing(args.session_dir)
-    for frame in trajectory_frames:
-        writer.write_trajectory_frame(frame)
-    writer.close()
-
-    manifest_path = manifest_path_for(args.session_dir)
-    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    notes = manifest_payload.setdefault("notes", {})
-    notes["trajectory_source"] = config_payload.get("source_name", args.source_name)
-    notes["orbslam3_mode"] = config_payload.get("mode", args.mode)
-    notes["orbslam3_bundle"] = str(bundle.bundle_dir)
-    manifest_path.write_text(
-        json.dumps(manifest_payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    logger.info("轨迹处理完成，bundle=%s", bundle.bundle_dir)
+    logger.info("开始轨迹处理，mode=%s", process_config.mode)
+    result = process_orbslam3_session(args.session_dir, process_config)
+    logger.info("轨迹处理完成，bundle=%s", result.bundle_dir)
     print(f"轨迹写入完成: {Path(args.session_dir) / 'trajectory' / 'frames.jsonl'}")
 
 
