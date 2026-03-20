@@ -35,7 +35,7 @@ class MotorsSensorConfig:
 class MicrophoneSensorConfig:
     name: str = "microphone"
     channels: int = 1
-    rate: int = 44100
+    rate: int = 48000
     chunk: int = 1024
     device_index: int | None = None
 
@@ -335,9 +335,11 @@ class LegacyMicrophoneAdapter(SensorAdapter):
             payload={"audio": data},
             metadata={
                 "channels": self.config.channels,
-                "sample_rate": self.config.rate,
+                "sample_rate": self.sensor.effective_rate,
                 "chunk": self.config.chunk,
                 "dtype": "int16",
+                "device_index": self.sensor.resolved_device_index,
+                "device_name": self.sensor.device_name,
             },
         )
 
@@ -346,9 +348,11 @@ class LegacyMicrophoneAdapter(SensorAdapter):
             "sensor_type": self.sensor_type,
             "modality": self.modality,
             "channels": self.config.channels,
-            "sample_rate": self.config.rate,
+            "sample_rate": self.sensor.effective_rate,
             "chunk": self.config.chunk,
-            "device_index": self.config.device_index,
+            "device_index": self.sensor.resolved_device_index,
+            "device_name": self.sensor.device_name,
+            "requested_sample_rate": self.config.rate,
         }
 
     def get_status(self) -> dict[str, object]:
@@ -356,7 +360,15 @@ class LegacyMicrophoneAdapter(SensorAdapter):
             "running": self.sensor.running,
             "frame_count": self.sensor.frame_count,
             "latest_timestamp": self.sensor.latest_timestamp,
+            "ready": self.sensor.is_calibrated(),
+            "open_error": self.sensor.open_error,
         }
+
+    def is_ready(self) -> bool:
+        return self.sensor.is_calibrated()
+
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        return self.sensor.wait_until_calibrated(timeout=timeout)
 
 
 class LegacyCameraAdapter(SensorAdapter):

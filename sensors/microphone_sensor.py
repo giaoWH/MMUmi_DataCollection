@@ -1,7 +1,9 @@
+import threading
 import time
 import numpy as np
 import pyaudio
 from .common.base_sensor import BaseSensor
+from .microphone.audio_utils import open_input_stream
 
 
 class MicrophoneSensor(BaseSensor):
@@ -17,7 +19,7 @@ class MicrophoneSensor(BaseSensor):
         self,
         name="Microphone",
         channels=1,
-        rate=44100,
+        rate=48000,
         chunk=1024,
         device_index=None,
     ):
@@ -30,19 +32,37 @@ class MicrophoneSensor(BaseSensor):
 
         self._audio = None
         self._stream = None
+        self.effective_rate = rate
+        self.resolved_device_index = device_index
+        self.device_name = None
+        self.open_error = None
+        self._ready_event = threading.Event()
+
+    def start(self):
+        self.effective_rate = self.rate
+        self.resolved_device_index = self.device_index
+        self.device_name = None
+        self.open_error = None
+        self._ready_event.clear()
+        super().start()
 
     def _worker(self):
         try:
             self._audio = pyaudio.PyAudio()
-            self._stream = self._audio.open(
-                format=pyaudio.paInt16,
+            self._stream, device_info, actual_rate = open_input_stream(
+                self._audio,
+                audio_format=pyaudio.paInt16,
                 channels=self.channels,
-                rate=self.rate,
-                input=True,
-                input_device_index=self.device_index,
-                frames_per_buffer=self.chunk,
+                preferred_rate=self.rate,
+                chunk=self.chunk,
+                device_index=self.device_index,
             )
+            self.effective_rate = actual_rate
+            self.resolved_device_index = int(device_info["index"])
+            self.device_name = str(device_info.get("name", "unknown"))
+            self._ready_event.set()
         except Exception as e:
+            self.open_error = str(e)
             print(f"[{self.name}] 麦克风打开失败: {e}")
             self.running = False
             self._close_hardware()
@@ -97,3 +117,11 @@ class MicrophoneSensor(BaseSensor):
             except Exception:
                 pass
             self._audio = None
+
+        self._ready_event.clear()
+
+    def is_calibrated(self):
+        return self._ready_event.is_set()
+
+    def wait_until_calibrated(self, timeout=None):
+        return self._ready_event.wait(timeout=timeout)

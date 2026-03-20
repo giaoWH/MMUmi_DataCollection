@@ -243,7 +243,7 @@ UMI_DataCollection/
 示例：
 
 ```bash
-conda create -n umi_sdk python=3.10
+conda create -n umi_sdk python=3.11
 conda activate umi_sdk
 pip install numpy pyyaml
 ```

@@ -5,7 +5,7 @@ import sys
 import re
 
 # ================= 用户配置 =================
-SERIAL_PORT = 'COM5'  # 请根据实际情况修改
+SERIAL_PORT = '/dev/ttyACM1'  # 请根据实际情况修改
 BAUD_RATE = 115200
 CALIBRATION_DURATION = 3.0
 # ============================================

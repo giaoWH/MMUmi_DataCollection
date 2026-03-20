@@ -42,7 +42,7 @@ class FakeMotorsConfig:
 class FakeMicrophoneConfig:
     name: str = "microphone"
     channels: int = 1
-    rate: int = 44100
+    rate: int = 48000
     chunk: int = 1024
 
 
