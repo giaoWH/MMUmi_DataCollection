@@ -22,12 +22,14 @@ class CameraBaseSensor(BaseSensor):
         width=640,
         height=480,
         fps=30,
+        flip_vertical=False,
     ):
         super().__init__(name)
         self.device_index = device_index
         self.width = width
         self.height = height
         self.fps = fps
+        self.flip_vertical = flip_vertical
         self.data_length = width * height * 3
         self._cap = None
 
@@ -80,6 +82,8 @@ class CameraBaseSensor(BaseSensor):
                 time.sleep(0.05)
 
     def _process_frame(self, frame_bgr):
+        if self.flip_vertical:
+            frame_bgr = cv2.flip(frame_bgr, 0)
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         return np.ascontiguousarray(frame_rgb)
 

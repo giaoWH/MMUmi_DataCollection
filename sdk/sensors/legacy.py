@@ -47,6 +47,7 @@ class CameraSensorConfig:
     width: int = 640
     height: int = 480
     fps: int = 30
+    flip_vertical: bool = False
 
 
 @dataclass(frozen=True)
@@ -384,6 +385,7 @@ class LegacyCameraAdapter(SensorAdapter):
             width=config.width,
             height=config.height,
             fps=config.fps,
+            flip_vertical=config.flip_vertical,
         )
 
     def start(self) -> None:
@@ -410,6 +412,7 @@ class LegacyCameraAdapter(SensorAdapter):
                 "height": self.config.height,
                 "fps": self.config.fps,
                 "device_index": self.config.device_index,
+                "flip_vertical": self.config.flip_vertical,
             },
         )
 
@@ -421,6 +424,7 @@ class LegacyCameraAdapter(SensorAdapter):
             "height": self.config.height,
             "fps": self.config.fps,
             "device_index": self.config.device_index,
+            "flip_vertical": self.config.flip_vertical,
         }
 
     def get_status(self) -> dict[str, object]:

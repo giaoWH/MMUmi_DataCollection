@@ -3,7 +3,7 @@ import time
 import numpy as np
 import pyaudio
 from .common.base_sensor import BaseSensor
-from .microphone.audio_utils import open_input_stream
+from .microphone.audio_utils import create_audio_interface, open_input_stream
 
 
 class MicrophoneSensor(BaseSensor):
@@ -48,7 +48,7 @@ class MicrophoneSensor(BaseSensor):
 
     def _worker(self):
         try:
-            self._audio = pyaudio.PyAudio()
+            self._audio = create_audio_interface(pyaudio)
             self._stream, device_info, actual_rate = open_input_stream(
                 self._audio,
                 audio_format=pyaudio.paInt16,

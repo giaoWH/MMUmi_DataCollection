@@ -1,7 +1,10 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from sensors.microphone.audio_utils import (
     build_candidate_sample_rates,
+    ensure_alsa_plugin_dir,
     list_input_devices,
     open_input_stream,
     resolve_input_device,
@@ -44,6 +47,41 @@ class _DummyAudio:
 
 
 class MicrophoneAudioUtilsTest(unittest.TestCase):
+    def test_ensure_alsa_plugin_dir_prefers_system_dir_when_conda_dir_is_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            conda_prefix = Path(tmp_dir) / "conda_env"
+            broken_dir = conda_prefix / "lib" / "alsa-lib"
+            broken_dir.mkdir(parents=True)
+
+            system_dir = Path(tmp_dir) / "system_alsa"
+            system_dir.mkdir()
+            (system_dir / "libasound_module_pcm_pipewire.so").write_text("", encoding="utf-8")
+
+            env = {
+                "CONDA_PREFIX": str(conda_prefix),
+                "ALSA_PLUGIN_DIR": str(broken_dir),
+            }
+
+            resolved = ensure_alsa_plugin_dir(
+                env=env,
+                candidates=(str(system_dir),),
+            )
+
+        self.assertEqual(resolved, str(system_dir))
+        self.assertEqual(env["ALSA_PLUGIN_DIR"], str(system_dir))
+
+    def test_ensure_alsa_plugin_dir_keeps_existing_valid_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            valid_dir = Path(tmp_dir) / "alsa"
+            valid_dir.mkdir()
+            (valid_dir / "libasound_module_pcm_pipewire.so").write_text("", encoding="utf-8")
+            env = {"ALSA_PLUGIN_DIR": str(valid_dir)}
+
+            resolved = ensure_alsa_plugin_dir(env=env, candidates=())
+
+        self.assertEqual(resolved, str(valid_dir))
+        self.assertEqual(env["ALSA_PLUGIN_DIR"], str(valid_dir))
+
     def test_list_input_devices_filters_output_only_devices(self) -> None:
         audio = _DummyAudio(
             [

@@ -190,11 +190,14 @@ class SerialBaseSensor(BaseSensor):
 
     def get_runtime_status(self):
         self._drain_latest_packet()
-        running = bool(self._worker_running.value)
-        if self.process is not None and not self.process.is_alive() and self._run_event.is_set():
-            running = False
+        process_alive = self.process is not None and self.process.is_alive()
+        worker_running = bool(self._worker_running.value)
+        running = bool(self.running)
         return {
             "running": running,
+            "process_alive": process_alive,
+            "worker_running": worker_running,
+            "requested_running": bool(self._requested_running),
             "frame_count": self._shared_frame_count.value,
             "latest_timestamp": self._shared_latest_timestamp.value,
         }

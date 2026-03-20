@@ -16,7 +16,7 @@ from sdk.logging import build_logger
 def main() -> None:
     parser = argparse.ArgumentParser(description="导出 Session 到外部格式")
     parser.add_argument("session_dir")
-    parser.add_argument("--format", choices=list_export_formats(), default="hdf5")
+    parser.add_argument("--format", choices=list_export_formats(), default="lerobot")
     parser.add_argument("--output", default=None)
     parser.add_argument("--config", default=None)
     args = parser.parse_args()

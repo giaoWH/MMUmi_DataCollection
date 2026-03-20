@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from sensors.microphone.audio_utils import list_input_devices, open_input_stream
+from sensors.microphone.audio_utils import create_audio_interface, list_input_devices, open_input_stream
 
 
 DEFAULT_CHUNK = 1024
@@ -35,7 +35,7 @@ def main():
     wav_filename = f"mic_audio_{timestamp_start}.wav"
     csv_filename = f"mic_timestamps_{timestamp_start}.csv"
 
-    p = pyaudio.PyAudio()
+    p = create_audio_interface(pyaudio)
 
     try:
         devices = list_input_devices(p)
