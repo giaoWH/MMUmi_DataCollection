@@ -1,7 +1,7 @@
 import time
 import numpy as np
 import pyaudio
-from .base_sensor import BaseSensor
+from .common.base_sensor import BaseSensor
 
 
 class MicrophoneSensor(BaseSensor):

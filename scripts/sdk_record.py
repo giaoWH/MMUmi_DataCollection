@@ -24,6 +24,8 @@ from sdk.sensors.fake import (
     FakeCameraConfig,
     FakeFTAdapter,
     FakeFTSensorConfig,
+    FakeGelSightAdapter,
+    FakeGelSightConfig,
     FakeIMUAdapter,
     FakeIMUSensorConfig,
     FakeMicrophoneAdapter,
@@ -36,8 +38,10 @@ from sdk.sensors.fake import (
 from sdk.sensors.legacy import (
     CameraSensorConfig,
     FTSensorConfig,
+    GelSightSensorConfig,
     IMUSensorConfig,
     LegacyFTAdapter,
+    LegacyGelSightAdapter,
     LegacyIMUAdapter,
     LegacyCameraAdapter,
     LegacyMicrophoneAdapter,
@@ -68,6 +72,7 @@ class RecorderConfig:
     enable_motors: bool = False
     enable_microphone: bool = False
     enable_camera: bool = False
+    enable_gelsight: bool = False
     enable_trajectory: bool = False
     ft: FTSensorConfig = FTSensorConfig()
     imu: IMUSensorConfig = IMUSensorConfig()
@@ -75,6 +80,7 @@ class RecorderConfig:
     motors: MotorsSensorConfig = MotorsSensorConfig()
     microphone: MicrophoneSensorConfig = MicrophoneSensorConfig()
     camera: CameraSensorConfig = CameraSensorConfig()
+    gelsight: GelSightSensorConfig = GelSightSensorConfig()
     gravity_compensation: GravityCompensationConfig = GravityCompensationConfig()
     trajectory: OrbSlam3SessionProcessConfig = OrbSlam3SessionProcessConfig()
 
@@ -140,6 +146,18 @@ def build_registry(config: RecorderConfig, clock: SystemClock) -> SensorRegistry
                     clock,
                 )
             )
+        if config.enable_gelsight:
+            registry.register(
+                FakeGelSightAdapter(
+                    FakeGelSightConfig(
+                        name=config.gelsight.name,
+                        width=config.gelsight.width,
+                        height=config.gelsight.height,
+                        fps=config.gelsight.fps,
+                    ),
+                    clock,
+                )
+            )
         return registry
 
     if config.enable_ft:
@@ -154,6 +172,8 @@ def build_registry(config: RecorderConfig, clock: SystemClock) -> SensorRegistry
         registry.register(LegacyMicrophoneAdapter(config.microphone, clock))
     if config.enable_camera:
         registry.register(LegacyCameraAdapter(config.camera, clock))
+    if config.enable_gelsight:
+        registry.register(LegacyGelSightAdapter(config.gelsight, clock))
     return registry
 
 
@@ -270,6 +290,7 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict[str, object]:
         "enable_motors": ("enable_motors",),
         "enable_microphone": ("enable_microphone",),
         "enable_camera": ("enable_camera",),
+        "enable_gelsight": ("enable_gelsight",),
         "enable_trajectory": ("enable_trajectory",),
         "ft_port": ("ft", "port"),
         "imu_port": ("imu", "port"),
@@ -282,6 +303,10 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict[str, object]:
         "camera_width": ("camera", "width"),
         "camera_height": ("camera", "height"),
         "camera_fps": ("camera", "fps"),
+        "gelsight_device_index": ("gelsight", "device_index"),
+        "gelsight_width": ("gelsight", "width"),
+        "gelsight_height": ("gelsight", "height"),
+        "gelsight_fps": ("gelsight", "fps"),
         "realsense_width": ("realsense", "width"),
         "realsense_height": ("realsense", "height"),
         "realsense_fps": ("realsense", "fps"),
@@ -319,6 +344,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
     _add_toggle_arguments(parser, "motors", "enable_motors")
     _add_toggle_arguments(parser, "microphone", "enable_microphone")
     _add_toggle_arguments(parser, "camera", "enable_camera")
+    _add_toggle_arguments(parser, "gelsight", "enable_gelsight")
     _add_toggle_arguments(parser, "trajectory", "enable_trajectory")
     parser.add_argument("--ft-port", dest="ft_port")
     parser.add_argument("--imu-port", dest="imu_port")
@@ -331,6 +357,10 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
     parser.add_argument("--camera-width", dest="camera_width", type=int)
     parser.add_argument("--camera-height", dest="camera_height", type=int)
     parser.add_argument("--camera-fps", dest="camera_fps", type=int)
+    parser.add_argument("--gelsight-device-index", dest="gelsight_device_index", type=int)
+    parser.add_argument("--gelsight-width", dest="gelsight_width", type=int)
+    parser.add_argument("--gelsight-height", dest="gelsight_height", type=int)
+    parser.add_argument("--gelsight-fps", dest="gelsight_fps", type=int)
     parser.add_argument("--realsense-width", dest="realsense_width", type=int)
     parser.add_argument("--realsense-height", dest="realsense_height", type=int)
     parser.add_argument("--realsense-fps", dest="realsense_fps", type=int)
@@ -354,6 +384,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
         enable_motors=payload.get("enable_motors", False),
         enable_microphone=payload.get("enable_microphone", False),
         enable_camera=payload.get("enable_camera", False),
+        enable_gelsight=payload.get("enable_gelsight", False),
         enable_trajectory=payload.get("enable_trajectory", False),
         ft=FTSensorConfig(**payload.get("ft", {})),
         imu=IMUSensorConfig(**payload.get("imu", {})),
@@ -361,6 +392,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
         motors=MotorsSensorConfig(**payload.get("motors", {})),
         microphone=MicrophoneSensorConfig(**payload.get("microphone", {})),
         camera=CameraSensorConfig(**payload.get("camera", {})),
+        gelsight=GelSightSensorConfig(**payload.get("gelsight", {})),
         gravity_compensation=GravityCompensationConfig(**payload.get("gravity_compensation", {})),
         trajectory=OrbSlam3SessionProcessConfig(**payload.get("trajectory", {})),
     )

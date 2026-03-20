@@ -25,6 +25,7 @@
 - 电机状态
 - 麦克风
 - 通用 RGB 相机
+- GelSight Mini 视触觉传感器
 
 当前推荐的使用入口也已经固定为配置文件驱动：
 
@@ -42,9 +43,9 @@
 
 需要特别说明的边界：
 
-- RealSense RGB-D 与普通 RGB 相机是两条独立视觉链路，可以同时接入和同步录制
+- RealSense RGB-D、普通 RGB 相机与 GelSight 是三条独立视觉/视触觉链路，可以同时接入和同步录制
 - 当前 ORB-SLAM3 默认使用 RealSense 作为 RGB-D 输入
-- 普通 RGB 相机当前不是 ORB-SLAM3 默认视觉主链
+- 普通 RGB 相机和 GelSight 当前都不是 ORB-SLAM3 默认视觉主链
 - RealSense 当前接入的是 RGB + Depth
 - 项目中的独立 IMU 当前主要用于 FT 重力补偿
 - RealSense D435i 的板载 IMU 未来应作为 SLAM 惯性输入，但目前还没有单独接入 SDK
@@ -117,12 +118,13 @@ sensor adapters
   - `session.py`：创建 session 元信息
 - `sdk/sensors/`
   - `base.py`：adapter 抽象接口
-  - `legacy.py`：真实 FT / IMU / Motors / Microphone / Camera 适配
+  - `legacy.py`：真实 FT / IMU / Motors / Microphone / Camera / GelSight 适配
   - `realsense.py`：真实 RealSense RGB-D 适配
-  - `fake.py`：fake FT / IMU / RealSense / Motors / Microphone / Camera
+  - `fake.py`：fake FT / IMU / RealSense / Motors / Microphone / Camera / GelSight
 - `sensors/`
-  - `base_sensor.py`：线程式基础传感器抽象
-  - `serial_base.py`：串口传感器多进程采集基类
+  - `common/base_sensor.py`：线程式基础传感器抽象
+  - `common/serial_base.py`：串口传感器多进程采集基类
+  - `common/camera_base.py`：相机类设备通用采集基类
 - `sdk/processors/`
   - `gravity_compensation.py`：静态校准与重力补偿
 - `sdk/storage/`
@@ -255,14 +257,37 @@ sensor adapters
 - 已接入录制层
 - 可与 RealSense 同时接入和同步录制
 - 当前不作为 ORB-SLAM3 默认输入链路
-- `sensors/__init__.py` 仍不对外暴露 `CameraSensor`，以保持 legacy 包入口最小化
 
 对应代码：
 
 - `sensors/camera_sensor.py`
 - `sdk/sensors/legacy.py`
 - `sdk/sensors/fake.py`
-- `sensors/__init__.py`
+
+### 5.7 GelSight
+
+状态：已接入 SDK 录制层
+
+已完成内容：
+
+- 真实 GelSight 适配
+- fake GelSight 适配
+- `image` payload 写入 session
+- 支持 `device_index / width / height / fps` 配置
+- 作为独立 `visuotactile` 模态参与录制
+
+当前边界：
+
+- 底层采集形态与普通 RGB 设备相似，但在 SDK 中与普通 `camera` 分开管理
+- 可与 RealSense、普通 RGB 相机同时接入和同步录制
+- 当前不作为 ORB-SLAM3 默认输入链路
+
+对应代码：
+
+- `sensors/gelsight_sensor.py`
+- `sensors/common/camera_base.py`
+- `sdk/sensors/legacy.py`
+- `sdk/sensors/fake.py`
 
 ---
 
@@ -294,6 +319,7 @@ sensor adapters
 - `--enable-motors`
 - `--enable-microphone`
 - `--enable-camera`
+- `--enable-gelsight`
 
 当前建议工作流：
 
@@ -310,6 +336,7 @@ sensor adapters
 - Motors：`--motors-port`
 - Microphone：`--microphone-device-index` / `--microphone-channels` / `--microphone-rate` / `--microphone-chunk`
 - Camera：`--camera-device-index` / `--camera-width` / `--camera-height` / `--camera-fps`
+- GelSight：`--gelsight-device-index` / `--gelsight-width` / `--gelsight-height` / `--gelsight-fps`
 
 ### 6.2 ready / 校准等待
 
@@ -327,10 +354,10 @@ sensor adapters
 
 - `sdk/core/registry.py`
 - `sdk/sensors/base.py`
-- `sensors/base_sensor.py`
+- `sensors/common/base_sensor.py`
 - `sensors/ft_sensor.py`
 - `sensors/motors_sensor.py`
-- `sensors/serial_base.py`
+- `sensors/common/serial_base.py`
 
 ### 6.3 重力补偿
 
@@ -371,6 +398,7 @@ session_xxx/
     motors/
     microphone/
     camera/
+    gelsight/
   aligned/
   trajectory/
   exports/
@@ -410,7 +438,7 @@ session_xxx/
 - 默认视觉数据来自 RealSense
 - 理想的 `rgbd_inertial` 惯性来源应为 D435i 板载 IMU
 - 当前 `rgbd_inertial` 的惯性来源仍是独立 IMU
-- 普通 camera 是独立录制模态，可与 RealSense 同时存在，但当前没有作为 ORB-SLAM3 默认输入链路
+- 普通 camera 与 GelSight 都是独立录制模态，可与 RealSense 同时存在，但当前没有作为 ORB-SLAM3 默认输入链路
 
 对应代码与文档：
 
@@ -505,9 +533,9 @@ session_xxx/
 
 - `scripts/sdk_record.py` 默认读取 `configs/record.yaml`
 - `scripts/sdk_record.py` 能生成规范 session
-- `scripts/sdk_record.py` 能在统一入口下按配置启用 FT / IMU / RealSense / Motors / Microphone / Camera
+- `scripts/sdk_record.py` 能在统一入口下按配置启用 FT / IMU / RealSense / Motors / Microphone / Camera / GelSight
 - `scripts/sdk_record.py --sensor-source fake` 能在无真机条件下生成多模态 session
-- 新增的 Motors / Microphone / Camera 已进入 SDK 主录制入口
+- 新增的 Motors / Microphone / Camera / GelSight 已进入 SDK 主录制入口
 - `scripts/sdk_discover_ports.py` 能在首次安装时为 FT / IMU / Motors 自动写回串口配置
 - 需要校准的传感器会先完成 ready / 零点校准，再进入正式录制
 - `scripts/sdk_inspect.py` 能读取 session 摘要
@@ -533,4 +561,4 @@ session_xxx/
 
 ## 14. 一句话判断
 
-**当前项目已经是一套可运行的统一多模态采集 SDK，FT / 独立 IMU / RealSense / Motors / Microphone / Camera 都已进入录制体系；采集默认由 `configs/record.yaml` 驱动，首次安装可选自动发现串口，录制结束后还能按配置决定是否自动解算轨迹。**
+**当前项目已经是一套可运行的统一多模态采集 SDK，FT / 独立 IMU / RealSense / Motors / Microphone / Camera / GelSight 都已进入录制体系；采集默认由 `configs/record.yaml` 驱动，首次安装可选自动发现串口，录制结束后还能按配置决定是否自动解算轨迹。**

@@ -54,6 +54,14 @@ class FakeCameraConfig:
     fps: int = 30
 
 
+@dataclass(frozen=True)
+class FakeGelSightConfig:
+    name: str = "gelsight"
+    width: int = 640
+    height: int = 480
+    fps: int = 30
+
+
 class _BaseFakeAdapter(SensorAdapter):
     def __init__(
         self,
@@ -454,5 +462,54 @@ class FakeCameraAdapter(_BaseFakeAdapter):
             "width": self.config.width,
             "height": self.config.height,
             "fps": self.config.fps,
+            "source": "fake",
+        }
+
+
+class FakeGelSightAdapter(_BaseFakeAdapter):
+    def __init__(self, config: FakeGelSightConfig, clock: SystemClock | None = None) -> None:
+        super().__init__(
+            config.name,
+            "fake_gelsight_sensor",
+            "visuotactile",
+            sample_rate_hz=float(config.fps),
+            clock=clock,
+        )
+        self.config = config
+        self._grid_x, self._grid_y = np.meshgrid(
+            np.arange(self.config.width, dtype=np.uint16),
+            np.arange(self.config.height, dtype=np.uint16),
+        )
+
+    def _build_frame(self, *, frame_time: object, phase: float) -> SensorFrame:
+        shift = int((phase * 25.0) % 255)
+        image = np.zeros((self.config.height, self.config.width, 3), dtype=np.uint8)
+        image[..., 0] = ((self._grid_x // 2 + shift) % 255).astype(np.uint8)
+        image[..., 1] = ((self._grid_y // 2 + shift * 2) % 255).astype(np.uint8)
+        image[..., 2] = np.uint8((120 + shift) % 255)
+        return SensorFrame(
+            sensor_name=self.name,
+            sensor_type=self.sensor_type,
+            modality=self.modality,
+            frame_id=self._frame_id,
+            time=frame_time,
+            payload={"image": image},
+            metadata={
+                "width": self.config.width,
+                "height": self.config.height,
+                "fps": self.config.fps,
+                "sensor_family": "gelsight_mini",
+                "source": "fake",
+            },
+        )
+
+    def get_metadata(self) -> dict[str, object]:
+        return {
+            "sensor_type": self.sensor_type,
+            "modality": self.modality,
+            "width": self.config.width,
+            "height": self.config.height,
+            "fps": self.config.fps,
+            "sensor_family": "gelsight_mini",
             "source": "fake",
         }

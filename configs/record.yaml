@@ -11,10 +11,11 @@ max_frame_age: 0.2
 
 enable_ft: true
 enable_imu: true
-enable_realsense: true
-enable_motors: false
-enable_microphone: false
-enable_camera: false
+enable_realsense: false
+enable_motors: true
+enable_microphone: true
+enable_camera: true
+enable_gelsight: false
 enable_trajectory: false
 
 ft:
@@ -54,6 +55,14 @@ microphone:
 camera:
   # Independent RGB camera, unrelated to the RealSense device.
   name: camera
+  device_index: 0
+  width: 640
+  height: 480
+  fps: 30
+
+gelsight:
+  # GelSight Mini is treated as an independent visuotactile modality.
+  name: gelsight
   device_index: 0
   width: 640
   height: 480

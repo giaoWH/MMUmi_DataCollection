@@ -1,8 +1,10 @@
+import abc
 import multiprocessing as mp
 import queue
-import serial
 import time
-import abc
+
+import serial
+
 from .base_sensor import BaseSensor
 
 
@@ -10,6 +12,7 @@ class SerialBaseSensor(BaseSensor):
     """
     串口传感器基类，封装了 buffer 管理和基础读取逻辑。
     """
+
     def __init__(self, name, port, baudrate, data_length):
         super().__init__(name)
         self.port = port
@@ -17,7 +20,7 @@ class SerialBaseSensor(BaseSensor):
         self.data_length = data_length
         self.process = None
         self._ser = None
-        self._buffer = bytearray() # 数据缓冲区
+        self._buffer = bytearray()
         self._requested_running = False
         self._run_event = mp.Event()
         self._worker_running = mp.Value("b", False)
@@ -81,9 +84,8 @@ class SerialBaseSensor(BaseSensor):
 
     def _worker(self):
         try:
-            # timeout=0 实现非阻塞读取，这对高频采集很重要
             self._ser = serial.Serial(self.port, self.baudrate, timeout=0)
-            self._on_open() # 钩子：发送启动指令等
+            self._on_open()
             self._worker_running.value = True
         except Exception as e:
             print(f"[{self.name}] 串口打开失败: {e}")
@@ -101,13 +103,9 @@ class SerialBaseSensor(BaseSensor):
                     read_end_mono_ns = time.perf_counter_ns()
                     self._buffer.extend(data_raw)
 
-                    # 3. 解析协议 (由子类实现具体逻辑)
-                    # _parse_protocol 负责从 buffer 中切分出完整帧
-                    # 并返回 (最新帧, 剩余buffer)
                     new_frame, remaining_buf = self._parse_protocol(self._buffer)
                     self._buffer = remaining_buf
 
-                    # 4. 如果解析出了新帧，记录读窗和估计采样时刻
                     if new_frame is not None:
                         capture_wall_ns = (read_start_wall_ns + read_end_wall_ns) // 2
                         capture_mono_ns = (read_start_mono_ns + read_end_mono_ns) // 2
@@ -128,8 +126,7 @@ class SerialBaseSensor(BaseSensor):
                         }
                         self._publish_latest_packet(packet)
                 else:
-                    # 极短睡眠避免死循环占用 100% CPU
-                    time.sleep(0.0001) 
+                    time.sleep(0.0001)
             except Exception as e:
                 print(f"[{self.name}] 运行时错误: {e}")
                 time.sleep(0.1)
@@ -141,7 +138,8 @@ class SerialBaseSensor(BaseSensor):
         if self._ser and self._ser.is_open:
             try:
                 self._on_close()
-            except: pass
+            except Exception:
+                pass
             self._ser.close()
         self._ser = None
 
@@ -201,10 +199,12 @@ class SerialBaseSensor(BaseSensor):
             "latest_timestamp": self._shared_latest_timestamp.value,
         }
 
-    # --- 虚函数钩子 ---
-    def _on_open(self): pass
-    def _on_close(self): pass
-    
+    def _on_open(self):
+        pass
+
+    def _on_close(self):
+        pass
+
     @abc.abstractmethod
     def _parse_protocol(self, buffer):
         """

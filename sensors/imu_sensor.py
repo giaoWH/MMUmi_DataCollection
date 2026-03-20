@@ -1,6 +1,6 @@
 import struct
 import numpy as np
-from .serial_base import SerialBaseSensor
+from .common.serial_base import SerialBaseSensor
 
 class IMUSensor(SerialBaseSensor):
     def __init__(self, port='COM4', baudrate=115200):

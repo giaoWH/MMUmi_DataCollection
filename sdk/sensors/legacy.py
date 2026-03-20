@@ -49,6 +49,15 @@ class CameraSensorConfig:
     fps: int = 30
 
 
+@dataclass(frozen=True)
+class GelSightSensorConfig:
+    name: str = "gelsight"
+    device_index: int = 0
+    width: int = 640
+    height: int = 480
+    fps: int = 30
+
+
 def _build_frame_time(
     *,
     clock: SystemClock,
@@ -400,6 +409,68 @@ class LegacyCameraAdapter(SensorAdapter):
             "height": self.config.height,
             "fps": self.config.fps,
             "device_index": self.config.device_index,
+        }
+
+    def get_status(self) -> dict[str, object]:
+        return {
+            "running": self.sensor.running,
+            "frame_count": self.sensor.frame_count,
+            "latest_timestamp": self.sensor.latest_timestamp,
+        }
+
+
+class LegacyGelSightAdapter(SensorAdapter):
+    def __init__(self, config: GelSightSensorConfig, clock: SystemClock | None = None) -> None:
+        super().__init__(config.name, "gelsight_sensor", "visuotactile")
+        from sensors.gelsight_sensor import GelSightSensor
+
+        self.config = config
+        self.clock = clock or SystemClock()
+        self.sensor = GelSightSensor(
+            name=config.name,
+            device_index=config.device_index,
+            width=config.width,
+            height=config.height,
+            fps=config.fps,
+        )
+
+    def start(self) -> None:
+        self.sensor.start()
+
+    def stop(self) -> None:
+        self.sensor.stop()
+
+    def read_frame(self) -> SensorFrame | None:
+        data, _timestamp, frame_id, time_info = self.sensor.get_data_with_time_info()
+        if data is None:
+            return None
+
+        frame_time = _build_frame_time(clock=self.clock, time_info=time_info)
+        return SensorFrame(
+            sensor_name=self.name,
+            sensor_type=self.sensor_type,
+            modality=self.modality,
+            frame_id=frame_id,
+            time=frame_time,
+            payload={"image": data},
+            metadata={
+                "width": self.config.width,
+                "height": self.config.height,
+                "fps": self.config.fps,
+                "device_index": self.config.device_index,
+                "sensor_family": "gelsight_mini",
+            },
+        )
+
+    def get_metadata(self) -> dict[str, object]:
+        return {
+            "sensor_type": self.sensor_type,
+            "modality": self.modality,
+            "width": self.config.width,
+            "height": self.config.height,
+            "fps": self.config.fps,
+            "device_index": self.config.device_index,
+            "sensor_family": "gelsight_mini",
         }
 
     def get_status(self) -> dict[str, object]:

@@ -4,7 +4,7 @@ from unittest import mock
 
 import numpy as np
 
-from sensors.serial_base import SerialBaseSensor
+from sensors.common.serial_base import SerialBaseSensor
 
 
 class _DummySerial:
@@ -45,7 +45,7 @@ class ProcessSerialSensorTest(unittest.TestCase):
     def test_serial_sensor_runs_in_process_and_publishes_latest_packet(self):
         sensor = _DummyProcessSerialSensor()
 
-        with mock.patch("sensors.serial_base.serial.Serial", _DummySerial):
+        with mock.patch("sensors.common.serial_base.serial.Serial", _DummySerial):
             sensor.start()
             try:
                 self.assertTrue(sensor.running)
@@ -85,7 +85,7 @@ class ProcessSerialSensorTest(unittest.TestCase):
 
         sensor = _DummyProcessSerialSensor()
 
-        with mock.patch("sensors.serial_base.serial.Serial", _BurstDummySerial):
+        with mock.patch("sensors.common.serial_base.serial.Serial", _BurstDummySerial):
             sensor.start()
             try:
                 deadline = time.time() + 2.0

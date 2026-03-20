@@ -1,19 +1,19 @@
 from .common.camera_base import CameraBaseSensor
 
 
-class CameraSensor(CameraBaseSensor):
+class GelSightSensor(CameraBaseSensor):
     """
-    RGB 相机传感器。
+    GelSight Mini 视触觉传感器。
 
-    输出格式:
-    shape=(height, width, 3) 的 uint8 RGB 图像
+    当前按独立 USB RGB 设备采集，但在系统内单独作为 visuotactile 模态接入，
+    以便与普通 RGB 相机区分。
     """
 
-    device_label = "相机"
+    device_label = "GelSight"
 
     def __init__(
         self,
-        name="Camera",
+        name="GelSightMini",
         device_index=0,
         width=640,
         height=480,

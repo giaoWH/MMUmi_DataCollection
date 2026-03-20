@@ -1,6 +1,5 @@
 import abc
 import threading
-import numpy as np
 
 
 class BaseSensor(abc.ABC):
@@ -8,12 +7,13 @@ class BaseSensor(abc.ABC):
     所有传感器的抽象基类。
     规定了必须有 start, stop, get_data 方法。
     """
+
     def __init__(self, name):
         self.name = name
         self.running = False
         self.thread = None
         self.lock = threading.Lock()
-        
+
         # 标准输出格式：(数据, 硬件到达时间戳, 帧计数)
         self.latest_data = None
         self.latest_timestamp = 0.0
@@ -22,7 +22,8 @@ class BaseSensor(abc.ABC):
 
     def start(self):
         """启动采集线程"""
-        if self.running: return
+        if self.running:
+            return
         self.running = True
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
@@ -42,7 +43,6 @@ class BaseSensor(abc.ABC):
         Return: (data, timestamp, frame_id)
         """
         with self.lock:
-            # 返回数据的副本，防止外部修改影响内部
             data = self.latest_data.copy() if self.latest_data is not None else None
             return data, self.latest_timestamp, self.frame_count
 

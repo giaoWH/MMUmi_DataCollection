@@ -2,7 +2,7 @@ import multiprocessing as mp
 import struct
 import time
 import numpy as np
-from .serial_base import SerialBaseSensor
+from .common.serial_base import SerialBaseSensor
 
 class FTSensor(SerialBaseSensor):
     CMD_START = bytes.fromhex("09 10 01 9A 00 01 02 02 00 CD CA")

@@ -111,7 +111,7 @@ class LegacySerialAdaptersTest(unittest.TestCase):
             SystemClock(),
         )
 
-        with mock.patch("sensors.serial_base.serial.Serial", _MappedDummySerial):
+        with mock.patch("sensors.common.serial_base.serial.Serial", _MappedDummySerial):
             adapter.start()
             try:
                 self.assertTrue(adapter.wait_until_ready(timeout=2.0))
@@ -138,7 +138,7 @@ class LegacySerialAdaptersTest(unittest.TestCase):
         _MappedDummySerial.PAYLOADS = {"IMU_PORT": [imu_stream]}
         adapter = LegacyIMUAdapter(IMUSensorConfig(port="IMU_PORT"), SystemClock())
 
-        with mock.patch("sensors.serial_base.serial.Serial", _MappedDummySerial):
+        with mock.patch("sensors.common.serial_base.serial.Serial", _MappedDummySerial):
             adapter.start()
             try:
                 frame = self._wait_for_frame(adapter)
@@ -164,7 +164,7 @@ class LegacySerialAdaptersTest(unittest.TestCase):
             SystemClock(),
         )
 
-        with mock.patch("sensors.serial_base.serial.Serial", _MappedDummySerial):
+        with mock.patch("sensors.common.serial_base.serial.Serial", _MappedDummySerial):
             adapter.start()
             try:
                 self.assertTrue(adapter.wait_until_ready(timeout=2.0))

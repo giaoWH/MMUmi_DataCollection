@@ -16,6 +16,7 @@ class SensorRegistryExtensionsTest(unittest.TestCase):
             enable_motors=True,
             enable_microphone=True,
             enable_camera=True,
+            enable_gelsight=True,
         )
         registry = build_registry(config, SystemClock())
 
@@ -36,8 +37,10 @@ class SensorRegistryExtensionsTest(unittest.TestCase):
             self.assertEqual(seen_frames["motors"].modality, "motor_state")
             self.assertEqual(seen_frames["microphone"].modality, "audio")
             self.assertEqual(seen_frames["camera"].modality, "rgb")
+            self.assertEqual(seen_frames["gelsight"].modality, "visuotactile")
             self.assertIn("audio", seen_frames["microphone"].payload)
             self.assertIn("motor_state", seen_frames["motors"].payload)
             self.assertIn("color", seen_frames["camera"].payload)
+            self.assertIn("image", seen_frames["gelsight"].payload)
         finally:
             registry.stop_all()

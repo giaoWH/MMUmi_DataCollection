@@ -2,7 +2,7 @@ import multiprocessing as mp
 import time
 import re
 import numpy as np
-from .serial_base import SerialBaseSensor
+from .common.serial_base import SerialBaseSensor
 
 
 class MotorsSensor(SerialBaseSensor):
