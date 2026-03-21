@@ -178,13 +178,28 @@ RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接�
 
 - `realsense` 负责选择录哪些流
 - `trajectory.mode` 负责选择离线 SLAM 消费哪一组已录好的流
-- `trajectory.output_mode` 默认使用 `stdout_jsonl`
+- `trajectory.output_mode` 取决于所用 wrapper；当前仓库内置的 `stereo_inertial` wrapper 推荐使用 `jsonl_file`
 
 这里还需要补充一个使用边界：
 
 - 上述 `trajectory.mode` / `trajectory.command` / `trajectory.output_mode` 当前属于 `record.yaml` 配置字段，而不是 `scripts/sdk_record.py` 的独立 CLI 参数
 - `scripts/sdk_record.py` 的 CLI 当前主要直接覆盖传感器启停、端口、分辨率、帧率等常用录制参数
 - `enable_trajectory` 可通过 CLI 开关控制，但启用后仍需要由配置文件提供 `trajectory.command`
+
+当前仓库已经内置一条本地可用的 `stereo_inertial` 接入链：
+
+- Python wrapper：`scripts/orbslam3_wrapper.py`
+- C++ 离线 runner：`ThirdParty/ORB_SLAM3/Examples/Stereo-Inertial/sdk_stereo_inertial_offline`
+- 推荐样例配置：`configs/orbslam3/stereo_inertial.example.json`
+- 推荐 settings：`ThirdParty/ORB_SLAM3/Examples/Stereo-Inertial/RealSense_D435i.yaml`
+
+这条内置链路当前的边界如下：
+
+- 第一版只实现 `stereo_inertial`
+- wrapper 从 `bundle_manifest.json` 推导 `stereo_associations.txt` 与 `imu.csv`
+- wrapper 调用本地 ORB-SLAM3 runner，并把 `SaveTrajectoryEuRoC()` 的输出转换成 SDK JSONL
+- JSONL 中的 `tracking_state` 当前固定写为 `OK`
+- `rgbd_inertial` 与 `stereo` 仍可继续通过外部命令模板接入
 
 ### 7. 多格式导出
 
@@ -213,12 +228,14 @@ UMI_DataCollection/
 ├── docs/
 │   ├── orbslam3-io-contract.md
 │   └── project-overview.md
+├── plan.md
 ├── scripts/
 │   ├── sdk_discover_ports.py
 │   ├── sdk_record.py
 │   ├── sdk_inspect.py
 │   ├── sdk_export.py
 │   ├── sdk_process_trajectory.py
+│   ├── orbslam3_wrapper.py
 │   └── sdk_validate_export.py
 ├── sdk/
 │   ├── core/

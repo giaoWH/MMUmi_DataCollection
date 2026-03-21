@@ -16,6 +16,11 @@ from sdk.exporters.csv_exporter import CSVSnapshotExporter
 from sdk.perception.orbslam3.bundle import OrbSlam3SessionBundleExporter
 from sdk.perception.orbslam3.command_runner import OrbSlam3CommandConfig, OrbSlam3CommandRunner
 from sdk.perception.orbslam3.pipeline import OrbSlam3Pipeline, OrbSlam3PipelineConfig
+from sdk.perception.orbslam3.wrapper import (
+    convert_euroc_trajectory_to_jsonl,
+    load_stereo_inertial_bundle_paths,
+    run_stereo_inertial_wrapper,
+)
 from sdk.storage.session_reader import SessionReader
 from sdk.storage.session_writer import SessionWriter
 
@@ -94,6 +99,37 @@ class SessionWriterTest(unittest.TestCase):
         )
         writer.close()
         return session.output_dir
+
+    def _create_fake_stereo_inertial_runner(self, output_root: str, *, empty_output: bool = False) -> Path:
+        script_path = Path(output_root) / "fake_stereo_inertial_runner.py"
+        trajectory_body = "" if empty_output else "\n".join(
+            [
+                "# fake euroc trajectory",
+                "1000000000 1.0 2.0 3.0 0.0 0.0 0.0 1.0",
+                "1100000000 4.0 5.0 6.0 0.1 0.2 0.3 0.9",
+            ]
+        )
+        script_path.write_text(
+            "\n".join(
+                [
+                    "#!/usr/bin/env python3",
+                    "import argparse",
+                    "from pathlib import Path",
+                    "",
+                    "parser = argparse.ArgumentParser()",
+                    "parser.add_argument('--vocab', required=True)",
+                    "parser.add_argument('--settings', required=True)",
+                    "parser.add_argument('--association', required=True)",
+                    "parser.add_argument('--imu', required=True)",
+                    "parser.add_argument('--output', required=True)",
+                    "args = parser.parse_args()",
+                    "Path(args.output).write_text(" + repr(trajectory_body) + ", encoding='utf-8')",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        script_path.chmod(0o755)
+        return script_path
 
     def test_write_sensor_frame_and_meta(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -258,6 +294,174 @@ class SessionWriterTest(unittest.TestCase):
             self.assertIn("right/000000.png", association_lines[0])
 
     @unittest.skipIf(cv2 is None, "未安装 opencv-python")
+    def test_orbslam3_wrapper_loads_stereo_bundle_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_orbslam3_session(tmp_dir)
+            bundle = OrbSlam3SessionBundleExporter().export(session_dir, mode="stereo_inertial")
+
+            bundle_paths = load_stereo_inertial_bundle_paths(bundle.manifest_path)
+
+            self.assertEqual(bundle_paths.mode, "stereo_inertial")
+            self.assertEqual(bundle_paths.association_file, bundle.association_file.resolve())
+            self.assertEqual(bundle_paths.imu_file, bundle.imu_file.resolve())
+
+    def test_orbslam3_wrapper_converts_euroc_trajectory_to_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            euroc_path = Path(tmp_dir) / "trajectory.txt"
+            output_jsonl = Path(tmp_dir) / "trajectory.jsonl"
+            settings_path = Path(tmp_dir) / "RealSense_D435i.yaml"
+            settings_path.write_text("%YAML:1.0\n", encoding="utf-8")
+            euroc_path.write_text(
+                "\n".join(
+                    [
+                        "# comment",
+                        "1000000000 1.0 2.0 3.0 0.0 0.0 0.0 1.0",
+                        "1100000000 4.0 5.0 6.0 0.1 0.2 0.3 0.9",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            rows = convert_euroc_trajectory_to_jsonl(
+                euroc_path,
+                output_jsonl,
+                settings_path=settings_path,
+            )
+
+            self.assertEqual(rows, 2)
+            payloads = [
+                json.loads(line)
+                for line in output_jsonl.read_text(encoding="utf-8").strip().splitlines()
+            ]
+            self.assertEqual(payloads[0]["timestamp"], 1.0)
+            self.assertEqual(payloads[0]["position"], [1.0, 2.0, 3.0])
+            self.assertEqual(payloads[0]["quaternion"], [1.0, 0.0, 0.0, 0.0])
+            self.assertEqual(payloads[0]["metadata"]["trajectory_format"], "euroc_final")
+            self.assertEqual(payloads[0]["metadata"]["pose_reference"], "imu_body")
+            self.assertEqual(payloads[1]["quaternion"], [0.9, 0.1, 0.2, 0.3])
+
+    @unittest.skipIf(cv2 is None, "未安装 opencv-python")
+    def test_orbslam3_wrapper_runs_fake_runner_from_bundle_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_orbslam3_session(tmp_dir)
+            bundle = OrbSlam3SessionBundleExporter().export(session_dir, mode="stereo_inertial")
+            output_jsonl = Path(tmp_dir) / "trajectory.jsonl"
+            runner_path = self._create_fake_stereo_inertial_runner(tmp_dir)
+            vocab_path = Path(tmp_dir) / "ORBvoc.txt"
+            settings_path = Path(tmp_dir) / "RealSense_D435i.yaml"
+            vocab_path.write_text("fake vocab", encoding="utf-8")
+            settings_path.write_text("%YAML:1.0\n", encoding="utf-8")
+
+            row_count = run_stereo_inertial_wrapper(
+                bundle_manifest=bundle.manifest_path,
+                output_jsonl=output_jsonl,
+                env={
+                    "ORB_SLAM3_RUNNER": str(runner_path),
+                    "ORB_SLAM3_VOCAB": str(vocab_path),
+                    "ORB_SLAM3_SETTINGS": str(settings_path),
+                },
+            )
+
+            self.assertEqual(row_count, 2)
+            payloads = [
+                json.loads(line)
+                for line in output_jsonl.read_text(encoding="utf-8").strip().splitlines()
+            ]
+            self.assertEqual(payloads[0]["position"], [1.0, 2.0, 3.0])
+            self.assertEqual(payloads[1]["quaternion"], [0.9, 0.1, 0.2, 0.3])
+
+    def test_orbslam3_wrapper_requires_settings_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            euroc_path = Path(tmp_dir) / "trajectory.jsonl"
+            manifest_path = Path(tmp_dir) / "bundle_manifest.json"
+            association_file = Path(tmp_dir) / "stereo_associations.txt"
+            imu_file = Path(tmp_dir) / "imu.csv"
+            association_file.write_text("1.0 left/000000.png 1.0 right/000000.png\n", encoding="utf-8")
+            imu_file.write_text("timestamp,sample_type,x,y,z\n1.0,accel,0,0,9.81\n", encoding="utf-8")
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "mode": "stereo_inertial",
+                        "files": {
+                            "association_file": str(association_file),
+                            "imu_file": str(imu_file),
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            vocab_path = Path(tmp_dir) / "ORBvoc.txt"
+            vocab_path.write_text("fake vocab", encoding="utf-8")
+
+            with self.assertRaisesRegex(FileNotFoundError, "ORB_SLAM3_SETTINGS"):
+                run_stereo_inertial_wrapper(
+                    bundle_manifest=manifest_path,
+                    output_jsonl=euroc_path,
+                    env={"ORB_SLAM3_VOCAB": str(vocab_path)},
+                )
+
+    def test_orbslam3_wrapper_requires_runner_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            euroc_path = Path(tmp_dir) / "trajectory.jsonl"
+            association_file = Path(tmp_dir) / "stereo_associations.txt"
+            imu_file = Path(tmp_dir) / "imu.csv"
+            manifest_path = Path(tmp_dir) / "bundle_manifest.json"
+            association_file.write_text("1.0 left/000000.png 1.0 right/000000.png\n", encoding="utf-8")
+            imu_file.write_text("timestamp,sample_type,x,y,z\n1.0,gyro,0,0,0\n1.0,accel,0,0,9.81\n", encoding="utf-8")
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "mode": "stereo_inertial",
+                        "files": {
+                            "association_file": str(association_file),
+                            "imu_file": str(imu_file),
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            vocab_path = Path(tmp_dir) / "ORBvoc.txt"
+            settings_path = Path(tmp_dir) / "RealSense_D435i.yaml"
+            vocab_path.write_text("fake vocab", encoding="utf-8")
+            settings_path.write_text("%YAML:1.0\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(FileNotFoundError, "runner"):
+                run_stereo_inertial_wrapper(
+                    bundle_manifest=manifest_path,
+                    output_jsonl=euroc_path,
+                    env={
+                        "ORB_SLAM3_RUNNER": str(Path(tmp_dir) / "missing_runner"),
+                        "ORB_SLAM3_VOCAB": str(vocab_path),
+                        "ORB_SLAM3_SETTINGS": str(settings_path),
+                    },
+                )
+
+    @unittest.skipIf(cv2 is None, "未安装 opencv-python")
+    def test_orbslam3_wrapper_rejects_empty_trajectory_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_orbslam3_session(tmp_dir)
+            bundle = OrbSlam3SessionBundleExporter().export(session_dir, mode="stereo_inertial")
+            output_jsonl = Path(tmp_dir) / "trajectory.jsonl"
+            runner_path = self._create_fake_stereo_inertial_runner(tmp_dir, empty_output=True)
+            vocab_path = Path(tmp_dir) / "ORBvoc.txt"
+            settings_path = Path(tmp_dir) / "RealSense_D435i.yaml"
+            vocab_path.write_text("fake vocab", encoding="utf-8")
+            settings_path.write_text("%YAML:1.0\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "未生成有效轨迹"):
+                run_stereo_inertial_wrapper(
+                    bundle_manifest=bundle.manifest_path,
+                    output_jsonl=output_jsonl,
+                    env={
+                        "ORB_SLAM3_RUNNER": str(runner_path),
+                        "ORB_SLAM3_VOCAB": str(vocab_path),
+                        "ORB_SLAM3_SETTINGS": str(settings_path),
+                    },
+                )
+
+    @unittest.skipIf(cv2 is None, "未安装 opencv-python")
     def test_orbslam3_pipeline_consumes_bundle_template_vars(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             session_dir = self._create_orbslam3_session(tmp_dir)
@@ -395,6 +599,73 @@ class SessionWriterTest(unittest.TestCase):
 
             manifest_payload = json.loads((Path(session_dir) / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest_payload["notes"]["trajectory_source"], "orbslam3_config")
+            self.assertEqual(manifest_payload["notes"]["orbslam3_bundle"], str(bundle_dir))
+
+    @unittest.skipIf(cv2 is None, "未安装 opencv-python")
+    def test_sdk_process_trajectory_cli_supports_stereo_inertial_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_orbslam3_session(tmp_dir)
+            bundle_dir = Path(tmp_dir) / "orb_bundle_stereo_wrapper"
+            config_path = Path(tmp_dir) / "orbslam3_stereo_wrapper.json"
+            runner_path = self._create_fake_stereo_inertial_runner(tmp_dir)
+            vocab_path = Path(tmp_dir) / "ORBvoc.txt"
+            settings_path = Path(tmp_dir) / "RealSense_D435i.yaml"
+            vocab_path.write_text("fake vocab", encoding="utf-8")
+            settings_path.write_text("%YAML:1.0\n", encoding="utf-8")
+
+            wrapper_path = Path(__file__).resolve().parents[1] / "scripts" / "orbslam3_wrapper.py"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "command": (
+                            f"{shlex.quote(sys.executable)} "
+                            f"{shlex.quote(str(wrapper_path))} "
+                            "--mode stereo_inertial "
+                            "--bundle-manifest {bundle_manifest} "
+                            "--output {output_jsonl}"
+                        ),
+                        "mode": "stereo_inertial",
+                        "output_mode": "jsonl_file",
+                        "source_name": "orbslam3_stereo_wrapper",
+                        "bundle_dir": str(bundle_dir),
+                        "env": {
+                            "ORB_SLAM3_RUNNER": str(runner_path),
+                            "ORB_SLAM3_VOCAB": str(vocab_path),
+                            "ORB_SLAM3_SETTINGS": str(settings_path),
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            result = __import__("subprocess").run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve().parents[1] / "scripts" / "sdk_process_trajectory.py"),
+                    str(session_dir),
+                    "--config",
+                    str(config_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=str(Path(__file__).resolve().parents[1]),
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+            reader = SessionReader(session_dir)
+            trajectory_frames = list(reader.iter_trajectory_frames())
+            self.assertEqual(len(trajectory_frames), 2)
+            self.assertEqual(trajectory_frames[0].source, "orbslam3_stereo_wrapper")
+            self.assertEqual(trajectory_frames[0].position, [1.0, 2.0, 3.0])
+            self.assertEqual(trajectory_frames[0].metadata["trajectory_format"], "euroc_final")
+
+            manifest_payload = json.loads((Path(session_dir) / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest_payload["notes"]["orbslam3_mode"], "stereo_inertial")
+            self.assertEqual(manifest_payload["notes"]["trajectory_source"], "orbslam3_stereo_wrapper")
             self.assertEqual(manifest_payload["notes"]["orbslam3_bundle"], str(bundle_dir))
 
     @unittest.skipIf(cv2 is None, "未安装 opencv-python")

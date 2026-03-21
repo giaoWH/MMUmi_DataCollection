@@ -168,8 +168,9 @@ UMI_DataCollection/
 │   ├── sdk_discover_ports.py
 │   ├── sdk_record.py
 │   ├── sdk_inspect.py
-│   ├── sdk_export.py
 │   ├── sdk_process_trajectory.py
+│   ├── orbslam3_wrapper.py
+│   ├── sdk_export.py
 │   └── sdk_validate_export.py
 ├── sdk/
 │   ├── core/
@@ -272,6 +273,7 @@ UMI_DataCollection/
 
 - bundle 导出
 - 命令执行
+- wrapper 编排与 EuRoC 轨迹格式转换
 - 轨迹写回
 - session 级轨迹后处理复用
 
@@ -348,7 +350,8 @@ UMI_DataCollection/
 当前边界：
 
 - `aligned_depth_to_color` 与 `pointcloud` 属于可选派生结果，不是必须启用
-- ORB-SLAM3 真正的二进制程序与 settings 文件仍由外部 wrapper / 第三方目录负责
+- 当前 `stereo_inertial` 已接入仓库内置 wrapper 与本地 C++ runner
+- `rgbd_inertial` / `stereo` 仍主要保留为外部命令模板接入路径
 
 对应代码：
 
@@ -500,6 +503,7 @@ python scripts/sdk_record.py
 - `sdk_record.py` 的 CLI 当前主要直接覆盖传感器启停、端口、分辨率、帧率等常用录制参数
 - 轨迹已经被纳入同一份录制配置里，但它是“录制结束后才执行的后处理模态”，不是录制期间实时采集的原始流
 - 启用 `enable_trajectory` 后，仍需要由配置文件提供 `trajectory.command`
+- 当前仓库内置的 `stereo_inertial` wrapper 推荐配合 `trajectory.output_mode=jsonl_file` 使用
 
 ### 7.2 ready / 校准等待
 
@@ -588,18 +592,25 @@ session_xxx/
 - 外部命令调用
 - JSONL 轨迹写回
 - `rgbd_inertial` / `stereo` / `stereo_inertial` 模式支持
+- 本地 `stereo_inertial` wrapper 与 ORB-SLAM3 C++ 离线 runner 接入
 
 当前边界：
 
 - 默认视觉数据来自 RealSense
 - `rgbd_inertial` 与 `stereo_inertial` 当前都使用 RealSense 板载 IMU
 - 普通 camera 与 GelSight 都是独立录制模态，可与 RealSense 同时存在，但当前不作为 ORB-SLAM3 默认输入链路
+- 当前仓库内置 wrapper 第一版仅覆盖 `stereo_inertial`
+- `rgbd_inertial` / `stereo` 仍保留为外部命令模板接入路径
 
 对应代码与文档：
 
 - `sdk/perception/orbslam3/bundle.py`
 - `sdk/perception/orbslam3/command_runner.py`
+- `sdk/perception/orbslam3/wrapper.py`
 - `sdk/perception/orbslam3/pipeline.py`
+- `scripts/orbslam3_wrapper.py`
+- `configs/orbslam3/stereo_inertial.example.json`
+- `ThirdParty/ORB_SLAM3/Examples/Stereo-Inertial/sdk_stereo_inertial_offline.cc`
 - `docs/orbslam3-io-contract.md`
 
 ---
