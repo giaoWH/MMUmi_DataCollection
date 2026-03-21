@@ -20,7 +20,7 @@ class OrbSlam3CommandConfig:
     source_name: str = "orbslam3"
     working_dir: str | None = None
     env: dict[str, str] | None = None
-    output_mode: str = "jsonl_file"
+    output_mode: str = "stdout_jsonl"
     template_vars: dict[str, str] | None = None
 
 

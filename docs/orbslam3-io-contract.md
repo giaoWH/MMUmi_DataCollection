@@ -22,7 +22,7 @@
 - `stereo`
 - `stereo_inertial`
 
-当前 ORB-SLAM3 软件链默认以 RealSense RGB-D 作为输入来源，因此当前推荐优先使用：
+当前 ORB-SLAM3 软件链默认以 RealSense 作为输入来源，因此当前推荐优先使用：
 
 - `rgbd_inertial`
 - `stereo`
