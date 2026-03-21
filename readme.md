@@ -1,11 +1,11 @@
 UMI Data Collection SDK
 
-这是一个面向多模态机器人数据采集的统一 SDK。项目当前已经从早期的单脚本、单设备调试方式，收口到一套可持续扩展的软件系统，用于：
+这是一个面向多模态机器人数据采集的统一 SDK。项目当前已经从早期的单脚本、单设备调试方式，收口到一套配置驱动的软件系统，用于：
 
 1. 统一接入多种真实传感器与 fake 数据源
 2. 在统一时间轴下记录多模态原始数据
 3. 将原始流、对齐结果、轨迹结果写入标准 session
-4. 为 ORB-SLAM3 提供 RGB-D / RGB-D-Inertial 输入
+4. 为 ORB-SLAM3 提供 RGB-D-Inertial / Stereo / Stereo-Inertial 输入
 5. 将 session 导出为常见机器人与具身智能数据格式
 
 当前系统已经具备完整的软件闭环：
@@ -14,7 +14,7 @@ UMI Data Collection SDK
 record -> inspect -> process_trajectory -> export -> validate
 ```
 
-当前推荐使用方式也已经从“长串 CLI 参数”转成“以配置文件为主”：
+当前推荐使用方式已经切换到“配置文件优先”：
 
 1. 编辑 `configs/record.yaml`
 2. 首次安装时按需运行 `python scripts/sdk_discover_ports.py`
@@ -27,7 +27,7 @@ record -> inspect -> process_trajectory -> export -> validate
 
 - 六维力传感器 FT
 - 独立串口 IMU
-- RealSense RGB-D
+- RealSense D435i 多流数据
 - 电机状态
 - 麦克风
 - 通用 RGB 相机
@@ -35,24 +35,25 @@ record -> inspect -> process_trajectory -> export -> validate
 
 其中视觉链路需要明确区分：
 
-- `realsense` 指 D435i 这类 RGB-D 设备
+- `realsense` 指 D435i 这类 RGB-D / 双红外 / 板载 IMU 设备
 - `camera` 指独立的普通 RGB 相机
 - `gelsight` 指 GelSight Mini 这类视触觉传感器
 - `camera` 与 `gelsight` 虽然底层都可以表现为 RGB 相机，但在 SDK 中被视作不同模态
 - 三者是并列的独立模态，可以同时启用并同步录制
 
-其中有一个很重要的边界需要明确：
+当前 RealSense 这条链路的状态是：
 
-- 项目里的“独立串口 IMU”当前主要用于 FT 重力补偿
-- RealSense D435i 自带的板载 IMU 未来应当主要服务于 SLAM
-- 当前项目还没有把 D435i 板载 IMU 单独接入 SDK
-- 因此当前 `rgbd_inertial` 软件链路里的惯性数据来源，仍然是项目中的独立 IMU，而不是 D435i 板载 IMU
+- `realsense` 仍然作为一个设备接入 SDK
+- 设备内部可以按需录制 `color`、`depth`、`ir1`、`ir2`、`imu_samples`
+- 可选派生结果包括 `aligned_depth_to_color` 与 `pointcloud`
+- RealSense 板载 IMU 现在已经进入 session，并作为 ORB-SLAM3 惯性输入来源
+- 项目里的“独立串口 IMU”仍然保留，当前主要用于 FT 重力补偿
 
 换句话说：
 
 - `FT + 独立 IMU`：当前已经打通，用于重力补偿
-- `D435i RGB + Depth`：当前已经打通，用于视觉主路径
-- `D435i 板载 IMU`：当前还未接入
+- `D435i color/depth/ir/board IMU`：当前已经可以按配置录制
+- `aligned_depth_to_color` / `pointcloud`：当前可以按配置派生并落盘
 
 ## 当前架构结论
 
@@ -67,8 +68,7 @@ record -> inspect -> process_trajectory -> export -> validate
 - `tests/`
   - 关键能力回归测试
 
-RealSense RGB-D、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接入链路，可以同时接入并同步录制。
-当前 ORB-SLAM3 默认使用 RealSense 作为 RGB-D 输入；普通 RGB 相机和 GelSight 当前仍主要作为独立录制模态，而不是 ORB-SLAM3 默认输入主链。
+RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接入链路，可以同时接入并同步录制。当前 ORB-SLAM3 默认使用 RealSense 作为输入来源；普通 RGB 相机和 GelSight 当前仍主要作为独立录制模态，而不是 ORB-SLAM3 默认输入主链。
 
 ## 当前已经具备的能力
 
@@ -82,6 +82,7 @@ RealSense RGB-D、普通 RGB 相机和 GelSight 是三条独立的视觉/视触�
 - 新增模态时尽量只新增 adapter，不修改核心主循环
 - 串口类传感器（FT / IMU / Motors）使用多进程采集，降低纯 Python 解析与主进程之间的 GIL 竞争
 - 基于 USB / UVC 的图像类设备通过统一 `camera_base` 复用采集逻辑，便于继续扩展 GelSight 或其他相机形态设备
+- RealSense 底层 bring-up 工具位于 `sensors/realsense/realsense_communication.py`
 
 ### 2. 多模态时间对齐
 
@@ -105,8 +106,6 @@ RealSense RGB-D、普通 RGB 相机和 GelSight 是三条独立的视觉/视触�
 - 采集侧显式区分 `host_capture_time`、`host_arrival_time`、`host_read_start/end`
 - 对齐器优先基于单调纳秒时间计算帧龄与最近帧
 
-这意味着当前 SDK 已经不再只是“记录一个 host_time 浮点秒”，而是会把采集时序本身写入 session。
-
 ### 3. 校准与 ready 等待
 
 当前已经接入“正式录制前等待设备 ready”的机制：
@@ -117,12 +116,6 @@ RealSense RGB-D、普通 RGB 相机和 GelSight 是三条独立的视觉/视触�
 - FT 会先进行零点校准
 - Motors 会先进行零点校准
 
-这样可以避免：
-
-- FT 在静止基线阶段就开始写正式数据
-- Motors 在零点漂移阶段污染正式录制
-- 多个传感器在不同起点进入采集主循环
-
 ### 4. FT 重力补偿
 
 当前 FT 处理链已经支持：
@@ -131,20 +124,31 @@ RealSense RGB-D、普通 RGB 相机和 GelSight 是三条独立的视觉/视触�
 - 静态校准
 - 重力补偿
 
-这里依赖的是“独立串口 IMU”的姿态输入，而不是 D435i 板载 IMU。
+这里依赖的仍然是“独立串口 IMU”的姿态输入，而不是 D435i 板载 IMU。
 
-### 4.1 当前时间戳实现状态
+### 5. RealSense 多流录制
 
-当前软件侧已经完成的时间戳改造包括：
+当前 RealSense 适配已经支持以下原始流：
 
-- `FrameTime` 纳秒级字段落地
-- `SessionWriter / SessionReader` 保存并读取纳秒级时间信息
-- HDF5 / rosbag2 导出保留纳秒级时间字段
-- 串口类传感器记录 `capture / arrival / read window`
+- `color`
+- `depth`
+- `ir1`
+- `ir2`
+- `imu_samples`
 
-因此，当前系统已经具备更适合多模态精细对齐的时间基础设施。
+并支持以下按需派生结果：
 
-### 5. ORB-SLAM3 软件接入
+- `aligned_depth_to_color`
+- `pointcloud`
+
+`configs/record.yaml` 中的 `realsense` 配置已经支持：
+
+- `enable_color / enable_depth / enable_ir1 / enable_ir2 / enable_imu`
+- `color / depth / infrared` 三组独立分辨率与帧率
+- `imu.accel_fps / imu.gyro_fps / imu.max_samples_per_frame`
+- `derived.enable_aligned_depth_to_color / enable_pointcloud / pointcloud_colored`
+
+### 6. ORB-SLAM3 软件接入
 
 当前已经完成的软件侧能力：
 
@@ -153,17 +157,25 @@ RealSense RGB-D、普通 RGB 相机和 GelSight 是三条独立的视觉/视触�
 - 接收 JSONL 轨迹结果
 - 将轨迹写回 session
 
-当前推荐模式：
+当前支持的模式：
 
-- `rgbd`
 - `rgbd_inertial`
+- `stereo`
+- `stereo_inertial`
 
-但需要再次强调：
+其中：
 
-- 当前 `rgbd_inertial` 里的惯性来源仍是独立 IMU
-- 还不是“D435i 原生 RGB-D + 板载 IMU”组合
+- `rgbd_inertial` 使用 `color + depth/aligned_depth_to_color + imu_samples`
+- `stereo` 使用 `ir1 + ir2`
+- `stereo_inertial` 使用 `ir1 + ir2 + imu_samples`
 
-### 6. 多格式导出
+当前 `trajectory` 配置的职责边界也已经明确：
+
+- `realsense` 负责选择录哪些流
+- `trajectory.mode` 负责选择离线 SLAM 消费哪一组已录好的流
+- `trajectory.output_mode` 默认使用 `stdout_jsonl`
+
+### 7. 多格式导出
 
 当前已具备：
 
@@ -188,7 +200,6 @@ UMI_DataCollection/
 ├── docs/
 │   ├── orbslam3-io-contract.md
 │   └── project-overview.md
-├── plan.md
 ├── scripts/
 │   ├── sdk_discover_ports.py
 │   ├── sdk_record.py
@@ -208,6 +219,9 @@ UMI_DataCollection/
 │   │   ├── base_sensor.py
 │   │   ├── serial_base.py
 │   │   └── camera_base.py
+│   ├── realsense/
+│   │   └── realsense_communication.py
+│   ├── realsense_sensor.py
 │   ├── ft_sensor.py
 │   ├── imu_sensor.py
 │   ├── motors_sensor.py
@@ -252,275 +266,17 @@ pip install numpy pyyaml
 
 按需安装的依赖：
 
-- RealSense 采集：`pip install pyrealsense2`
+- RealSense 采集：安装 Intel RealSense SDK / `librealsense`，并在 Python 环境里提供 `pyrealsense2`
 - 图像处理：`pip install opencv-python`
 - 麦克风：需要 `pyaudio`
 - HDF5 导出：`pip install h5py`
 - LeRobot 导出：`pip install pyarrow`
 - ROS Bag 2 导出：需要真实 ROS 2 环境
 
-## 快速开始
-
-### 1. 推荐：先编辑配置文件
-
-录制入口现在会默认自动读取：
-
-- `configs/record.yaml`
-
-也就是说，通常只需要先把这个文件里的传感器开关、串口、输出目录和时长改好，然后直接运行：
+RealSense 真机 bring-up 可直接运行：
 
 ```bash
-python scripts/sdk_record.py
+python sensors/realsense/realsense_communication.py
 ```
 
-如果你想使用另一份配置文件，也可以显式指定：
-
-```bash
-python scripts/sdk_record.py --config configs/record.yaml
-```
-
-CLI 参数仍然保留，但更适合只做少量临时覆盖。
-
-如果你希望把 ORB-SLAM3 轨迹也作为一种可选模态纳入录制配置，可以在 `record.yaml` 中设置：
-
-- `enable_trajectory: true`
-- `trajectory.command`
-
-这样 `python scripts/sdk_record.py` 会在采集结束后自动执行轨迹解算并把结果写回当前 session；如果 `enable_trajectory: false`，则只录制原始数据，不会自动解算轨迹。
-
-一个最小配置思路如下：
-
-- `enable_ft / enable_imu / enable_realsense` 控制默认主链路
-- `enable_camera` 控制独立普通 RGB 相机
-- `enable_gelsight` 控制独立视触觉模态 GelSight
-- `enable_motors / enable_microphone` 控制可选扩展模态
-- `enable_trajectory` 控制录制结束后是否自动执行 ORB-SLAM3
-
-### 2. 首次安装时可选：自动发现串口
-
-如果你第一次装设备，不想手动去试 `FT / IMU / Motors` 的串口号，可以运行：
-
-```bash
-python scripts/sdk_discover_ports.py
-```
-
-这个脚本会：
-
-- 读取 `configs/record.yaml`
-- 按 `record.yaml` 里已启用的串口传感器顺序引导你逐个插上设备
-- 检测新出现的串口
-- 把识别出的 `port` 自动写回 `record.yaml`
-
-说明：
-
-- 这是首次安装或重新接线时的可选工具，不是每次采集前都要运行
-- 当前只会自动发现串口类传感器：`FT`、`IMU`、`Motors`
-- `RealSense`、`Microphone`、`Camera`、`GelSight` 不走这个串口发现流程
-- 写回前会自动生成一个 `record.yaml.bak` 备份
-
-### 3. 最短 fake 闭环
-
-先跑默认 fake 录制：
-
-```bash
-python scripts/sdk_record.py --sensor-source fake --duration 2
-```
-
-这会生成包含：
-
-- FT
-- IMU
-- RealSense
-
-的 fake session。
-
-如果你要连独立普通 RGB 相机链路也一起验证，可以额外打开 `--enable-camera`，这不会替代 RealSense，而是并行多录一个 `camera` stream。
-
-如果你想连视触觉链路一起验证，也可以再额外打开 `--enable-gelsight`，并行多录一个 `gelsight` stream。
-
-### 4. 验证新增传感器接入路径
-
-如果想连 motors / microphone / camera / gelsight 的 SDK 接入路径一起验证：
-
-```bash
-python scripts/sdk_record.py \
-  --sensor-source fake \
-  --duration 2 \
-  --enable-motors \
-  --enable-microphone \
-  --enable-camera \
-  --enable-gelsight
-```
-
-### 5. 查看 session 摘要
-
-```bash
-python scripts/sdk_inspect.py sessions/session_<YOUR_SESSION_ID>
-```
-
-### 6. 处理轨迹
-
-如果你没有在 `record.yaml` 里开启 `enable_trajectory`，也可以事后手动处理轨迹：
-
-```bash
-python scripts/sdk_process_trajectory.py sessions/session_<YOUR_SESSION_ID> \
-  --mode rgbd_inertial \
-  --command "python -c \"import json,sys; sys.stdout.write(json.dumps({'timestamp':0.0, 'position':[0,0,0], 'quaternion':[1,0,0,0]}) + '\\n')\""
-```
-
-`sdk_process_trajectory.py` 也支持直接读取 `record.yaml` 里的 `trajectory` 段：
-
-```bash
-python scripts/sdk_process_trajectory.py sessions/session_<YOUR_SESSION_ID> --config configs/record.yaml
-```
-
-### 7. 导出与校验
-
-```bash
-python scripts/sdk_export.py sessions/session_<YOUR_SESSION_ID> --format csv
-python scripts/sdk_validate_export.py sessions/session_<YOUR_SESSION_ID> --format csv
-```
-
-## 录制入口说明
-
-当前主录制入口是：
-
-```bash
-python scripts/sdk_record.py
-```
-
-当前默认会自动加载：
-
-- `configs/record.yaml`
-
-如果你希望切换到另一份配置文件：
-
-```bash
-python scripts/sdk_record.py --config path/to/record.yaml
-```
-
-首次安装时，如果你想自动写入串口配置，可以先执行：
-
-```bash
-python scripts/sdk_discover_ports.py
-```
-
-如果你只想临时覆盖少量配置，当前支持的主要开关有：
-
-- `--config`
-- `--sensor-source real`
-- `--sensor-source fake`
-- `--enable-ft`
-- `--disable-ft`
-- `--enable-imu`
-- `--disable-imu`
-- `--enable-realsense`
-- `--disable-realsense`
-- `--enable-motors`
-- `--disable-motors`
-- `--enable-microphone`
-- `--disable-microphone`
-- `--enable-camera`
-- `--disable-camera`
-- `--enable-gelsight`
-- `--disable-gelsight`
-
-当前支持的主要配置项有：
-
-- FT
-  - `--ft-port`
-- IMU
-  - `--imu-port`
-- RealSense
-  - `--realsense-width`
-  - `--realsense-height`
-  - `--realsense-fps`
-- Motors
-  - `--motors-port`
-- Microphone
-  - `--microphone-device-index`
-  - `--microphone-channels`
-  - `--microphone-rate`
-  - `--microphone-chunk`
-- Camera
-  - `--camera-device-index`
-  - `--camera-width`
-  - `--camera-height`
-  - `--camera-fps`
-- GelSight
-  - `--gelsight-device-index`
-  - `--gelsight-width`
-  - `--gelsight-height`
-  - `--gelsight-fps`
-
-但日常推荐仍然是直接编辑 `configs/record.yaml`，CLI 只做临时覆盖。
-
-真机录制最基本示例：
-
-```bash
-python scripts/sdk_record.py
-```
-
-如果要把 camera / gelsight / microphone / motors 一起打开：
-
-```bash
-# edit configs/record.yaml
-# then run
-python scripts/sdk_record.py
-```
-
-## 当前 session 结构
-
-典型 session 目录如下：
-
-```text
-session_xxx/
-  meta.json
-  manifest.json
-  streams/
-    ft/
-    imu/
-    realsense/
-    motors/
-    microphone/
-    camera/
-    gelsight/
-  aligned/
-  trajectory/
-  exports/
-  logs/
-```
-
-说明：
-
-- 实际会出现哪些 `streams/<sensor>/`，取决于本次录制启用了哪些传感器
-- 二维和三维数组 payload 会落为 `png` 或 `npy`
-- 小向量和标量会直接进入 `frames.jsonl`
-- `trajectory/` 中是否有实际轨迹内容，取决于你是否启用了 `enable_trajectory`，或者之后手动执行了 `sdk_process_trajectory.py`
-
-## 当前测试状态
-
-当前软件侧已经覆盖的测试方向包括：
-
-- 对齐逻辑
-- 重力补偿
-- session writer / reader
-- 导出一致性
-- fake 端到端闭环
-- fake 全传感器 registry 扩展测试
-- legacy `sensors` 包根入口保持最小暴露面的约束测试
-
-## 当前还没做完的事
-
-以下事项属于后续联调或增强方向，不代表 SDK 主体框架未完成：
-
-1. RealSense 真机细节联调
-2. D435i 板载 IMU 接入
-3. 用 D435i 板载 IMU 替换当前 SLAM 惯性输入
-4. 真实 ORB-SLAM3 程序联调
-5. ROS 2 环境下 rosbag2 真导出验证
-6. 新增模态的真实硬件长期稳定性验证
-
-## 一句话总结
-
-当前项目已经是一套可运行的统一多模态采集 SDK。FT / 独立 IMU / RealSense / Motors / Microphone / Camera / GelSight 都已进入录制体系，当前推荐通过 `configs/record.yaml` 驱动采集，并可在首次安装时用 `sdk_discover_ports.py` 自动写入串口，在录制结束后按配置决定是否自动解算 ORB-SLAM3 轨迹。
+若后续需要接真实 ORB-SLAM3，可将其手动放入 `ThirdParty/` 并通过 `trajectory.command` / `trajectory.env` 对接。本仓库当前不会强依赖该第三方目录存在。

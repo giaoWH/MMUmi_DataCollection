@@ -27,13 +27,35 @@ imu:
   baudrate: 115200
 realsense:
   name: realsense
+  serial_number: null
+  enable_color: true
+  enable_depth: true
+  enable_ir1: false
+  enable_ir2: false
+  enable_imu: false
   width: 640
   height: 480
   fps: 30
-  enable_depth: true
-  enable_color: true
-  serial_number: null
-  align_to_color: true
+  color:
+    width: 640
+    height: 480
+    fps: 30
+  depth:
+    width: 640
+    height: 480
+    fps: 30
+  infrared:
+    width: 640
+    height: 480
+    fps: 30
+  imu:
+    accel_fps: 250
+    gyro_fps: 200
+    max_samples_per_frame: 512
+  derived:
+    enable_aligned_depth_to_color: false
+    enable_pointcloud: false
+    pointcloud_colored: true
 motors:
   name: motors
   port: /dev/ttyACM1
@@ -73,6 +95,5 @@ trajectory:
   mode: rgbd_inertial
   output_mode: stdout_jsonl
   source_name: orbslam3
-  working_dir: null
   bundle_dir: null
   env: {}

@@ -18,14 +18,15 @@
 
 当前 SDK 软件侧已支持：
 
-- `rgbd`
 - `rgbd_inertial`
-- `mono_inertial`
+- `stereo`
+- `stereo_inertial`
 
 当前 ORB-SLAM3 软件链默认以 RealSense RGB-D 作为输入来源，因此当前推荐优先使用：
 
-- `rgbd`
 - `rgbd_inertial`
+- `stereo`
+- `stereo_inertial`
 
 ---
 
@@ -33,7 +34,7 @@
 
 `scripts/sdk_process_trajectory.py` 会先把 session 导出为 ORB-SLAM3 可消费的 bundle。
 
-典型目录结构如下：
+`rgbd_inertial` 典型目录结构如下：
 
 ```text
 orbslam3_rgbd_inertial/
@@ -58,6 +59,30 @@ orbslam3_rgbd_inertial/
 - `imu.csv`：IMU 时间序列
 - `bundle_manifest.json`：bundle 摘要
 
+`stereo` / `stereo_inertial` 典型目录结构如下：
+
+```text
+orbslam3_stereo_inertial/
+  bundle_manifest.json
+  left/
+    000000.png
+    000001.png
+  right/
+    000000.png
+    000001.png
+  stereo_associations.txt
+  left_timestamps.txt
+  right_timestamps.txt
+  imu.csv
+```
+
+其中：
+
+- `left/`：左目图像，当前来自 `ir1`
+- `right/`：右目图像，当前来自 `ir2`
+- `stereo_associations.txt`：左右目对齐表
+- `imu.csv`：仅在 inertial 模式下存在
+
 ---
 
 ## 4. 命令模板变量
@@ -70,9 +95,14 @@ orbslam3_rgbd_inertial/
 - `{bundle_manifest}`
 - `{rgb_dir}`
 - `{depth_dir}`
+- `{left_dir}`
+- `{right_dir}`
 - `{association_file}`
+- `{stereo_association_file}`
 - `{rgb_timestamps_file}`
 - `{depth_timestamps_file}`
+- `{left_timestamps_file}`
+- `{right_timestamps_file}`
 - `{imu_file}`
 
 推荐做法是让真实 ORB-SLAM3 wrapper 脚本只依赖这些变量，而不是自己再反查 session 内部结构。
@@ -122,6 +152,17 @@ ORB-SLAM3 外部程序或 wrapper 脚本最终必须输出 JSONL。
   - 顺序为 `[qw, qx, qy, qz]`
 
 当前 `sdk/perception/orbslam3/command_runner.py` 已对上述字段做基本校验。
+
+当前 `imu.csv` 的表头为：
+
+```text
+timestamp,sample_type,x,y,z
+```
+
+其中：
+
+- `sample_type` 取值为 `accel` 或 `gyro`
+- IMU 数据当前来自 RealSense payload 中的 `imu_samples`
 
 ---
 
@@ -181,6 +222,6 @@ ORB-SLAM3 外部程序或 wrapper 脚本最终必须输出 JSONL。
 
 以下内容仍依赖后续外部联调：
 
-- 双目 / 双目惯性输入
 - 真机标定文件格式标准化
 - ORB-SLAM3 原始日志解析
+- `ThirdParty/ORB-SLAM3` 真正接入后的 wrapper 与 settings 联调

@@ -59,6 +59,9 @@ class SDKEndToEndTest(unittest.TestCase):
                             "source_name": "orbslam3_auto",
                             "bundle_dir": str(bundle_dir),
                         },
+                        "realsense": {
+                            "enable_imu": True,
+                        },
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -117,6 +120,9 @@ class SDKEndToEndTest(unittest.TestCase):
                             "stabilization_sec": 0.0,
                             "calibration_duration_sec": 0.2,
                             "minimum_samples": 5,
+                        },
+                        "realsense": {
+                            "enable_imu": True,
                         },
                     },
                     ensure_ascii=False,

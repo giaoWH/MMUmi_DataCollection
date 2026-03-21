@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import time
-import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -12,21 +11,153 @@ from sdk.core.frame import SensorFrame
 from .base import SensorAdapter
 
 try:
-    import pyrealsense2 as rs
-except ImportError:  # pragma: no cover
-    rs = None
+    from sensors.realsense_sensor import (
+        RealsenseConfig as LowLevelRealsenseConfig,
+        RealsenseIMUConfig as LowLevelRealsenseIMUConfig,
+        RealsenseImageStreamConfig as LowLevelRealsenseImageStreamConfig,
+        RealsensePointCloudConfig as LowLevelRealsensePointCloudConfig,
+        RealsenseSensor,
+    )
+except Exception as exc:  # pragma: no cover
+    LowLevelRealsenseConfig = None
+    LowLevelRealsenseIMUConfig = None
+    LowLevelRealsenseImageStreamConfig = None
+    LowLevelRealsensePointCloudConfig = None
+    RealsenseSensor = None
+    _REALSENSE_IMPORT_ERROR = exc
+else:  # pragma: no cover
+    _REALSENSE_IMPORT_ERROR = None
+
+
+@dataclass(frozen=True)
+class RealSenseImageConfig:
+    width: int = 640
+    height: int = 480
+    fps: int = 30
+
+
+@dataclass(frozen=True)
+class RealSenseIMUConfig:
+    accel_fps: int = 250
+    gyro_fps: int = 200
+    max_samples_per_frame: int = 512
+
+
+@dataclass(frozen=True)
+class RealSenseDerivedConfig:
+    enable_aligned_depth_to_color: bool = False
+    enable_pointcloud: bool = False
+    pointcloud_colored: bool = True
 
 
 @dataclass(frozen=True)
 class RealSenseConfig:
     name: str = "realsense"
+    serial_number: str | None = None
+    enable_color: bool = True
+    enable_depth: bool = True
+    enable_ir1: bool = False
+    enable_ir2: bool = False
+    enable_imu: bool = False
     width: int = 640
     height: int = 480
     fps: int = 30
-    enable_depth: bool = True
-    enable_color: bool = True
-    serial_number: str | None = None
-    align_to_color: bool = True
+    color: RealSenseImageConfig = field(default_factory=RealSenseImageConfig)
+    depth: RealSenseImageConfig = field(default_factory=RealSenseImageConfig)
+    infrared: RealSenseImageConfig = field(default_factory=RealSenseImageConfig)
+    imu: RealSenseIMUConfig = field(default_factory=RealSenseIMUConfig)
+    derived: RealSenseDerivedConfig = field(default_factory=RealSenseDerivedConfig)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "RealSenseConfig":
+        payload = dict(payload)
+        width = int(payload.get("width", 640))
+        height = int(payload.get("height", 480))
+        fps = int(payload.get("fps", 30))
+
+        def _image_config(key: str) -> RealSenseImageConfig:
+            section = payload.get(key, {})
+            if not isinstance(section, dict):
+                raise ValueError(f"realsense.{key} 配置必须是对象")
+            return RealSenseImageConfig(
+                width=int(section.get("width", width)),
+                height=int(section.get("height", height)),
+                fps=int(section.get("fps", fps)),
+            )
+
+        imu_section = payload.get("imu", {})
+        if not isinstance(imu_section, dict):
+            raise ValueError("realsense.imu 配置必须是对象")
+        derived_section = payload.get("derived", {})
+        if not isinstance(derived_section, dict):
+            raise ValueError("realsense.derived 配置必须是对象")
+        legacy_align_to_color = bool(payload.get("align_to_color", False))
+
+        return cls(
+            name=str(payload.get("name", "realsense")),
+            serial_number=payload.get("serial_number"),
+            enable_color=bool(payload.get("enable_color", True)),
+            enable_depth=bool(payload.get("enable_depth", True)),
+            enable_ir1=bool(payload.get("enable_ir1", False)),
+            enable_ir2=bool(payload.get("enable_ir2", False)),
+            enable_imu=bool(payload.get("enable_imu", False)),
+            width=width,
+            height=height,
+            fps=fps,
+            color=_image_config("color"),
+            depth=_image_config("depth"),
+            infrared=_image_config("infrared"),
+            imu=RealSenseIMUConfig(
+                accel_fps=int(imu_section.get("accel_fps", 250)),
+                gyro_fps=int(imu_section.get("gyro_fps", 200)),
+                max_samples_per_frame=int(imu_section.get("max_samples_per_frame", 512)),
+            ),
+            derived=RealSenseDerivedConfig(
+                enable_aligned_depth_to_color=bool(
+                    derived_section.get("enable_aligned_depth_to_color", legacy_align_to_color)
+                ),
+                enable_pointcloud=bool(derived_section.get("enable_pointcloud", False)),
+                pointcloud_colored=bool(derived_section.get("pointcloud_colored", True)),
+            ),
+        )
+
+    def to_low_level_config(self) -> LowLevelRealsenseConfig:
+        if LowLevelRealsenseConfig is None:
+            raise RuntimeError(f"无法导入底层 RealSense 传感器: {_REALSENSE_IMPORT_ERROR}")
+        return LowLevelRealsenseConfig(
+            name=self.name,
+            serial_number=self.serial_number,
+            enable_color=self.enable_color,
+            enable_depth=self.enable_depth,
+            enable_ir1=self.enable_ir1,
+            enable_ir2=self.enable_ir2,
+            enable_imu=self.enable_imu,
+            enable_aligned_depth_to_color=self.derived.enable_aligned_depth_to_color,
+            enable_pointcloud=self.derived.enable_pointcloud,
+            color=LowLevelRealsenseImageStreamConfig(
+                width=self.color.width,
+                height=self.color.height,
+                fps=self.color.fps,
+            ),
+            depth=LowLevelRealsenseImageStreamConfig(
+                width=self.depth.width,
+                height=self.depth.height,
+                fps=self.depth.fps,
+            ),
+            infrared=LowLevelRealsenseImageStreamConfig(
+                width=self.infrared.width,
+                height=self.infrared.height,
+                fps=self.infrared.fps,
+            ),
+            imu=LowLevelRealsenseIMUConfig(
+                accel_fps=self.imu.accel_fps,
+                gyro_fps=self.imu.gyro_fps,
+                max_samples_per_frame=self.imu.max_samples_per_frame,
+            ),
+            pointcloud=LowLevelRealsensePointCloudConfig(
+                colored=self.derived.pointcloud_colored,
+            ),
+        )
 
 
 class RealSenseRGBDAdapter(SensorAdapter):
@@ -38,78 +169,26 @@ class RealSenseRGBDAdapter(SensorAdapter):
         super().__init__(config.name, "realsense", "rgbd")
         self.config = config
         self.clock = clock or SystemClock()
-        self._lock = threading.Lock()
-        self._running = False
-        self._thread: threading.Thread | None = None
-        self._pipeline = None
-        self._align = None
-        self._frame_id = 0
-        self._latest_payload: dict[str, object] | None = None
-        self._latest_device_time: float | None = None
-        self._latest_time_info: dict[str, int] = {}
-        self._intrinsics: dict[str, object] = {}
-        self._depth_scale: float | None = None
+        self.sensor = RealsenseSensor(config.to_low_level_config()) if RealsenseSensor is not None else None
 
     def start(self) -> None:
-        if rs is None:
-            raise RuntimeError("未安装 pyrealsense2，无法启动 RealSense")
-        if self._running:
-            return
-
-        pipeline = rs.pipeline()
-        rs_config = rs.config()
-        if self.config.serial_number:
-            rs_config.enable_device(self.config.serial_number)
-        if self.config.enable_color:
-            rs_config.enable_stream(
-                rs.stream.color,
-                self.config.width,
-                self.config.height,
-                rs.format.bgr8,
-                self.config.fps,
-            )
-        if self.config.enable_depth:
-            rs_config.enable_stream(
-                rs.stream.depth,
-                self.config.width,
-                self.config.height,
-                rs.format.z16,
-                self.config.fps,
-            )
-
-        profile = pipeline.start(rs_config)
-        self._pipeline = pipeline
-        self._align = rs.align(rs.stream.color) if self.config.align_to_color else None
-        self._depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
-        self._intrinsics = self._extract_intrinsics(profile)
-        self._running = True
-        self._thread = threading.Thread(target=self._worker, daemon=True)
-        self._thread.start()
+        if self.sensor is None:
+            raise RuntimeError(f"无法导入底层 RealSense 传感器: {_REALSENSE_IMPORT_ERROR}")
+        self.sensor.start()
 
     def stop(self) -> None:
-        self._running = False
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=2.0)
-        if self._pipeline is not None:
-            self._pipeline.stop()
-            self._pipeline = None
+        if self.sensor is not None:
+            self.sensor.stop()
 
     def read_frame(self) -> SensorFrame | None:
-        with self._lock:
-            if self._latest_payload is None:
-                return None
-            payload: dict[str, object] = {}
-            for key, value in self._latest_payload.items():
-                if isinstance(value, np.ndarray):
-                    payload[key] = value.copy()
-                elif isinstance(value, dict):
-                    payload[key] = dict(value)
-                else:
-                    payload[key] = value
-            frame_id = self._frame_id
-            device_time = self._latest_device_time
-            time_info = dict(self._latest_time_info)
+        if self.sensor is None:
+            return None
 
+        payload, _timestamp, frame_id, time_info = self.sensor.get_data_with_time_info()
+        if payload is None:
+            return None
+
+        device_time = _select_device_time_seconds(payload.get("metadata", {}))
         frame_time = self.clock.capture_at(
             host_time_ns=time_info.get("host_capture_time_ns"),
             monotonic_time_ns=time_info.get("monotonic_capture_time_ns"),
@@ -119,119 +198,99 @@ class RealSenseRGBDAdapter(SensorAdapter):
             host_read_start_time_ns=time_info.get("host_read_start_time_ns"),
             host_read_end_time_ns=time_info.get("host_read_end_time_ns"),
         )
+        metadata = payload.get("metadata", {})
+        normalized_payload = {
+            key: _clone_value(value)
+            for key, value in payload.items()
+            if key != "metadata"
+        }
         return SensorFrame(
             sensor_name=self.name,
             sensor_type=self.sensor_type,
             modality=self.modality,
             frame_id=frame_id,
             time=frame_time,
-            payload=payload,
-            metadata={
-                "depth_scale": self._depth_scale,
-                "intrinsics": dict(self._intrinsics),
-                "stream_config": self._build_stream_config(),
-            },
+            payload=normalized_payload,
+            metadata=_clone_value(metadata),
         )
 
     def get_metadata(self) -> dict[str, object]:
+        runtime_metadata = {}
+        if self.sensor is not None:
+            runtime_metadata = _clone_value(getattr(self.sensor, "_runtime_metadata", {}))
         return {
             "sensor_type": self.sensor_type,
             "modality": self.modality,
             "name": self.config.name,
+            "serial_number": self.config.serial_number,
+            "enable_color": self.config.enable_color,
+            "enable_depth": self.config.enable_depth,
+            "enable_ir1": self.config.enable_ir1,
+            "enable_ir2": self.config.enable_ir2,
+            "enable_imu": self.config.enable_imu,
             "width": self.config.width,
             "height": self.config.height,
             "fps": self.config.fps,
-            "enable_color": self.config.enable_color,
-            "enable_depth": self.config.enable_depth,
-            "align_to_color": self.config.align_to_color,
-            "serial_number": self.config.serial_number,
-            "depth_scale": self._depth_scale,
-            "intrinsics": dict(self._intrinsics),
-            "stream_config": self._build_stream_config(),
+            "stream_config": {
+                "color": {
+                    "width": self.config.color.width,
+                    "height": self.config.color.height,
+                    "fps": self.config.color.fps,
+                },
+                "depth": {
+                    "width": self.config.depth.width,
+                    "height": self.config.depth.height,
+                    "fps": self.config.depth.fps,
+                },
+                "infrared": {
+                    "width": self.config.infrared.width,
+                    "height": self.config.infrared.height,
+                    "fps": self.config.infrared.fps,
+                },
+                "imu": {
+                    "accel_fps": self.config.imu.accel_fps,
+                    "gyro_fps": self.config.imu.gyro_fps,
+                    "max_samples_per_frame": self.config.imu.max_samples_per_frame,
+                },
+                "derived": {
+                    "enable_aligned_depth_to_color": self.config.derived.enable_aligned_depth_to_color,
+                    "enable_pointcloud": self.config.derived.enable_pointcloud,
+                    "pointcloud_colored": self.config.derived.pointcloud_colored,
+                },
+            },
+            "runtime": runtime_metadata,
         }
 
     def get_status(self) -> dict[str, object]:
+        if self.sensor is None:
+            return {"running": False, "frame_count": 0, "latest_timestamp": 0.0}
         return {
-            "running": self._running,
-            "frame_count": self._frame_id,
-            "latest_timestamp": self._latest_time_info.get("host_capture_time_ns", 0) / 1_000_000_000.0,
+            "running": self.sensor.running,
+            "frame_count": self.sensor.frame_count,
+            "latest_timestamp": self.sensor.latest_timestamp,
         }
 
-    def _worker(self) -> None:  # pragma: no cover
-        assert rs is not None
-        assert self._pipeline is not None
+    def is_ready(self) -> bool:
+        return self.sensor.is_calibrated() if self.sensor is not None else False
 
-        while self._running:
-            read_start_wall_ns = time.time_ns()
-            read_start_mono_ns = time.perf_counter_ns()
-            frames = self._pipeline.wait_for_frames(timeout_ms=1000)
-            read_end_wall_ns = time.time_ns()
-            read_end_mono_ns = time.perf_counter_ns()
-            if self._align is not None:
-                frames = self._align.process(frames)
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        return self.sensor.wait_until_calibrated(timeout=timeout) if self.sensor is not None else False
 
-            color_frame = frames.get_color_frame() if self.config.enable_color else None
-            depth_frame = frames.get_depth_frame() if self.config.enable_depth else None
-            if self.config.enable_color and not color_frame:
-                continue
-            if self.config.enable_depth and not depth_frame:
-                continue
 
-            payload: dict[str, object] = {}
-            device_time = None
-            if color_frame:
-                payload["color"] = np.asanyarray(color_frame.get_data())
-                device_time = color_frame.get_timestamp() / 1000.0
-            if depth_frame:
-                payload["depth"] = np.asanyarray(depth_frame.get_data())
-                if device_time is None:
-                    device_time = depth_frame.get_timestamp() / 1000.0
+def _clone_value(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.copy()
+    if isinstance(value, dict):
+        return {key: _clone_value(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_clone_value(item) for item in value]
+    return value
 
-            capture_wall_ns = (read_start_wall_ns + read_end_wall_ns) // 2
-            capture_mono_ns = (read_start_mono_ns + read_end_mono_ns) // 2
-            with self._lock:
-                self._frame_id += 1
-                self._latest_payload = payload
-                self._latest_device_time = device_time
-                self._latest_time_info = {
-                    "host_capture_time_ns": capture_wall_ns,
-                    "monotonic_capture_time_ns": capture_mono_ns,
-                    "host_arrival_time_ns": read_start_wall_ns,
-                    "host_read_start_time_ns": read_start_wall_ns,
-                    "host_read_end_time_ns": read_end_wall_ns,
-                }
 
-    def _extract_intrinsics(self, profile: object) -> dict[str, object]:
-        intrinsics: dict[str, object] = {}
-        if rs is None:
-            return intrinsics
-
-        streams: list[tuple[str, object]] = []
-        if self.config.enable_color:
-            streams.append(("color", profile.get_stream(rs.stream.color)))
-        if self.config.enable_depth:
-            streams.append(("depth", profile.get_stream(rs.stream.depth)))
-
-        for name, stream in streams:
-            video_profile = stream.as_video_stream_profile()
-            stream_intrinsics = video_profile.get_intrinsics()
-            intrinsics[name] = {
-                "width": stream_intrinsics.width,
-                "height": stream_intrinsics.height,
-                "fx": stream_intrinsics.fx,
-                "fy": stream_intrinsics.fy,
-                "ppx": stream_intrinsics.ppx,
-                "ppy": stream_intrinsics.ppy,
-                "coeffs": list(stream_intrinsics.coeffs),
-            }
-        return intrinsics
-
-    def _build_stream_config(self) -> dict[str, object]:
-        return {
-            "width": self.config.width,
-            "height": self.config.height,
-            "fps": self.config.fps,
-            "enable_color": self.config.enable_color,
-            "enable_depth": self.config.enable_depth,
-            "align_to_color": self.config.align_to_color,
-        }
+def _select_device_time_seconds(metadata: dict[str, Any]) -> float | None:
+    frame_info = metadata.get("frame_info", {})
+    for key in ("color", "depth", "ir1", "ir2"):
+        info = frame_info.get(key)
+        if isinstance(info, dict) and "timestamp_ms" in info:
+            return float(info["timestamp_ms"]) / 1000.0
+    return None

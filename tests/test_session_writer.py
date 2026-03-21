@@ -36,7 +36,6 @@ class SessionWriterTest(unittest.TestCase):
             output_root,
             sensors={
                 "realsense": {"sensor_type": "realsense_rgbd", "modality": "rgbd"},
-                "imu": {"sensor_type": "imu_sensor", "modality": "imu"},
             },
             config={"align_rate_hz": 30},
         )
@@ -51,6 +50,18 @@ class SessionWriterTest(unittest.TestCase):
                 payload={
                     "color": np.full((4, 6, 3), 32, dtype=np.uint8),
                     "depth": np.full((4, 6), 1200, dtype=np.uint16),
+                    "aligned_depth_to_color": np.full((4, 6), 1190, dtype=np.uint16),
+                    "ir1": np.full((4, 6), 80, dtype=np.uint8),
+                    "ir2": np.full((4, 6), 90, dtype=np.uint8),
+                    "imu_samples": [
+                        {
+                            "sample_type": "accel",
+                            "timestamp_ms": 1000.0,
+                            "x": 0.1,
+                            "y": 0.2,
+                            "z": 9.81,
+                        }
+                    ],
                 },
                 metadata={"stream": "rgbd"},
             )
@@ -65,36 +76,20 @@ class SessionWriterTest(unittest.TestCase):
                 payload={
                     "color": np.full((4, 6, 3), 64, dtype=np.uint8),
                     "depth": np.full((4, 6), 1250, dtype=np.uint16),
+                    "aligned_depth_to_color": np.full((4, 6), 1240, dtype=np.uint16),
+                    "ir1": np.full((4, 6), 100, dtype=np.uint8),
+                    "ir2": np.full((4, 6), 110, dtype=np.uint8),
+                    "imu_samples": [
+                        {
+                            "sample_type": "gyro",
+                            "timestamp_ms": 1100.0,
+                            "x": 0.01,
+                            "y": 0.02,
+                            "z": 0.03,
+                        }
+                    ],
                 },
                 metadata={"stream": "rgbd"},
-            )
-        )
-        writer.write_sensor_frame(
-            SensorFrame(
-                sensor_name="imu",
-                sensor_type="imu_sensor",
-                modality="imu",
-                frame_id=1,
-                time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
-                payload={
-                    "acceleration": [0.1, 0.2, 0.3],
-                    "angular_velocity": [0.01, 0.02, 0.03],
-                    "quaternion": [1.0, 0.0, 0.0, 0.0],
-                },
-            )
-        )
-        writer.write_sensor_frame(
-            SensorFrame(
-                sensor_name="imu",
-                sensor_type="imu_sensor",
-                modality="imu",
-                frame_id=2,
-                time=FrameTime(host_time=1.1, monotonic_time=1.1, aligned_time=1.1),
-                payload={
-                    "acceleration": [0.4, 0.5, 0.6],
-                    "angular_velocity": [0.04, 0.05, 0.06],
-                    "quaternion": [0.0, 1.0, 0.0, 0.0],
-                },
             )
         )
         writer.close()
@@ -240,13 +235,27 @@ class SessionWriterTest(unittest.TestCase):
             )
 
             imu_lines = bundle.imu_file.read_text(encoding="utf-8").strip().splitlines()
-            self.assertEqual(imu_lines[0], "timestamp,ax,ay,az,gx,gy,gz,qw,qx,qy,qz")
+            self.assertEqual(imu_lines[0], "timestamp,sample_type,x,y,z")
             self.assertEqual(len(imu_lines), 3)
 
             manifest_payload = json.loads(bundle.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest_payload["mode"], "rgbd_inertial")
             self.assertEqual(manifest_payload["frame_count"], 2)
             self.assertEqual(manifest_payload["imu_rows"], 2)
+
+    @unittest.skipIf(cv2 is None, "未安装 opencv-python")
+    def test_orbslam3_bundle_exporter_generates_stereo_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_orbslam3_session(tmp_dir)
+
+            bundle = OrbSlam3SessionBundleExporter().export(session_dir, mode="stereo")
+
+            self.assertTrue((bundle.left_dir / "000000.png").exists())
+            self.assertTrue((bundle.right_dir / "000001.png").exists())
+            association_lines = bundle.association_file.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(association_lines), 2)
+            self.assertIn("left/000000.png", association_lines[0])
+            self.assertIn("right/000000.png", association_lines[0])
 
     @unittest.skipIf(cv2 is None, "未安装 opencv-python")
     def test_orbslam3_pipeline_consumes_bundle_template_vars(self) -> None:

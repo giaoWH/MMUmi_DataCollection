@@ -30,6 +30,13 @@ class FakeRealSenseConfig:
     width: int = 640
     height: int = 480
     fps: int = 30
+    enable_color: bool = True
+    enable_depth: bool = True
+    enable_ir1: bool = False
+    enable_ir2: bool = False
+    enable_imu: bool = False
+    enable_aligned_depth_to_color: bool = False
+    enable_pointcloud: bool = False
 
 
 @dataclass(frozen=True)
@@ -253,6 +260,36 @@ class FakeRealSenseAdapter(_BaseFakeAdapter):
         color[..., 2] = np.uint8((32 + shift) % 255)
 
         depth = (1000 + (self._grid_x // 8) + (self._grid_y // 10) + int(phase * 20)).astype(np.uint16)
+        ir1 = ((self._grid_x + shift) % 255).astype(np.uint8)
+        ir2 = ((self._grid_y + shift) % 255).astype(np.uint8)
+        pointcloud_vertices = np.stack(
+            [
+                self._grid_x.astype(np.float32).reshape(-1) / 1000.0,
+                self._grid_y.astype(np.float32).reshape(-1) / 1000.0,
+                depth.astype(np.float32).reshape(-1) / 1000.0,
+            ],
+            axis=1,
+        )
+        imu_samples = []
+        if self.config.enable_imu:
+            imu_samples = [
+                {
+                    "sample_type": "accel",
+                    "frame_number": self._frame_id * 2 - 1,
+                    "timestamp_ms": phase * 1000.0,
+                    "x": 0.1 * math.sin(phase),
+                    "y": 0.2 * math.cos(phase),
+                    "z": 9.81,
+                },
+                {
+                    "sample_type": "gyro",
+                    "frame_number": self._frame_id * 2,
+                    "timestamp_ms": phase * 1000.0 + 1.0,
+                    "x": 0.01 * math.sin(phase),
+                    "y": 0.02 * math.cos(phase),
+                    "z": 0.03 * math.sin(phase * 0.5),
+                },
+            ]
         intrinsics = {
             "color": {
                 "width": self.config.width,
@@ -279,10 +316,15 @@ class FakeRealSenseAdapter(_BaseFakeAdapter):
             modality=self.modality,
             frame_id=self._frame_id,
             time=frame_time,
-            payload={
-                "color": color,
-                "depth": depth,
-            },
+            payload=_build_fake_realsense_payload(
+                config=self.config,
+                color=color,
+                depth=depth,
+                ir1=ir1,
+                ir2=ir2,
+                pointcloud_vertices=pointcloud_vertices,
+                imu_samples=imu_samples,
+            ),
             metadata={
                 "depth_scale": 0.001,
                 "intrinsics": intrinsics,
@@ -300,6 +342,34 @@ class FakeRealSenseAdapter(_BaseFakeAdapter):
             "depth_scale": 0.001,
             "source": "fake",
         }
+
+
+def _build_fake_realsense_payload(
+    *,
+    config: FakeRealSenseConfig,
+    color: np.ndarray,
+    depth: np.ndarray,
+    ir1: np.ndarray,
+    ir2: np.ndarray,
+    pointcloud_vertices: np.ndarray,
+    imu_samples: list[dict[str, object]],
+) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    if config.enable_color:
+        payload["color"] = color
+    if config.enable_depth:
+        payload["depth"] = depth
+    if config.enable_ir1:
+        payload["ir1"] = ir1
+    if config.enable_ir2:
+        payload["ir2"] = ir2
+    if config.enable_aligned_depth_to_color and config.enable_depth:
+        payload["aligned_depth_to_color"] = depth.copy()
+    if config.enable_pointcloud and config.enable_depth:
+        payload["pointcloud"] = {"vertices": pointcloud_vertices}
+    if config.enable_imu:
+        payload["imu_samples"] = imu_samples
+    return payload
 
 
 class FakeMotorsAdapter(_BaseFakeAdapter):

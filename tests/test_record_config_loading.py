@@ -86,3 +86,42 @@ class RecorderConfigLoadingTest(unittest.TestCase):
         self.assertEqual(loaded_path, config_path.resolve())
         self.assertTrue(config.enable_camera)
         self.assertTrue(config.camera.flip_vertical)
+
+    def test_parse_args_loads_nested_realsense_and_trajectory_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "record.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "enable_realsense: true",
+                        "realsense:",
+                        "  enable_ir1: true",
+                        "  enable_ir2: true",
+                        "  enable_imu: true",
+                        "  color:",
+                        "    width: 848",
+                        "    height: 480",
+                        "    fps: 60",
+                        "  derived:",
+                        "    enable_pointcloud: true",
+                        "trajectory:",
+                        "  mode: stereo_inertial",
+                        "  output_mode: stdout_jsonl",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config, loaded_path = sdk_record.parse_args(["--config", str(config_path)])
+
+        self.assertEqual(loaded_path, config_path.resolve())
+        self.assertTrue(config.enable_realsense)
+        self.assertTrue(config.realsense.enable_ir1)
+        self.assertTrue(config.realsense.enable_ir2)
+        self.assertTrue(config.realsense.enable_imu)
+        self.assertEqual(config.realsense.color.width, 848)
+        self.assertEqual(config.realsense.color.height, 480)
+        self.assertEqual(config.realsense.color.fps, 60)
+        self.assertTrue(config.realsense.derived.enable_pointcloud)
+        self.assertEqual(config.trajectory.mode, "stereo_inertial")
+        self.assertEqual(config.trajectory.output_mode, "stdout_jsonl")

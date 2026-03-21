@@ -17,8 +17,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="对已有 Session 执行 ORB-SLAM3 轨迹处理")
     parser.add_argument("session_dir")
     parser.add_argument("--command", default=None)
-    parser.add_argument("--mode", default="rgbd_inertial")
-    parser.add_argument("--output-mode", choices=["jsonl_file", "stdout_jsonl"], default="jsonl_file")
+    parser.add_argument(
+        "--mode",
+        choices=["rgbd_inertial", "stereo", "stereo_inertial"],
+        default="rgbd_inertial",
+    )
+    parser.add_argument("--output-mode", choices=["jsonl_file", "stdout_jsonl"], default="stdout_jsonl")
     parser.add_argument("--source-name", default="orbslam3")
     parser.add_argument("--working-dir", default=None)
     parser.add_argument("--bundle-dir", default=None)

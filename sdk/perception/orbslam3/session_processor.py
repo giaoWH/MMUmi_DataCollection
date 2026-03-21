@@ -15,7 +15,7 @@ from .pipeline import OrbSlam3Pipeline, OrbSlam3PipelineConfig
 class OrbSlam3SessionProcessConfig:
     command: str | None = None
     mode: str = "rgbd_inertial"
-    output_mode: str = "jsonl_file"
+    output_mode: str = "stdout_jsonl"
     source_name: str = "orbslam3"
     working_dir: str | None = None
     bundle_dir: str | None = None
@@ -38,7 +38,7 @@ def load_orbslam3_process_config(config_payload: dict[str, Any]) -> OrbSlam3Sess
     return OrbSlam3SessionProcessConfig(
         command=payload.get("command"),
         mode=payload.get("mode", "rgbd_inertial"),
-        output_mode=payload.get("output_mode", "jsonl_file"),
+        output_mode=payload.get("output_mode", "stdout_jsonl"),
         source_name=payload.get("source_name", "orbslam3"),
         working_dir=payload.get("working_dir"),
         bundle_dir=payload.get("bundle_dir"),

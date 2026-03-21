@@ -7,7 +7,7 @@
 1. 统一接入多种真实传感器与 fake 数据源
 2. 在统一时间轴下记录和对齐多模态数据
 3. 将原始流、对齐结果、轨迹结果写入统一 session
-4. 为 ORB-SLAM3 提供 RGB-D / RGB-D-Inertial 软件输入
+4. 为 ORB-SLAM3 提供 RGB-D-Inertial / Stereo / Stereo-Inertial 软件输入
 5. 将内部 session 导出为多种数据集格式
 
 当前项目已经完成收口，只保留一套新的 SDK 主系统。
@@ -27,7 +27,7 @@
 
 - 六维力传感器 FT
 - 独立串口 IMU
-- RealSense RGB-D
+- RealSense D435i 多流数据
 - 电机状态
 - 麦克风
 - 通用 RGB 相机
@@ -35,7 +35,7 @@
 
 这里的 RealSense 与普通 RGB 相机是两套独立设备：
 
-- RealSense 负责 RGB-D 链路
+- RealSense 负责 RGB-D / 双红外 / 板载 IMU 链路
 - `camera` 指普通 RGB 相机
 - `gelsight` 指 GelSight Mini 这类视触觉传感器
 - `camera` 与 `gelsight` 虽然底层都可以表现为 RGB 设备，但在 SDK 中作为不同模态管理
@@ -43,21 +43,17 @@
 
 ### 重要边界：这里有两套不同用途的 IMU
 
-这是当前最容易混淆、也最需要写清楚的一点：
-
 - 项目中的“独立串口 IMU”
   - 当前主要用于 FT 重力补偿
-  - 也是当前 `rgbd_inertial` 软件链路里实际使用的惯性来源
 - RealSense D435i 自带的“板载 IMU”
-  - 未来应主要服务于 SLAM
-  - 当前还没有单独接入 SDK
+  - 当前已经可以录入 session
+  - 当前主要服务于 ORB-SLAM3 的惯性输入
 
 因此，当前项目真实状态应理解为：
 
 - FT 的重力补偿：依赖独立 IMU
-- RealSense：当前只接入 RGB + Depth
-- `rgbd_inertial`：当前软件上仍是 “RealSense RGB-D + 独立 IMU”
-- 还不是 “D435i RGB-D + D435i 板载 IMU” 的原生惯性组合
+- RealSense：可以按配置录制 `color + depth + ir1 + ir2 + imu_samples`
+- `rgbd_inertial` / `stereo_inertial`：当前软件上使用 RealSense 板载 IMU
 
 ---
 
@@ -120,7 +116,7 @@ record -> inspect -> process_trajectory -> export -> validate
 
 ## 4. 当前总体结论
 
-截至 2026-03-20，软件侧可以认为已经完成的部分包括：
+截至 2026-03-21，软件侧可以认为已经完成的部分包括：
 
 - 统一多传感器接入
 - 统一时间对齐
@@ -138,8 +134,6 @@ record -> inspect -> process_trajectory -> export -> validate
 仍然属于下一阶段联调任务，而不是“SDK 框架未完成”的事项包括：
 
 - RealSense 真机联调细节
-- D435i 板载 IMU 接入
-- 用 D435i 板载 IMU 替换当前 SLAM 惯性输入
 - 真实 ORB-SLAM3 可执行程序联调
 - ROS 2 真环境下的 rosbag2 导出验证
 
@@ -189,6 +183,9 @@ UMI_DataCollection/
 │   │   ├── base_sensor.py
 │   │   ├── serial_base.py
 │   │   └── camera_base.py
+│   ├── realsense/
+│   │   └── realsense_communication.py
+│   ├── realsense_sensor.py
 │   ├── ft_sensor.py
 │   ├── imu_sensor.py
 │   ├── motors_sensor.py
@@ -236,7 +233,7 @@ UMI_DataCollection/
 - `legacy.py`
   - FT / 独立 IMU / Motors / Microphone / Camera / GelSight 真实适配
 - `realsense.py`
-  - RealSense RGB-D 真实适配
+  - RealSense 多流真实适配
 - `fake.py`
   - fake FT / IMU / RealSense / Motors / Microphone / Camera / GelSight
 
@@ -326,7 +323,7 @@ UMI_DataCollection/
 当前边界：
 
 - 这不是 D435i 板载 IMU
-- 当前 `rgbd_inertial` 软件链路里仍在使用这套 IMU 数据
+- 当前主要用于 FT 重力补偿
 
 对应代码：
 
@@ -337,25 +334,27 @@ UMI_DataCollection/
 
 ### 6.3 RealSense
 
-状态：已接入 RGB-D
+状态：已接入多流录制与轨迹输入
 
 已完成内容：
 
-- 真实 RealSense RGB-D 适配
-- fake RealSense RGB-D 适配
-- color / depth 写盘
-- intrinsics / depth scale 元数据
+- 真实 RealSense 多流适配
+- fake RealSense 多流适配
+- `color / depth / ir1 / ir2 / imu_samples` 写盘
+- `aligned_depth_to_color / pointcloud` 按配置派生
+- intrinsics / depth scale / stream 配置元数据
 - 作为默认视觉主路径参与 ORB-SLAM3 软件链路
+- 低层 bring-up 脚本 `sensors/realsense/realsense_communication.py`
 
 当前边界：
 
-- 当前只接入 RGB + Depth
-- 尚未接入 D435i 板载 IMU
-- 当前它是 ORB-SLAM3 默认使用的 RGB-D 输入链路
-- 因此当前还没有形成“D435i RGB-D + D435i IMU”的原生惯性 SLAM 组合
+- `aligned_depth_to_color` 与 `pointcloud` 属于可选派生结果，不是必须启用
+- ORB-SLAM3 真正的二进制程序与 settings 文件仍由外部 wrapper / 第三方目录负责
 
 对应代码：
 
+- `sensors/realsense_sensor.py`
+- `sensors/realsense/realsense_communication.py`
 - `sdk/sensors/realsense.py`
 - `sdk/sensors/fake.py`
 - `sdk/perception/orbslam3/bundle.py`
@@ -485,7 +484,7 @@ python scripts/sdk_record.py
 
 - FT：`--ft-port`
 - IMU：`--imu-port`
-- RealSense：`--realsense-width` / `--realsense-height` / `--realsense-fps`
+- RealSense：更推荐通过 `record.yaml` 的 `realsense` 段配置多流参数
 - Motors：`--motors-port`
 - Microphone：`--microphone-device-index` / `--microphone-channels` / `--microphone-rate` / `--microphone-chunk`
 - Camera：`--camera-device-index` / `--camera-width` / `--camera-height` / `--camera-fps`
@@ -494,6 +493,7 @@ python scripts/sdk_record.py
 当前还支持：
 
 - `enable_trajectory`
+- `trajectory.mode`
 - `trajectory.command`
 
 也就是说，轨迹已经被纳入同一份录制配置里，但它是“录制结束后才执行的后处理模态”，不是录制期间实时采集的原始流。
@@ -559,6 +559,7 @@ session_xxx/
 - 实际创建哪些 `streams/<sensor>/`，取决于本次录制启用了哪些传感器
 - 多维数组 payload 会落为 `png` 或 `npy`
 - 标量和小向量会直接写入 `frames.jsonl`
+- RealSense 的图像、红外、深度和点云会按 payload 类型分别落盘
 - `trajectory/` 中只有在启用自动轨迹后处理，或后续手动执行 `sdk_process_trajectory.py` 时，才会出现实际轨迹帧
 
 对应代码：
@@ -576,13 +577,12 @@ session_xxx/
 - bundle 导出
 - 外部命令调用
 - JSONL 轨迹写回
-- `rgbd` / `rgbd_inertial` 模式支持
+- `rgbd_inertial` / `stereo` / `stereo_inertial` 模式支持
 
 当前边界：
 
 - 默认视觉数据来自 RealSense
-- 理想的 `rgbd_inertial` 惯性来源应为 D435i 板载 IMU
-- 当前 `rgbd_inertial` 惯性来源仍是独立 IMU
+- `rgbd_inertial` 与 `stereo_inertial` 当前都使用 RealSense 板载 IMU
 - 普通 camera 与 GelSight 都是独立录制模态，可与 RealSense 同时存在，但当前不作为 ORB-SLAM3 默认输入链路
 
 对应代码与文档：
@@ -663,14 +663,12 @@ session_xxx/
 以下事项属于下一阶段联调或增强任务：
 
 1. RealSense 真机联调细节验证
-2. D435i 板载 IMU 接入
-3. 用 D435i 板载 IMU 替换当前 SLAM 惯性输入
-4. 真实 ORB-SLAM3 可执行程序联调
-5. ROS 2 环境下的 rosbag2 真实导出验证
-6. 新增模态在真实硬件条件下的长期稳定性验证
+2. 真实 ORB-SLAM3 可执行程序联调
+3. ROS 2 环境下的 rosbag2 真实导出验证
+4. 新增模态在真实硬件条件下的长期稳定性验证
 
 ---
 
 ## 14. 一句话总结
 
-当前仓库已经是一套可运行的统一多模态采集 SDK。FT / 独立 IMU / RealSense / Motors / Microphone / Camera / GelSight 都已进入录制体系，采集默认由 `configs/record.yaml` 驱动，首次安装可选自动发现串口，并能在录制结束后按配置决定是否自动解算 ORB-SLAM3 轨迹。
+当前仓库已经是一套可运行的统一多模态采集 SDK。FT / 独立 IMU / RealSense / Motors / Microphone / Camera / GelSight 都已进入录制体系，采集默认由 `configs/record.yaml` 驱动，RealSense 已支持多流录制与 ORB-SLAM3 的三种模式，录制结束后可按配置自动执行轨迹解算。
