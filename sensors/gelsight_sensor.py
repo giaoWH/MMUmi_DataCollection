@@ -1,4 +1,10 @@
+from __future__ import annotations
+
+import cv2
+import numpy as np
+
 from .common.camera_base import CameraBaseSensor
+from .gelsight.preprocessing import preprocess_gelsight_mini
 
 
 class GelSightSensor(CameraBaseSensor):
@@ -25,4 +31,14 @@ class GelSightSensor(CameraBaseSensor):
             width=width,
             height=height,
             fps=fps,
+            flip_vertical=False,
         )
+
+    def _process_frame(self, frame_bgr: np.ndarray) -> np.ndarray:
+        processed_bgr = preprocess_gelsight_mini(
+            frame_bgr,
+            output_width=self.width,
+            output_height=self.height,
+        )
+        frame_rgb = cv2.cvtColor(processed_bgr, cv2.COLOR_BGR2RGB)
+        return np.ascontiguousarray(frame_rgb)

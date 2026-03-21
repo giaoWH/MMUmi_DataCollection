@@ -378,6 +378,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
     if config_path is not None:
         payload = deep_merge(payload, load_config_file(config_path))
     payload = deep_merge(payload, _build_cli_overrides(args))
+    gelsight_payload = dict(payload.get("gelsight", {}))
+    gelsight_payload.pop("flip_vertical", None)
 
     config = RecorderConfig(
         output_root=payload["output_root"],
@@ -399,7 +401,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
         motors=MotorsSensorConfig(**payload.get("motors", {})),
         microphone=MicrophoneSensorConfig(**payload.get("microphone", {})),
         camera=CameraSensorConfig(**payload.get("camera", {})),
-        gelsight=GelSightSensorConfig(**payload.get("gelsight", {})),
+        gelsight=GelSightSensorConfig(**gelsight_payload),
         gravity_compensation=GravityCompensationConfig(**payload.get("gravity_compensation", {})),
         trajectory=OrbSlam3SessionProcessConfig(**payload.get("trajectory", {})),
     )
