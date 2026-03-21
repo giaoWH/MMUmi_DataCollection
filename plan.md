@@ -97,6 +97,7 @@ sensor adapters
 - `scripts/sdk_record.py`
 - `scripts/sdk_inspect.py`
 - `scripts/sdk_process_trajectory.py`
+- `scripts/orbslam3_wrapper.py`
 - `scripts/sdk_export.py`
 - `scripts/sdk_validate_export.py`
 
@@ -178,7 +179,8 @@ sensor adapters
 当前边界：
 
 - `aligned_depth_to_color` 与 `pointcloud` 属于可选派生结果，不是必须启用
-- ORB-SLAM3 真正的二进制程序与 settings 文件仍由外部 wrapper / 第三方目录负责
+- 当前 `stereo_inertial` 已接入仓库内置 wrapper 与本地 C++ runner
+- `rgbd_inertial` / `stereo` 仍主要保留为外部命令模板接入路径
 
 ### 5.4 Motors
 
@@ -237,7 +239,7 @@ sensor adapters
 
 - `realsense` 负责选择录哪些流，以及各流 profile
 - `trajectory.mode` 负责选择离线 SLAM 消费哪一组已录好的流
-- `trajectory.output_mode` 默认使用 `stdout_jsonl`
+- `trajectory.output_mode` 取决于所用 wrapper；当前仓库内置的 `stereo_inertial` wrapper 推荐使用 `jsonl_file`
 
 这里还需要明确：
 
@@ -333,7 +335,9 @@ session_xxx/
 - 默认视觉数据来自 RealSense
 - `rgbd_inertial` 与 `stereo_inertial` 当前都使用 D435i 板载 IMU
 - 普通 camera 与 GelSight 都是独立录制模态，可与 RealSense 同时存在，但当前没有作为 ORB-SLAM3 默认输入链路
-- 真实 ORB-SLAM3 wrapper、settings 与第三方目录联调仍待完成
+- 当前仓库已内置 `stereo_inertial` wrapper、样例配置与本地 ORB-SLAM3 C++ runner
+- 第一版内置 wrapper 仅覆盖 `stereo_inertial`
+- `rgbd_inertial` / `stereo` 仍保留为外部命令模板接入路径
 
 ---
 

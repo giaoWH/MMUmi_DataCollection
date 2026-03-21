@@ -177,6 +177,42 @@ timestamp,sample_type,x,y,z
 
 这样可以把“算法原始输出格式差异”封装在 wrapper 里，而不是污染 SDK。
 
+### 6.1 本地 `ThirdParty/ORB_SLAM3` 已编译时的推荐方式
+
+当前仓库已经提供 `scripts/orbslam3_wrapper.py`，第一版仅实现：
+
+- `stereo_inertial`
+
+推荐配置方式：
+
+- `trajectory.mode = stereo_inertial`
+- `trajectory.output_mode = jsonl_file`
+- `trajectory.command = python /abs/path/to/UMI_DataCollection/scripts/orbslam3_wrapper.py --mode stereo_inertial --bundle-manifest {bundle_manifest} --output {output_jsonl}`
+
+wrapper 运行时依赖以下环境变量：
+
+- `ORB_SLAM3_VOCAB`
+- `ORB_SLAM3_SETTINGS`
+
+其中：
+
+- `ORB_SLAM3_VOCAB` 推荐指向 `ThirdParty/ORB_SLAM3/Vocabulary/ORBvoc.txt`
+- `ORB_SLAM3_SETTINGS` 第一版推荐直接复用 `ThirdParty/ORB_SLAM3/Examples/Stereo-Inertial/RealSense_D435i.yaml`
+
+wrapper 会自动完成以下工作：
+
+1. 从 `bundle_manifest.json` 推导 `stereo_associations.txt` 与 `imu.csv`
+2. 调用 `ThirdParty/ORB_SLAM3/Examples/Stereo-Inertial/sdk_stereo_inertial_offline`
+3. 自动补齐 `LD_LIBRARY_PATH` 中的 ORB-SLAM3 / DBoW2 / g2o 库目录
+4. 把 `SaveTrajectoryEuRoC()` 生成的最终轨迹转换成 SDK 约定的 JSONL
+
+第一版的边界如下：
+
+- 只支持 `stereo_inertial`
+- 只消费 SDK 当前导出的 `left/`、`right/`、`stereo_associations.txt`、`imu.csv`
+- 轨迹来源为 ORB-SLAM3 最终保存结果，不保留逐帧在线 tracking state
+- 输出 `tracking_state` 固定为 `OK`
+
 ---
 
 ## 7. 坐标系约定
@@ -224,4 +260,5 @@ timestamp,sample_type,x,y,z
 
 - 真机标定文件格式标准化
 - ORB-SLAM3 原始日志解析
-- `ThirdParty/ORB-SLAM3` 真正接入后的 wrapper 与 settings 联调
+- `rgbd_inertial` / `stereo` 模式的仓库内置 wrapper 仍待补齐
+- 本地 `ThirdParty/ORB_SLAM3` settings 与真实采集数据的长期联调
