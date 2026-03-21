@@ -14,6 +14,11 @@ UMI Data Collection SDK
 record -> inspect -> process_trajectory -> export -> validate
 ```
 
+其中当前闭环里的两个能力边界需要明确：
+
+- `inspect` 当前输出 session 基础摘要
+- `validate` 当前主要执行导出产物的结构级 / 数量级一致性校验，不做逐字段、逐 payload 的深度比对
+
 当前推荐使用方式已经切换到“配置文件优先”：
 
 1. 编辑 `configs/record.yaml`
@@ -175,6 +180,12 @@ RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接�
 - `trajectory.mode` 负责选择离线 SLAM 消费哪一组已录好的流
 - `trajectory.output_mode` 默认使用 `stdout_jsonl`
 
+这里还需要补充一个使用边界：
+
+- 上述 `trajectory.mode` / `trajectory.command` / `trajectory.output_mode` 当前属于 `record.yaml` 配置字段，而不是 `scripts/sdk_record.py` 的独立 CLI 参数
+- `scripts/sdk_record.py` 的 CLI 当前主要直接覆盖传感器启停、端口、分辨率、帧率等常用录制参数
+- `enable_trajectory` 可通过 CLI 开关控制，但启用后仍需要由配置文件提供 `trajectory.command`
+
 ### 7. 多格式导出
 
 当前已具备：
@@ -187,8 +198,10 @@ RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接�
 
 其中：
 
-- `csv` / `hdf5` / `rlds` / `lerobot` 已完成软件侧验证
+- `csv` / `hdf5` / `rlds` / `lerobot` 已完成软件侧基础验证
 - `rosbag2` 的真实验证还依赖本机 ROS 2 环境
+- `validate` 当前主要检查导出目录、关键文件以及 step / frame 数等结构级 / 数量级一致性
+- `rosbag2` 在 `validate` 环节当前只检查输出目录存在且非空，不代表已经完成更强的语义一致性验证
 
 ## 目录结构
 
@@ -259,19 +272,24 @@ UMI_DataCollection/
 ```bash
 conda create -n umi_sdk python=3.11
 conda activate umi_sdk
-pip install numpy pyyaml
+pip install numpy pyyaml pyserial
 ```
 
 本文档默认后续命令都在 `conda activate umi_sdk` 之后执行。
 
-按需安装的依赖：
+按当前实现建议准备的依赖如下：
 
+- 基础 Python 侧运行依赖：`numpy`、`pyyaml`、`pyserial`
+- 当前真实传感器路径会通过 `sensors` 包根入口导入多种传感器模块，依赖隔离尚未完全按模态拆开；以下说明按当前实现行为给出，而不是按理想的“完全按需隔离”假设给出
 - RealSense 采集：安装 Intel RealSense SDK / `librealsense`，并在 Python 环境里提供 `pyrealsense2`
-- 图像处理：`pip install opencv-python`
-- 麦克风：需要 `pyaudio`
+- 图像处理、PNG artifact 读取、ORB-SLAM3 bundle 导出：`pip install opencv-python`
+- 麦克风真机采集：需要 `pyaudio`
 - HDF5 导出：`pip install h5py`
-- LeRobot 导出：`pip install pyarrow`
 - ROS Bag 2 导出：需要真实 ROS 2 环境
+
+当前导出入口还有一个实现边界：
+
+- `sdk_export.py` / `sdk_validate_export.py` 当前会经由导出模块导入链加载 LeRobot exporter，因此即使不导出 LeRobot，运行这两个入口时通常也建议安装 `pyarrow`
 
 RealSense 真机 bring-up 可直接运行：
 

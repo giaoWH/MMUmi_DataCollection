@@ -84,7 +84,7 @@ record -> inspect -> process_trajectory -> export -> validate
 
 ### `inspect`
 
-负责读取 session 摘要、传感器信息和统计信息。
+当前负责输出 session 基础摘要。
 
 ### `process_trajectory`
 
@@ -108,7 +108,7 @@ record -> inspect -> process_trajectory -> export -> validate
 
 ### `validate`
 
-负责校验导出结果与内部 session 是否一致。
+当前负责执行导出产物的结构级 / 数量级一致性校验，而不是逐字段、逐 payload 的深度比对。
 
 因此，当前仓库已经不是“框架骨架”状态，而是一套已经能在软件侧跑通闭环的系统。
 
@@ -330,7 +330,6 @@ UMI_DataCollection/
 - `sensors/imu_sensor.py`
 - `sdk/sensors/legacy.py`
 - `sdk/sensors/fake.py`
-- `sdk/perception/orbslam3/bundle.py`
 
 ### 6.3 RealSense
 
@@ -477,6 +476,7 @@ python scripts/sdk_record.py
 - `--enable-microphone`
 - `--enable-camera`
 - `--enable-gelsight`
+- `--enable-trajectory` / `--disable-trajectory`
 
 当前更推荐把大部分配置放进 `record.yaml`，CLI 只用于临时覆盖。
 
@@ -492,11 +492,14 @@ python scripts/sdk_record.py
 
 当前还支持：
 
-- `enable_trajectory`
-- `trajectory.mode`
-- `trajectory.command`
+- `enable_trajectory` 可以通过 CLI 开关控制
+- `trajectory.mode` / `trajectory.command` / `trajectory.output_mode` 当前属于 `record.yaml` 配置字段
 
-也就是说，轨迹已经被纳入同一份录制配置里，但它是“录制结束后才执行的后处理模态”，不是录制期间实时采集的原始流。
+也就是说：
+
+- `sdk_record.py` 的 CLI 当前主要直接覆盖传感器启停、端口、分辨率、帧率等常用录制参数
+- 轨迹已经被纳入同一份录制配置里，但它是“录制结束后才执行的后处理模态”，不是录制期间实时采集的原始流
+- 启用 `enable_trajectory` 后，仍需要由配置文件提供 `trajectory.command`
 
 ### 7.2 ready / 校准等待
 
@@ -529,6 +532,13 @@ python scripts/sdk_record.py
 
 - 当前明确依赖独立 IMU
 - D435i 板载 IMU 当前不参与 FT 重力补偿
+
+### 7.4 当前依赖边界
+
+- 基础 Python 侧运行依赖至少包括 `numpy`、`pyyaml`、`pyserial`
+- RealSense 真机采集需要 `pyrealsense2`；图像 artifact 读取与 ORB-SLAM3 bundle 导出需要 `opencv-python`；麦克风真机采集需要 `pyaudio`；HDF5 导出需要 `h5py`
+- `sdk_export.py` / `sdk_validate_export.py` 当前会经由导出模块导入链加载 LeRobot exporter，因此运行这两个入口时通常也建议安装 `pyarrow`
+- 当前真实传感器路径会通过 `sensors` 包根入口导入多种传感器模块，依赖隔离尚未完全按模态拆开；这里按当前实现行为描述运行环境准备要求
 
 ---
 
@@ -607,6 +617,8 @@ session_xxx/
 当前边界：
 
 - `rosbag2` 的真实验证仍依赖 ROS 2 环境
+- `validate` 当前主要检查导出目录、关键文件以及 step / frame 数等结构级 / 数量级一致性
+- `rosbag2` 在 `validate` 环节当前只检查输出目录存在且非空，不代表已经完成更强的语义一致性验证
 
 ---
 
@@ -653,7 +665,7 @@ session_xxx/
 - `scripts/sdk_process_trajectory.py` 能导出 ORB-SLAM3 bundle 并写回轨迹
 - `enable_trajectory=true` 时能在录制结束后自动执行同一套轨迹处理链
 - `scripts/sdk_export.py` 能导出多种格式
-- `scripts/sdk_validate_export.py` 能校验导出结果
+- `scripts/sdk_validate_export.py` 能执行导出产物的结构级 / 数量级一致性校验
 - 新增模态时不需要改动核心主循环
 
 ---
