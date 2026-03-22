@@ -19,6 +19,12 @@
 3. 运行 `scripts/sdk_record.py`
 4. 按配置决定是否在录制结束后自动执行轨迹解算
 
+对于具身学习数据整理，当前推荐的跨设备工作流是：
+
+```text
+record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
+```
+
 ---
 
 ## 2. 当前纳入的传感器
@@ -65,6 +71,12 @@
 record -> inspect -> process_trajectory -> export -> validate
 ```
 
+在 PC 侧数据整理链路上，当前又新增了一条以 session 为真源的标注工作流：
+
+```text
+record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
+```
+
 各环节含义如下：
 
 ### `record`
@@ -84,7 +96,22 @@ record -> inspect -> process_trajectory -> export -> validate
 
 ### `inspect`
 
-当前负责输出 session 基础摘要。
+当前负责输出 session 基础摘要；若 session 已带标注，也会输出 annotation summary。
+
+### `annotate`
+
+负责在 PC 上对已有 session 执行人工标注。
+
+当前已经支持：
+
+- `session` / `span` / `keyframe` 三类标注
+- 项目级 schema 配置与 session 内 `schema.snapshot.json`
+- 本地 Web 标注入口 `scripts/sdk_annotate.py`
+- 多路图像流同步回看
+- 基于 `aligned.sequence_id` 的统一时间轴
+- FT / IMU / Motors 标量曲线查看
+
+标注结果当前直接写回 session 的 `annotations/` 目录。
 
 ### `process_trajectory`
 
@@ -129,6 +156,7 @@ record -> inspect -> process_trajectory -> export -> validate
 - 首次安装时的串口自动发现与配置写回
 - 录制结束后按配置自动执行轨迹解算
 - 多格式导出
+- session 内置标注与 LeRobot 标注映射
 - fake 模式下的闭环验证
 
 仍然属于下一阶段联调任务，而不是“SDK 框架未完成”的事项包括：
@@ -150,7 +178,7 @@ sensor adapters
     -> SensorRegistry
     -> BufferedFrameAligner
     -> SessionWriter
-    -> inspect / process_trajectory / export / validate
+    -> inspect / annotate / process_trajectory / export / validate
 ```
 
 ### 5.2 核心目录
@@ -158,6 +186,7 @@ sensor adapters
 ```text
 UMI_DataCollection/
 ├── configs/
+│   ├── annotation_schema.yaml
 │   ├── orbslam3/
 │   └── record.yaml
 ├── docs/
@@ -165,6 +194,7 @@ UMI_DataCollection/
 │   └── project-overview.md
 ├── plan.md
 ├── scripts/
+│   ├── sdk_annotate.py
 │   ├── sdk_discover_ports.py
 │   ├── sdk_record.py
 │   ├── sdk_inspect.py
@@ -173,6 +203,7 @@ UMI_DataCollection/
 │   ├── sdk_export.py
 │   └── sdk_validate_export.py
 ├── sdk/
+│   ├── annotations/
 │   ├── core/
 │   ├── sensors/
 │   ├── processors/
@@ -266,6 +297,15 @@ UMI_DataCollection/
 - `schema.py`
 - `session_writer.py`
 - `session_reader.py`
+
+#### `sdk/annotations/`
+
+负责 session 内置标注：
+
+- annotation schema 校验
+- `annotations/` 目录读写
+- session / span / keyframe CRUD
+- 本地 Web 标注服务
 
 #### `sdk/perception/orbslam3/`
 
@@ -554,6 +594,12 @@ python scripts/sdk_record.py
 session_xxx/
   meta.json
   manifest.json
+  annotations/
+    manifest.json
+    schema.snapshot.json
+    session.json
+    spans.jsonl
+    keyframes.jsonl
   streams/
     ft/
     imu/
@@ -570,6 +616,9 @@ session_xxx/
 
 说明：
 
+- `annotations/` 只有在执行标注后才会出现
+- 标注当前统一锚定到 `aligned.sequence_id`
+- `schema.snapshot.json` 用于保证 session 拷贝到另一台 PC 后仍能使用一致的标注字段定义
 - 实际创建哪些 `streams/<sensor>/`，取决于本次录制启用了哪些传感器
 - 多维数组 payload 会落为 `png` 或 `npy`
 - 标量和小向量会直接写入 `frames.jsonl`
@@ -627,6 +676,7 @@ session_xxx/
 
 当前边界：
 
+- `lerobot` 当前已经支持自动读取 `session/annotations/`，并把 `session` / `span` / `keyframe` 标注映射到扁平字段
 - `rosbag2` 的真实验证仍依赖 ROS 2 环境
 - `validate` 当前主要检查导出目录、关键文件以及 step / frame 数等结构级 / 数量级一致性
 - `rosbag2` 在 `validate` 环节当前只检查输出目录存在且非空，不代表已经完成更强的语义一致性验证
@@ -638,6 +688,7 @@ session_xxx/
 当前已经覆盖的软件侧测试包括：
 
 - 对齐逻辑测试
+- annotation schema / CRUD / Web 标注服务测试
 - 重力补偿测试
 - session writer / reader 测试
 - 导出校验测试
@@ -650,6 +701,7 @@ session_xxx/
 对应测试：
 
 - `tests/test_aligner.py`
+- `tests/test_annotations.py`
 - `tests/test_gravity_compensation.py`
 - `tests/test_session_writer.py`
 - `tests/test_export_validation.py`
@@ -673,9 +725,11 @@ session_xxx/
 - `scripts/sdk_discover_ports.py` 能在首次安装时按启用顺序引导识别 FT / IMU / Motors 串口并写回配置
 - 需要校准的传感器会在 ready / 零点校准后再进入正式录制
 - `scripts/sdk_inspect.py` 能读取 session 摘要
+- `scripts/sdk_annotate.py` 能在 PC 上启动本地 Web 标注器，并把结果写入 `session/annotations/`
 - `scripts/sdk_process_trajectory.py` 能导出 ORB-SLAM3 bundle 并写回轨迹
 - `enable_trajectory=true` 时能在录制结束后自动执行同一套轨迹处理链
 - `scripts/sdk_export.py` 能导出多种格式
+- `scripts/sdk_export.py --format lerobot` 能自动消费 session 标注
 - `scripts/sdk_validate_export.py` 能执行导出产物的结构级 / 数量级一致性校验
 - 新增模态时不需要改动核心主循环
 
@@ -694,4 +748,4 @@ session_xxx/
 
 ## 14. 一句话总结
 
-当前仓库已经是一套可运行的统一多模态采集 SDK。FT / 独立 IMU / RealSense / Motors / Microphone / Camera / GelSight 都已进入录制体系，采集默认由 `configs/record.yaml` 驱动，RealSense 已支持多流录制与 ORB-SLAM3 的三种模式，录制结束后可按配置自动执行轨迹解算。
+当前仓库已经是一套可运行的统一多模态采集与标注 SDK。FT / 独立 IMU / RealSense / Motors / Microphone / Camera / GelSight 都已进入录制体系，采集默认由 `configs/record.yaml` 驱动，session 拷贝到 PC 后可通过 `scripts/sdk_annotate.py` 进行人工标注，`LeRobot` 导出会自动消费这些标注。

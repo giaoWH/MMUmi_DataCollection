@@ -7,6 +7,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from sdk.annotations import AnnotationService
 from sdk.exporters.base import ExportResult, SessionExporter
 from sdk.storage import SessionReader
 
@@ -33,6 +34,8 @@ class LeRobotSessionExporter(SessionExporter):
         }
         trajectory_frames = list(reader.iter_trajectory_frames())
         aligned_records = list(reader.iter_aligned_records())
+        annotation_service = AnnotationService(session_dir)
+        session_annotations, row_annotations = annotation_service.build_lerobot_annotations(aligned_records)
         rows: list[dict[str, Any]] = []
         for row_index, record in enumerate(aligned_records):
             row: dict[str, Any] = {
@@ -64,11 +67,14 @@ class LeRobotSessionExporter(SessionExporter):
                         "tracking_state": trajectory.tracking_state,
                     },
                 )
+            if row_index < len(row_annotations):
+                self._flatten_mapping(row, "", row_annotations[row_index])
             rows.append(row)
 
         data_table = pa.Table.from_pylist(rows) if rows else pa.table({"index": pa.array([], type=pa.int64())})
         pq.write_table(data_table, data_dir / "file-000.parquet")
 
+        task_name = self._resolve_task_name(session_annotations)
         episode_table = pa.Table.from_pylist(
             [
                 {
@@ -77,13 +83,14 @@ class LeRobotSessionExporter(SessionExporter):
                     "task_index": 0,
                     "from_index": 0,
                     "to_index": len(rows),
+                    **session_annotations,
                 }
             ]
         )
         pq.write_table(episode_table, episodes_dir / "file-000.parquet")
 
         (meta_dir / "tasks.jsonl").write_text(
-            json.dumps({"task_index": 0, "task": "unspecified"}) + "\n",
+            json.dumps({"task_index": 0, "task": task_name}, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
         (meta_dir / "stats.json").write_text(
@@ -99,10 +106,8 @@ class LeRobotSessionExporter(SessionExporter):
     def _build_info(self, reader: SessionReader, rows: list[dict[str, Any]]) -> dict[str, Any]:
         features = {}
         for key in rows[0].keys() if rows else []:
-            if key in {"index", "episode_index", "frame_index", "task_index"}:
-                features[key] = {"dtype": "int64", "shape": [1]}
-            else:
-                features[key] = {"dtype": "float64", "shape": [1]}
+            sample = next((row[key] for row in rows if key in row and row[key] is not None), None)
+            features[key] = {"dtype": self._infer_feature_dtype(key, sample), "shape": [1]}
 
         return {
             "codebase_version": "v3.0",
@@ -134,16 +139,40 @@ class LeRobotSessionExporter(SessionExporter):
                 }
         return stats
 
+    def _resolve_task_name(self, session_annotations: dict[str, Any]) -> str:
+        task_name = session_annotations.get("annotation.session.task_name")
+        if isinstance(task_name, str) and task_name.strip():
+            return task_name
+        instruction = session_annotations.get("annotation.session.instruction")
+        if isinstance(instruction, str) and instruction.strip():
+            return instruction
+        return "unspecified"
+
+    def _infer_feature_dtype(self, key: str, sample: Any) -> str:
+        if key in {"index", "episode_index", "frame_index", "task_index"}:
+            return "int64"
+        if isinstance(sample, bool):
+            return "bool"
+        if isinstance(sample, int):
+            return "int64"
+        if isinstance(sample, float):
+            return "float64"
+        if isinstance(sample, str):
+            return "string"
+        return "string"
+
     def _flatten_mapping(self, row: dict[str, Any], prefix: str, value: Any) -> None:
         if hasattr(value, "tolist") and not isinstance(value, (str, bytes)):
             self._flatten_mapping(row, prefix, value.tolist())
             return
         if isinstance(value, dict):
             for child_key, child_value in value.items():
-                self._flatten_mapping(row, f"{prefix}.{child_key}", child_value)
+                child_prefix = f"{prefix}.{child_key}" if prefix else child_key
+                self._flatten_mapping(row, child_prefix, child_value)
             return
         if isinstance(value, list):
             for index, item in enumerate(value):
-                self._flatten_mapping(row, f"{prefix}.{index}", item)
+                child_prefix = f"{prefix}.{index}" if prefix else str(index)
+                self._flatten_mapping(row, child_prefix, item)
             return
         row[prefix] = value
