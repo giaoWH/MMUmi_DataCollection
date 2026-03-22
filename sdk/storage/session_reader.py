@@ -23,8 +23,14 @@ class SessionReader:
     def sensor_names(self) -> list[str]:
         return list(self.manifest.sensors.keys())
 
+    def annotations_dir(self) -> Path:
+        return self.session_dir / "annotations"
+
+    def has_annotations(self) -> bool:
+        return self.annotations_dir().exists()
+
     def summary(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": self.manifest.schema_version,
             "session_id": self.manifest.session_id,
             "started_at": self.manifest.started_at,
@@ -32,6 +38,55 @@ class SessionReader:
             "aligned_path": self.manifest.aligned_path,
             "trajectory_path": self.manifest.trajectory_path,
         }
+        if self.has_annotations():
+            payload["annotation_summary"] = self.annotation_summary()
+        return payload
+
+    def load_annotation_bundle(self) -> dict[str, Any] | None:
+        if not self.has_annotations():
+            return None
+        from sdk.annotations import AnnotationService
+
+        service = AnnotationService(self.session_dir)
+        return service.load_bundle().to_dict()
+
+    def load_annotation_schema(self) -> dict[str, Any] | None:
+        bundle = self.load_annotation_bundle()
+        if bundle is None:
+            return None
+        return bundle["schema"]
+
+    def load_session_annotation(self) -> dict[str, Any] | None:
+        bundle = self.load_annotation_bundle()
+        if bundle is None:
+            return None
+        return bundle["session"]
+
+    def iter_span_annotations(self) -> Iterator[dict[str, Any]]:
+        bundle = self.load_annotation_bundle()
+        if bundle is None:
+            return
+        yield from bundle["spans"]
+
+    def iter_keyframe_annotations(self) -> Iterator[dict[str, Any]]:
+        bundle = self.load_annotation_bundle()
+        if bundle is None:
+            return
+        yield from bundle["keyframes"]
+
+    def annotation_summary(self) -> dict[str, Any]:
+        if not self.has_annotations():
+            return {
+                "exists": False,
+                "schema_version": None,
+                "session_fields": [],
+                "span_count": 0,
+                "keyframe_count": 0,
+            }
+        from sdk.annotations import AnnotationService
+
+        service = AnnotationService(self.session_dir)
+        return service.summary()
 
     def iter_sensor_frames(
         self,

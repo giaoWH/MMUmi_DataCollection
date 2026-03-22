@@ -14,6 +14,12 @@ UMI Data Collection SDK
 record -> inspect -> process_trajectory -> export -> validate
 ```
 
+对于“树莓派采集、PC 标注、PC 导出”的具身学习数据整理场景，当前推荐工作流已经扩展为：
+
+```text
+record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
+```
+
 其中当前闭环里的两个能力边界需要明确：
 
 - `inspect` 当前输出 session 基础摘要
@@ -25,6 +31,9 @@ record -> inspect -> process_trajectory -> export -> validate
 2. 首次安装时按需运行 `python scripts/sdk_discover_ports.py`
 3. 运行 `python scripts/sdk_record.py`
 4. 按配置决定是否在录制结束后自动解算轨迹
+5. 将 `sessions/session_xxx` 拷贝到 Linux / Windows PC
+6. 在 PC 上运行 `python scripts/sdk_annotate.py <session_dir>`
+7. 在 PC 上运行 `python scripts/sdk_export.py <session_dir> --format lerobot`
 
 ## 当前支持的传感器
 
@@ -214,15 +223,68 @@ RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接�
 其中：
 
 - `csv` / `hdf5` / `rlds` / `lerobot` 已完成软件侧基础验证
+- `lerobot` 当前已经支持读取 `session/annotations/` 中的 `session` / `span` / `keyframe` 标注，并映射到 `annotation.session.*`、`annotation.span.*`、`annotation.keyframe.*`
 - `rosbag2` 的真实验证还依赖本机 ROS 2 环境
 - `validate` 当前主要检查导出目录、关键文件以及 step / frame 数等结构级 / 数量级一致性
 - `rosbag2` 在 `validate` 环节当前只检查输出目录存在且非空，不代表已经完成更强的语义一致性验证
+
+### 8. Session 标注
+
+当前 SDK 已新增 session 内置标注能力，标注真源保存在每个 session 的 `annotations/` 目录中，而不是导出结果里。
+
+当前支持的标注范围：
+
+- `session`
+- `span`
+- `keyframe`
+
+当前设计原则：
+
+- 标注主锚点统一使用 `aligned.sequence_id`
+- 标注 schema 支持项目级配置驱动
+- 每个 session 会保存 `schema.snapshot.json`，保证跨机器拷贝和复现实验时的可移植性
+- 当前 `LeRobot` 导出会自动消费这些标注
+
+`annotations/` 典型结构如下：
+
+```text
+session_xxx/
+  annotations/
+    manifest.json
+    schema.snapshot.json
+    session.json
+    spans.jsonl
+    keyframes.jsonl
+```
+
+当前推荐的 PC 端标注入口：
+
+```bash
+python scripts/sdk_annotate.py /abs/path/to/session_xxx
+```
+
+可选指定自定义 schema：
+
+```bash
+python scripts/sdk_annotate.py /abs/path/to/session_xxx --schema configs/annotation_schema.yaml
+```
+
+本地 Web 标注器当前具备：
+
+- 多路图像流同步回看
+- 基于 `aligned.sequence_id` 的统一时间轴
+- FT / IMU / Motors 标量曲线查看
+- `session` 表单编辑
+- `span` 创建、更新、删除
+- `keyframe` 创建、更新、删除
+- 按 schema 动态生成表单控件
 
 ## 目录结构
 
 ```text
 UMI_DataCollection/
 ├── configs/
+│   ├── annotation_schema.yaml
 │   ├── orbslam3/
 │   └── record.yaml
 ├── docs/
@@ -230,6 +292,7 @@ UMI_DataCollection/
 │   └── project-overview.md
 ├── plan.md
 ├── scripts/
+│   ├── sdk_annotate.py
 │   ├── sdk_discover_ports.py
 │   ├── sdk_record.py
 │   ├── sdk_inspect.py
@@ -238,6 +301,7 @@ UMI_DataCollection/
 │   ├── orbslam3_wrapper.py
 │   └── sdk_validate_export.py
 ├── sdk/
+│   ├── annotations/
 │   ├── core/
 │   ├── sensors/
 │   ├── processors/
@@ -273,6 +337,8 @@ UMI_DataCollection/
   - 核心实现
 - `scripts/`
   - 面向使用者的标准入口
+- `sdk/annotations/`
+  - session 标注 schema、落盘和本地 Web 标注服务
 - `sensors/`
   - 底层设备实现、单设备调试工具，以及 `common/` 下的公共采集基类
 - `docs/`
@@ -303,6 +369,7 @@ pip install numpy pyyaml pyserial
 - 麦克风真机采集：需要 `pyaudio`
 - HDF5 导出：`pip install h5py`
 - ROS Bag 2 导出：需要真实 ROS 2 环境
+- PC 端本地 Web 标注器不依赖额外前端技术栈，默认使用 Python 标准库启动本地 HTTP 服务并调用浏览器
 
 当前导出入口还有一个实现边界：
 

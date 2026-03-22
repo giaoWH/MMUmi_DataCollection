@@ -1,0 +1,106 @@
+version: 1.0.0
+fields:
+  - id: task_name
+    scope: session
+    type: string
+    label: Task Name
+    required: false
+    default: null
+  - id: instruction
+    scope: session
+    type: string
+    label: Instruction
+    required: false
+    default: null
+  - id: success
+    scope: session
+    type: bool
+    label: Success
+    required: false
+    default: null
+  - id: failure_reason
+    scope: session
+    type: string
+    label: Failure Reason
+    required: false
+    default: null
+  - id: usable_for_training
+    scope: session
+    type: bool
+    label: Usable For Training
+    required: false
+    default: true
+  - id: phase
+    scope: span
+    type: enum
+    label: Phase
+    required: false
+    default: null
+    options:
+      - approach
+      - contact
+      - manipulate
+      - release
+      - other
+  - id: event_tags
+    scope: span
+    type: multi_enum
+    label: Event Tags
+    required: false
+    default: []
+    options:
+      - grasp
+      - place
+      - align
+      - insert
+      - handover
+      - other
+  - id: human_intervention
+    scope: span
+    type: bool
+    label: Human Intervention
+    required: false
+    default: false
+  - id: valid_segment
+    scope: span
+    type: bool
+    label: Valid Segment
+    required: false
+    default: true
+  - id: event
+    scope: keyframe
+    type: enum
+    label: Event
+    required: false
+    default: null
+    options:
+      - contact
+      - grasped
+      - released
+      - collision
+      - failure
+      - other
+  - id: object_state
+    scope: keyframe
+    type: enum
+    label: Object State
+    required: false
+    default: unknown
+    options:
+      - unknown
+      - free
+      - held
+      - placed
+      - misaligned
+  - id: quality_tags
+    scope: keyframe
+    type: multi_enum
+    label: Quality Tags
+    required: false
+    default: []
+    options:
+      - blur
+      - occlusion
+      - sensor_drop
+      - lighting_issue
+      - other

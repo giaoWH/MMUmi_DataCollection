@@ -1,0 +1,339 @@
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+import numpy as np
+
+from sdk.annotations import AnnotationSchema, AnnotationService, start_annotation_server
+from sdk.core.frame import AlignedFrame, FrameTime, SensorFrame
+from sdk.core.session import create_session_info
+from sdk.exporters.lerobot_exporter import LeRobotSessionExporter
+from sdk.storage import SessionReader, SessionWriter
+
+try:
+    import cv2  # noqa: F401
+except ImportError:  # pragma: no cover
+    cv2 = None
+try:
+    import pyarrow.parquet as pq
+except ImportError:  # pragma: no cover
+    pq = None
+
+
+class AnnotationIntegrationTest(unittest.TestCase):
+    def _create_session(self, output_root: str) -> Path:
+        session = create_session_info(
+            output_root,
+            sensors={
+                "camera": {"sensor_type": "camera_sensor", "modality": "rgb"},
+                "ft": {"sensor_type": "ft_sensor", "modality": "force_torque"},
+                "imu": {"sensor_type": "imu_sensor", "modality": "imu"},
+            },
+            config={"align_rate_hz": 30},
+        )
+        writer = SessionWriter(session)
+
+        camera_frame_0 = SensorFrame(
+            sensor_name="camera",
+            sensor_type="camera_sensor",
+            modality="rgb",
+            frame_id=0,
+            time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+            payload={"color": np.full((4, 6, 3), 16, dtype=np.uint8)},
+        )
+        camera_frame_1 = SensorFrame(
+            sensor_name="camera",
+            sensor_type="camera_sensor",
+            modality="rgb",
+            frame_id=1,
+            time=FrameTime(host_time=1.1, monotonic_time=1.1, aligned_time=1.1),
+            payload={"color": np.full((4, 6, 3), 64, dtype=np.uint8)},
+        )
+        ft_frame_0 = SensorFrame(
+            sensor_name="ft",
+            sensor_type="ft_sensor",
+            modality="force_torque",
+            frame_id=0,
+            time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+            payload={"force": [1.0, 2.0, 3.0], "torque": [0.1, 0.2, 0.3]},
+        )
+        ft_frame_1 = SensorFrame(
+            sensor_name="ft",
+            sensor_type="ft_sensor",
+            modality="force_torque",
+            frame_id=1,
+            time=FrameTime(host_time=1.1, monotonic_time=1.1, aligned_time=1.1),
+            payload={"force": [4.0, 5.0, 6.0], "torque": [0.4, 0.5, 0.6]},
+        )
+        imu_frame_0 = SensorFrame(
+            sensor_name="imu",
+            sensor_type="imu_sensor",
+            modality="imu",
+            frame_id=0,
+            time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+            payload={"acceleration": [0.1, 0.2, 9.8], "angular_velocity": [0.01, 0.02, 0.03]},
+        )
+        imu_frame_1 = SensorFrame(
+            sensor_name="imu",
+            sensor_type="imu_sensor",
+            modality="imu",
+            frame_id=1,
+            time=FrameTime(host_time=1.1, monotonic_time=1.1, aligned_time=1.1),
+            payload={"acceleration": [0.2, 0.3, 9.7], "angular_velocity": [0.04, 0.05, 0.06]},
+        )
+
+        for frame in (camera_frame_0, camera_frame_1, ft_frame_0, ft_frame_1, imu_frame_0, imu_frame_1):
+            writer.write_sensor_frame(frame)
+
+        writer.write_aligned_frame(
+            AlignedFrame(
+                sequence_id=0,
+                aligned_time=1.0,
+                frames={"camera": camera_frame_0, "ft": ft_frame_0, "imu": imu_frame_0},
+                missing_sensors=[],
+                age_by_sensor={"camera": 0.0, "ft": 0.0, "imu": 0.0},
+            )
+        )
+        writer.write_aligned_frame(
+            AlignedFrame(
+                sequence_id=1,
+                aligned_time=1.1,
+                frames={"camera": camera_frame_1, "ft": ft_frame_1, "imu": imu_frame_1},
+                missing_sensors=[],
+                age_by_sensor={"camera": 0.0, "ft": 0.0, "imu": 0.0},
+            )
+        )
+        writer.close()
+        return session.output_dir
+
+    def test_annotation_service_crud_and_reader_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_session(tmp_dir)
+            service = AnnotationService(session_dir, schema=AnnotationSchema.default(), annotator="tester")
+            service.ensure_initialized()
+
+            session_annotation = service.upsert_session_annotation(
+                {
+                    "task_name": "pick_place",
+                    "instruction": "pick the cube and place it",
+                    "success": True,
+                    "usable_for_training": True,
+                }
+            )
+            span = service.create_span(
+                {
+                    "start_sequence_id": 0,
+                    "end_sequence_id": 1,
+                    "start_time": 1.0,
+                    "end_time": 1.1,
+                    "data": {"phase": "manipulate", "valid_segment": True},
+                }
+            )
+            keyframe = service.create_keyframe(
+                {
+                    "sequence_id": 1,
+                    "aligned_time": 1.1,
+                    "data": {"event": "released", "object_state": "placed"},
+                }
+            )
+
+            self.assertEqual(session_annotation["data"]["task_name"], "pick_place")
+            self.assertEqual(span["start_sequence_id"], 0)
+            self.assertEqual(keyframe["sequence_id"], 1)
+
+            reader = SessionReader(session_dir)
+            summary = reader.summary()
+            self.assertIn("annotation_summary", summary)
+            self.assertEqual(summary["annotation_summary"]["span_count"], 1)
+            self.assertEqual(summary["annotation_summary"]["keyframe_count"], 1)
+            bundle = reader.load_annotation_bundle()
+            self.assertEqual(bundle["session"]["data"]["instruction"], "pick the cube and place it")
+            self.assertEqual(len(bundle["spans"]), 1)
+            self.assertEqual(len(bundle["keyframes"]), 1)
+
+    def test_schema_snapshot_takes_precedence_over_later_project_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_session(tmp_dir)
+            schema_path_v1 = Path(tmp_dir) / "annotation_schema_v1.json"
+            schema_path_v2 = Path(tmp_dir) / "annotation_schema_v2.json"
+            schema_path_v1.write_text(
+                json.dumps(
+                    {
+                        "version": "custom-v1",
+                        "fields": [
+                            {
+                                "id": "task_name",
+                                "scope": "session",
+                                "type": "string",
+                                "label": "Task Name",
+                            },
+                            {
+                                "id": "review_note",
+                                "scope": "session",
+                                "type": "string",
+                                "label": "Review Note",
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            schema_path_v2.write_text(
+                json.dumps(
+                    {
+                        "version": "custom-v2",
+                        "fields": [
+                            {
+                                "id": "task_name",
+                                "scope": "session",
+                                "type": "string",
+                                "label": "Task Name",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            service = AnnotationService(session_dir, schema=AnnotationSchema.load(str(schema_path_v1)))
+            service.ensure_initialized()
+            service.upsert_session_annotation({"task_name": "pick", "review_note": "v1"})
+
+            later_service = AnnotationService(session_dir, schema=AnnotationSchema.load(str(schema_path_v2)))
+            bundle = later_service.load_bundle()
+            field_ids = [field["id"] for field in bundle.to_dict()["schema"]["fields"] if field["scope"] == "session"]
+            self.assertIn("review_note", field_ids)
+            self.assertEqual(bundle.schema.version, "custom-v1")
+
+    def test_lerobot_export_includes_annotation_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_session(tmp_dir)
+            service = AnnotationService(session_dir, schema=AnnotationSchema.default())
+            service.ensure_initialized()
+            service.upsert_session_annotation(
+                {
+                    "task_name": "stack_blocks",
+                    "instruction": "stack the red block",
+                    "success": True,
+                }
+            )
+            service.create_span(
+                {
+                    "start_sequence_id": 0,
+                    "end_sequence_id": 1,
+                    "start_time": 1.0,
+                    "end_time": 1.1,
+                    "data": {"phase": "manipulate", "human_intervention": False},
+                }
+            )
+            service.create_keyframe(
+                {
+                    "sequence_id": 1,
+                    "aligned_time": 1.1,
+                    "data": {"event": "released", "object_state": "placed"},
+                }
+            )
+
+            result = LeRobotSessionExporter().export(session_dir)
+            tasks_payload = (result.output_path / "meta" / "tasks.jsonl").read_text(encoding="utf-8").strip()
+            self.assertIn("stack_blocks", tasks_payload)
+
+            table = pq.read_table(result.output_path / "data" / "chunk-000" / "file-000.parquet")
+            rows = table.to_pylist()
+            self.assertEqual(rows[0]["annotation.session.task_name"], "stack_blocks")
+            self.assertEqual(rows[0]["annotation.span.phase"], "manipulate")
+            self.assertEqual(rows[1]["annotation.keyframe.event"], "released")
+
+            episode_table = pq.read_table(result.output_path / "meta" / "episodes" / "chunk-000" / "file-000.parquet")
+            episode = episode_table.to_pylist()[0]
+            self.assertEqual(episode["annotation.session.task_name"], "stack_blocks")
+
+    def test_invalid_schema_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "scope"):
+            AnnotationSchema.from_dict(
+                {
+                    "fields": [
+                        {
+                            "id": "broken",
+                            "scope": "unknown",
+                            "type": "string",
+                            "label": "Broken",
+                        }
+                    ]
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "重复"):
+            AnnotationSchema.from_dict(
+                {
+                    "fields": [
+                        {"id": "dup", "scope": "session", "type": "string", "label": "A"},
+                        {"id": "dup", "scope": "session", "type": "string", "label": "B"},
+                    ]
+                }
+            )
+
+    @unittest.skipIf(cv2 is None, "未安装 opencv-python")
+    def test_annotation_web_server_state_and_mutations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_session(tmp_dir)
+            running = start_annotation_server(session_dir, port=0)
+            try:
+                state_payload = json.loads(urlopen(f"{running.url}api/state").read().decode("utf-8"))
+                self.assertTrue(state_payload["visual_streams"])
+                self.assertTrue(state_payload["scalar_streams"])
+
+                frame_response = urlopen(
+                    f"{running.url}api/frame?sensor_name=camera&frame_id=0&payload_key=color"
+                )
+                self.assertEqual(frame_response.headers.get_content_type(), "image/png")
+
+                request = Request(
+                    f"{running.url}api/spans",
+                    data=json.dumps(
+                        {
+                            "start_sequence_id": 0,
+                            "end_sequence_id": 1,
+                            "start_time": 1.0,
+                            "end_time": 1.1,
+                            "data": {"phase": "contact"},
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                create_payload = json.loads(urlopen(request).read().decode("utf-8"))
+                self.assertTrue(create_payload["ok"])
+                state_payload = json.loads(urlopen(f"{running.url}api/state").read().decode("utf-8"))
+                self.assertEqual(len(state_payload["annotations"]["spans"]), 1)
+            finally:
+                running.close()
+
+    def test_sdk_inspect_includes_annotation_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_session(tmp_dir)
+            service = AnnotationService(session_dir, schema=AnnotationSchema.default())
+            service.ensure_initialized()
+            service.create_keyframe(
+                {
+                    "sequence_id": 0,
+                    "aligned_time": 1.0,
+                    "data": {"event": "contact"},
+                }
+            )
+
+            repo_root = Path(__file__).resolve().parents[1]
+            result = subprocess.run(
+                [sys.executable, str(repo_root / "scripts" / "sdk_inspect.py"), str(session_dir)],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=str(repo_root),
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertIn("annotation_summary", payload)
+            self.assertEqual(payload["annotation_summary"]["keyframe_count"], 1)
