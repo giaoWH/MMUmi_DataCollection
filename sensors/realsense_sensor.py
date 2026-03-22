@@ -222,7 +222,10 @@ class RealsenseSensor(BaseSensor):
             config.enable_stream(rs.stream.accel, rs.format.motion_xyz32f, self.config.imu.accel_fps)
             config.enable_stream(rs.stream.gyro, rs.format.motion_xyz32f, self.config.imu.gyro_fps)
 
-        self._profile = self._pipeline.start(config)
+        try:
+            self._profile = self._pipeline.start(config)
+        except Exception as exc:
+            raise RuntimeError(_build_open_failure_diagnostics(self.config, exc)) from exc
         self._align = (
             rs.align(rs.stream.color)
             if self.config.enable_aligned_depth_to_color and self.config.enable_color and self.config.enable_depth
@@ -400,6 +403,229 @@ def _stream_key_from_profile(stream_profile):
     if stream_type == rs.stream.gyro:
         return "gyro"
     return f"{stream_type}_{stream_index}"
+
+
+def _build_open_failure_diagnostics(config: RealsenseConfig, error: Exception) -> str:
+    requested_streams = _describe_requested_streams(config)
+    lines = [str(error)]
+    if requested_streams:
+        lines.append("请求的流配置:")
+        lines.extend(f"- {_format_stream_description(entry)}" for entry in requested_streams)
+
+    try:
+        device = _select_realsense_device(config)
+    except Exception as exc:
+        lines.append(f"无法枚举设备 profile: {exc}")
+        return "\n".join(lines)
+
+    if device is None:
+        lines.append("未检测到可用的 RealSense 设备")
+        return "\n".join(lines)
+
+    device_name = device.get_info(rs.camera_info.name)
+    serial_number = device.get_info(rs.camera_info.serial_number)
+    lines.append(f"检测到设备: {device_name} ({serial_number})")
+
+    supported_profiles = _collect_device_profiles(device)
+    mismatches = _find_request_mismatches(requested_streams, supported_profiles)
+    if mismatches:
+        lines.append("下列请求在当前设备上没有找到精确匹配:")
+        lines.extend(f"- {entry}" for entry in mismatches)
+    elif requested_streams:
+        lines.append("每个单独 stream profile 看起来都存在，失败更像是这些 profile 的组合不兼容。")
+
+    return "\n".join(lines)
+
+
+def _describe_requested_streams(config: RealsenseConfig) -> list[dict[str, object]]:
+    requests: list[dict[str, object]] = []
+
+    def _video_request(name: str, stream_type, stream_index: int, fmt, width: int, height: int, fps: int) -> None:
+        requests.append(
+            {
+                "name": name,
+                "stream_type": str(stream_type),
+                "stream_index": stream_index,
+                "format": str(fmt),
+                "width": width,
+                "height": height,
+                "fps": fps,
+            }
+        )
+
+    def _motion_request(name: str, stream_type, fmt, fps: int) -> None:
+        requests.append(
+            {
+                "name": name,
+                "stream_type": str(stream_type),
+                "stream_index": 0,
+                "format": str(fmt),
+                "width": None,
+                "height": None,
+                "fps": fps,
+            }
+        )
+
+    if config.enable_color:
+        _video_request(
+            "color",
+            rs.stream.color,
+            0,
+            rs.format.bgr8,
+            config.color.width,
+            config.color.height,
+            config.color.fps,
+        )
+    if config.enable_depth:
+        _video_request(
+            "depth",
+            rs.stream.depth,
+            0,
+            rs.format.z16,
+            config.depth.width,
+            config.depth.height,
+            config.depth.fps,
+        )
+    if config.enable_ir1:
+        _video_request(
+            "ir1",
+            rs.stream.infrared,
+            1,
+            rs.format.y8,
+            config.infrared.width,
+            config.infrared.height,
+            config.infrared.fps,
+        )
+    if config.enable_ir2:
+        _video_request(
+            "ir2",
+            rs.stream.infrared,
+            2,
+            rs.format.y8,
+            config.infrared.width,
+            config.infrared.height,
+            config.infrared.fps,
+        )
+    if config.enable_imu:
+        _motion_request("accel", rs.stream.accel, rs.format.motion_xyz32f, config.imu.accel_fps)
+        _motion_request("gyro", rs.stream.gyro, rs.format.motion_xyz32f, config.imu.gyro_fps)
+    return requests
+
+
+def _format_stream_description(entry: dict[str, object]) -> str:
+    name = entry.get("name")
+    if not isinstance(name, str) or not name:
+        stream_type = str(entry.get("stream_type"))
+        stream_index = int(entry.get("stream_index", 0))
+        if stream_type == str(rs.stream.infrared):
+            name = f"ir{stream_index}"
+        elif stream_type == str(rs.stream.color):
+            name = "color"
+        elif stream_type == str(rs.stream.depth):
+            name = "depth"
+        elif stream_type == str(rs.stream.accel):
+            name = "accel"
+        elif stream_type == str(rs.stream.gyro):
+            name = "gyro"
+        else:
+            name = f"{stream_type}:{stream_index}"
+    prefix = f"{name}: {entry['format']}"
+    width = entry.get("width")
+    height = entry.get("height")
+    if isinstance(width, int) and isinstance(height, int):
+        return f"{prefix} {width}x{height}@{entry['fps']}"
+    return f"{prefix} @{entry['fps']}"
+
+
+def _select_realsense_device(config: RealsenseConfig):
+    context = rs.context()
+    devices = context.query_devices()
+    if len(devices) == 0:
+        return None
+    if config.serial_number:
+        for device in devices:
+            if device.get_info(rs.camera_info.serial_number) == config.serial_number:
+                return device
+        raise RuntimeError(f"未找到序列号为 {config.serial_number} 的 RealSense 设备")
+    return devices[0]
+
+
+def _collect_device_profiles(device) -> list[dict[str, object]]:
+    profiles: list[dict[str, object]] = []
+    seen: set[tuple[object, ...]] = set()
+
+    for sensor in device.query_sensors():
+        for profile in sensor.get_stream_profiles():
+            stream_type = str(profile.stream_type())
+            stream_index = int(profile.stream_index())
+            fmt = str(profile.format())
+            fps = int(profile.fps())
+            width = None
+            height = None
+            if profile.is_video_stream_profile():
+                video_profile = profile.as_video_stream_profile()
+                width = int(video_profile.width())
+                height = int(video_profile.height())
+            key = (stream_type, stream_index, fmt, fps, width, height)
+            if key in seen:
+                continue
+            seen.add(key)
+            profiles.append(
+                {
+                    "stream_type": stream_type,
+                    "stream_index": stream_index,
+                    "format": fmt,
+                    "fps": fps,
+                    "width": width,
+                    "height": height,
+                }
+            )
+    return profiles
+
+
+def _find_request_mismatches(
+    requests: list[dict[str, object]],
+    supported_profiles: list[dict[str, object]],
+) -> list[str]:
+    mismatches: list[str] = []
+    for request in requests:
+        if any(_profile_matches_request(profile, request) for profile in supported_profiles):
+            continue
+        candidate_profiles = [
+            profile
+            for profile in supported_profiles
+            if profile["stream_type"] == request["stream_type"] and profile["stream_index"] == request["stream_index"]
+        ]
+        if not candidate_profiles:
+            candidate_profiles = [
+                profile
+                for profile in supported_profiles
+                if profile["stream_type"] == request["stream_type"]
+            ]
+        supported = ", ".join(_format_stream_description(profile) for profile in candidate_profiles[:8])
+        if len(candidate_profiles) > 8:
+            supported = f"{supported}, ..."
+        if supported:
+            mismatches.append(f"{_format_stream_description(request)}; 可用候选: {supported}")
+        else:
+            mismatches.append(f"{_format_stream_description(request)}; 当前设备未暴露同类 profile")
+    return mismatches
+
+
+def _profile_matches_request(profile: dict[str, object], request: dict[str, object]) -> bool:
+    if profile["stream_type"] != request["stream_type"]:
+        return False
+    if profile["stream_index"] != request["stream_index"]:
+        return False
+    if profile["format"] != request["format"]:
+        return False
+    if profile["fps"] != request["fps"]:
+        return False
+    if profile.get("width") != request.get("width"):
+        return False
+    if profile.get("height") != request.get("height"):
+        return False
+    return True
 
 
 def _sample_point_colors(color_image: np.ndarray, texcoords: np.ndarray) -> np.ndarray:
