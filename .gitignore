@@ -36,3 +36,4 @@ camera_test_frame*.jpg
 
 # Local third-party drop-ins
 ThirdParty/
+configs/record.yaml.bak

@@ -55,7 +55,7 @@ realsense:
   derived:
     enable_aligned_depth_to_color: false
     enable_pointcloud: false
-    pointcloud_colored: true
+    pointcloud_colored: false
 motors:
   name: motors
   port: /dev/ttyACM1
