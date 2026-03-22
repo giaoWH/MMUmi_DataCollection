@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -13,10 +14,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from sdk.config import load_config_file  # noqa: E402
+from sdk.sensors.realsense import RealSenseConfig as SDKRealSenseConfig  # noqa: E402
 from sensors.realsense_sensor import (  # noqa: E402
+    RealsenseConfig,
     RealsenseSensor,
     depth_to_preview,
     infrared_to_preview,
+)
+
+DEFAULT_RECORD_CONFIG_CANDIDATES = (
+    REPO_ROOT / "configs" / "record.yaml",
+    REPO_ROOT / "configs" / "record.yml",
+    REPO_ROOT / "configs" / "record.json",
 )
 
 
@@ -136,19 +146,100 @@ def _save_artifacts(output_dir: Path, payload: dict[str, object]) -> None:
         save_pointcloud_as_ply(output_dir / "pointcloud.ply", pointcloud["vertices"], pointcloud.get("colors"))
 
 
+def _find_default_config_path() -> Path | None:
+    for candidate in DEFAULT_RECORD_CONFIG_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _load_sensor_config(config_path: Path | None) -> tuple[RealsenseConfig, Path | None]:
+    if config_path is None:
+        return RealsenseConfig(), None
+
+    payload = load_config_file(config_path)
+    realsense_section = payload.get("realsense")
+    if realsense_section is None:
+        raise ValueError(f"配置文件缺少 realsense 段: {config_path}")
+    if not isinstance(realsense_section, dict):
+        raise ValueError(f"realsense 配置必须是对象: {config_path}")
+    return SDKRealSenseConfig.from_dict(realsense_section).to_low_level_config(), config_path
+
+
+def _summarize_config(config: RealsenseConfig) -> str:
+    enabled_streams: list[str] = []
+    if config.enable_color:
+        enabled_streams.append(f"color={config.color.width}x{config.color.height}@{config.color.fps}")
+    if config.enable_depth:
+        enabled_streams.append(f"depth={config.depth.width}x{config.depth.height}@{config.depth.fps}")
+    if config.enable_ir1:
+        enabled_streams.append(f"ir1={config.infrared.width}x{config.infrared.height}@{config.infrared.fps}")
+    if config.enable_ir2:
+        enabled_streams.append(f"ir2={config.infrared.width}x{config.infrared.height}@{config.infrared.fps}")
+    if config.enable_imu:
+        enabled_streams.append(
+            f"imu=accel@{config.imu.accel_fps},gyro@{config.imu.gyro_fps}"
+        )
+    derived: list[str] = []
+    if config.enable_aligned_depth_to_color:
+        derived.append("aligned_depth_to_color")
+    if config.enable_pointcloud:
+        derived.append("pointcloud")
+    enabled_streams_text = ", ".join(enabled_streams) if enabled_streams else "none"
+    derived_text = ", ".join(derived) if derived else "none"
+    return f"streams=[{enabled_streams_text}] derived=[{derived_text}] serial={config.serial_number or 'auto'}"
+
+
+def _gui_available() -> bool:
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="RealSense D435i bring-up / 连通性测试")
     parser.add_argument("--save-dir", default="realsense_debug_output", help="退出时保存样例产物的目录")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="可选：指定 record.yaml/json；未提供时自动尝试 configs/record.yaml",
+    )
+    parser.add_argument(
+        "--use-default-config",
+        action="store_true",
+        help="忽略 record 配置，强制使用底层传感器的内置默认配置",
+    )
+    parser.add_argument(
+        "--no-gui",
+        action="store_true",
+        help="禁用 OpenCV 预览窗口，适合 SSH / tty / 无桌面环境",
+    )
     args = parser.parse_args()
 
     print(f"pyrealsense2 已加载: pipeline={hasattr(rs, 'pipeline')}, align={hasattr(rs, 'align')}, pointcloud={hasattr(rs, 'pointcloud')}")
 
-    sensor = RealsenseSensor()
+    config_path = None if args.use_default_config else (args.config or _find_default_config_path())
+    sensor_config, loaded_config_path = _load_sensor_config(config_path)
+    if loaded_config_path is not None:
+        print(f"已加载 RealSense 配置: {loaded_config_path}")
+    else:
+        print("未找到 record 配置，使用底层传感器默认配置")
+    print(f"当前 RealSense 配置: {_summarize_config(sensor_config)}")
+
+    enable_gui = not args.no_gui
+    if enable_gui and not _gui_available():
+        enable_gui = False
+        print("未检测到图形显示环境，自动禁用 OpenCV 预览窗口")
+        print("如需预览，请在桌面会话中运行，或显式传 --no-gui 仅做采集连通性测试")
+
+    sensor = RealsenseSensor(sensor_config)
     last_payload = None
     last_log_time = 0.0
     save_dir = Path(args.save_dir)
 
-    print("启动 RealSense 测试，按 q / ESC 退出")
+    if enable_gui:
+        print("启动 RealSense 测试，按 q / ESC 退出")
+    else:
+        print("启动 RealSense 测试，当前为无界面模式，按 Ctrl-C 退出")
     sensor.start()
     try:
         while True:
@@ -158,9 +249,10 @@ def main() -> None:
                 continue
 
             last_payload = payload
-            preview = _build_preview(payload)
-            if preview is not None:
-                cv2.imshow("RealSense Bring-up", preview)
+            if enable_gui:
+                preview = _build_preview(payload)
+                if preview is not None:
+                    cv2.imshow("RealSense Bring-up", preview)
 
             now = time.time()
             if now - last_log_time >= 1.0:
@@ -177,15 +269,17 @@ def main() -> None:
                 )
                 last_log_time = now
 
-            key = cv2.waitKey(1) & 0xFF
-            if key in {27, ord('q')}:
-                break
+            if enable_gui:
+                key = cv2.waitKey(1) & 0xFF
+                if key in {27, ord('q')}:
+                    break
     except KeyboardInterrupt:
         pass
     finally:
         print("\n正在停止 RealSense 测试...")
         sensor.stop()
-        cv2.destroyAllWindows()
+        if enable_gui:
+            cv2.destroyAllWindows()
         if last_payload is not None:
             _save_artifacts(save_dir, last_payload)
             print(f"样例数据已保存到: {save_dir}")

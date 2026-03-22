@@ -49,7 +49,7 @@ realsense:
     height: 480
     fps: 30
   imu:
-    accel_fps: 250
+    accel_fps: 200
     gyro_fps: 200
     max_samples_per_frame: 512
   derived:
