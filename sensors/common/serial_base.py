@@ -2,6 +2,7 @@ import abc
 import multiprocessing as mp
 import queue
 import time
+import traceback
 
 import serial
 
@@ -128,7 +129,10 @@ class SerialBaseSensor(BaseSensor):
                 else:
                     time.sleep(0.0001)
             except Exception as e:
-                print(f"[{self.name}] 运行时错误: {e}")
+                if not self._run_event.is_set():
+                    break
+                print(f"[{self.name}] 运行时错误: {type(e).__name__}: {e!r}")
+                traceback.print_exc()
                 time.sleep(0.1)
 
         self._worker_running.value = False
@@ -162,14 +166,22 @@ class SerialBaseSensor(BaseSensor):
         self.latest_time_info = latest_packet["time_info"]
 
     def _publish_latest_packet(self, packet):
-        try:
-            self._latest_packet_queue.put_nowait(packet)
-        except queue.Full:
+        # This queue is only used as a "latest packet" handoff cache.
+        # If the consumer lags behind, it is acceptable to drop the stale
+        # packet and keep only the newest one.
+        for _ in range(3):
             try:
-                self._latest_packet_queue.get_nowait()
-            except queue.Empty:
-                pass
-            self._latest_packet_queue.put_nowait(packet)
+                self._latest_packet_queue.put_nowait(packet)
+                return
+            except queue.Full:
+                try:
+                    self._latest_packet_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                time.sleep(0.0005)
+        # If the queue is still reported as full after retries, drop this
+        # packet silently. The next loop iteration will publish a newer one.
+        return
 
     def _reset_shared_runtime_state(self):
         self.latest_data = None
