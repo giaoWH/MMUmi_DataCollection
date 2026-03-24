@@ -352,10 +352,18 @@ python scripts/sdk_annotate.py /abs/path/to/session_xxx --schema configs/annotat
 - 麦克风保留原始 `audio` 表示，同时提供整段 session 音频回放与音频摘要特征查看
 - 页面时间统一按墙上时间展示
 - 右上角显示当前 session duration
+- 右上角提供 `PageUp` / `PageDown`，可在同级目录的多个 session 间连续翻页标注
+- 翻页前必须先保存；若当前表单存在未保存修改，页面会弹出提示并拒绝切换
+- 页面内提供 `Close` 按钮，可在标注完成后直接关闭本地标注服务
 - `session` 表单编辑
+- `span` / `keyframe` 的 `id` 可编辑
+- `span` 的 `start/end sequence` 会自动联动 `start/end time`
+- `keyframe` 的 `sequence` 会自动联动 `aligned time`
 - `span` 创建、更新、删除
 - `keyframe` 创建、更新、删除
 - 按 schema 动态生成表单控件
+- 带有 `other` 选项的 `enum` / `multi_enum` 字段会要求输入自定义标签；最终落盘的是手动输入内容，而不是字面值 `other`
+- `Save` / `New` / `Delete` 按钮具备处理中与成功/失败反馈，便于操作员确认点击已生效
 
 ## 目录结构
 

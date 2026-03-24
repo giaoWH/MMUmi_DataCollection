@@ -127,6 +127,12 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - 麦克风保留原始 `audio` 表示，同时支持整段 session 音频回放与音频摘要特征查看
 - 页面时间统一按墙上时间展示
 - 右上角显示当前 session duration
+- 右上角提供 `PageUp` / `PageDown`，可在同级目录的多个 session 间连续翻页标注
+- 翻页前必须先保存；若当前表单存在未保存修改，页面会弹出提示并拒绝切换
+- 页面内提供 `Close` 按钮，可在标注完成后直接关闭本地标注服务
+- `span` / `keyframe` 的 `id` 可编辑，且 `sequence` 与展示时间联动
+- 带有 `other` 选项的枚举字段会要求输入自定义标签，最终写入手动输入内容
+- `Save` / `New` / `Delete` 按钮具备处理中与成功/失败反馈
 
 标注结果当前直接写回 session 的 `annotations/` 目录。
 

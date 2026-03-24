@@ -736,6 +736,44 @@ class AnnotationIntegrationTest(unittest.TestCase):
             finally:
                 running.close()
 
+    def test_annotation_web_server_can_navigate_between_sibling_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_a = self._create_session(tmp_dir)
+            renamed_a = Path(tmp_dir) / "session_alpha"
+            session_a.rename(renamed_a)
+            session_b = self._create_session(tmp_dir)
+            renamed_b = Path(tmp_dir) / "session_beta"
+            session_b.rename(renamed_b)
+            ordered_sessions = sorted([renamed_a, renamed_b], key=lambda item: item.name)
+            running = start_annotation_server(ordered_sessions[0], port=0)
+            try:
+                state_payload = json.loads(urlopen(f"{running.url}api/state").read().decode("utf-8"))
+                self.assertEqual(state_payload["navigation"]["total"], 2)
+                self.assertEqual(state_payload["navigation"]["position"], 1)
+                self.assertFalse(state_payload["navigation"]["has_previous"])
+                self.assertTrue(state_payload["navigation"]["has_next"])
+
+                request = Request(
+                    f"{running.url}api/navigate",
+                    data=json.dumps({"direction": "next"}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                payload = json.loads(urlopen(request).read().decode("utf-8"))
+                self.assertTrue(payload["ok"])
+
+                next_state = json.loads(urlopen(f"{running.url}api/state").read().decode("utf-8"))
+                self.assertEqual(next_state["navigation"]["position"], 2)
+                self.assertTrue(next_state["navigation"]["has_previous"])
+                self.assertFalse(next_state["navigation"]["has_next"])
+                self.assertEqual(next_state["navigation"]["current_session_name"], ordered_sessions[1].name)
+                self.assertNotEqual(
+                    next_state["navigation"]["current_session_dir"],
+                    state_payload["navigation"]["current_session_dir"],
+                )
+            finally:
+                running.close()
+
     def test_sdk_inspect_includes_annotation_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             session_dir = self._create_session(tmp_dir)
