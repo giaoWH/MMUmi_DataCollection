@@ -86,6 +86,15 @@ class CSVSnapshotExporter(SessionExporter):
             if frame is None or frame.modality != "force_torque":
                 continue
             row["FT_Time"] = f"{float(frame.time.host_time):.6f}"
+            force = frame.payload.get("force", [])
+            torque = frame.payload.get("torque", [])
+            if len(force) >= 3:
+                row["Fx_Raw"], row["Fy_Raw"], row["Fz_Raw"] = [f"{float(value):.6f}" for value in force[:3]]
+            if len(torque) >= 3:
+                row["Tx"], row["Ty"], row["Tz"] = [f"{float(value):.6f}" for value in torque[:3]]
+            if len(force) >= 3 and len(torque) >= 3:
+                return
+
             wrench = frame.payload.get("force_torque", [])
             if len(wrench) >= 6:
                 row["Fx_Raw"], row["Fy_Raw"], row["Fz_Raw"] = [f"{float(value):.6f}" for value in wrench[:3]]

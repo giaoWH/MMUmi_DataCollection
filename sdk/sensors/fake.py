@@ -164,7 +164,6 @@ class FakeFTAdapter(_BaseFakeAdapter):
             frame_id=self._frame_id,
             time=frame_time,
             payload={
-                "force_torque": wrench,
                 "force": force,
                 "torque": torque,
             },
@@ -394,7 +393,6 @@ class FakeMotorsAdapter(_BaseFakeAdapter):
             0.25 * math.sin(phase * 1.1),
             0.15 * math.cos(phase * 1.5),
         ]
-        state = motor_1 + motor_2
         return SensorFrame(
             sensor_name=self.name,
             sensor_type=self.sensor_type,
@@ -402,7 +400,6 @@ class FakeMotorsAdapter(_BaseFakeAdapter):
             frame_id=self._frame_id,
             time=frame_time,
             payload={
-                "motor_state": state,
                 "motor_1": {
                     "position": motor_1[0],
                     "velocity": motor_1[1],

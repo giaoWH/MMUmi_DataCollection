@@ -110,6 +110,201 @@ class AnnotationIntegrationTest(unittest.TestCase):
         writer.close()
         return session.output_dir
 
+    def _create_session_with_audio(self, output_root: str) -> Path:
+        session = create_session_info(
+            output_root,
+            sensors={
+                "camera": {"sensor_type": "camera_sensor", "modality": "rgb"},
+                "ft": {"sensor_type": "ft_sensor", "modality": "force_torque"},
+                "imu": {"sensor_type": "imu_sensor", "modality": "imu"},
+                "microphone": {"sensor_type": "microphone_sensor", "modality": "audio"},
+            },
+            config={"align_rate_hz": 30},
+        )
+        writer = SessionWriter(session)
+
+        camera_frame_0 = SensorFrame(
+            sensor_name="camera",
+            sensor_type="camera_sensor",
+            modality="rgb",
+            frame_id=0,
+            time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+            payload={"color": np.full((4, 6, 3), 16, dtype=np.uint8)},
+        )
+        camera_frame_1 = SensorFrame(
+            sensor_name="camera",
+            sensor_type="camera_sensor",
+            modality="rgb",
+            frame_id=1,
+            time=FrameTime(host_time=1.1, monotonic_time=1.1, aligned_time=1.1),
+            payload={"color": np.full((4, 6, 3), 64, dtype=np.uint8)},
+        )
+        ft_frame_0 = SensorFrame(
+            sensor_name="ft",
+            sensor_type="ft_sensor",
+            modality="force_torque",
+            frame_id=0,
+            time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+            payload={"force": [1.0, 2.0, 3.0], "torque": [0.1, 0.2, 0.3]},
+        )
+        ft_frame_1 = SensorFrame(
+            sensor_name="ft",
+            sensor_type="ft_sensor",
+            modality="force_torque",
+            frame_id=1,
+            time=FrameTime(host_time=1.1, monotonic_time=1.1, aligned_time=1.1),
+            payload={"force": [4.0, 5.0, 6.0], "torque": [0.4, 0.5, 0.6]},
+        )
+        imu_frame_0 = SensorFrame(
+            sensor_name="imu",
+            sensor_type="imu_sensor",
+            modality="imu",
+            frame_id=0,
+            time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+            payload={"acceleration": [0.1, 0.2, 9.8], "angular_velocity": [0.01, 0.02, 0.03]},
+        )
+        imu_frame_1 = SensorFrame(
+            sensor_name="imu",
+            sensor_type="imu_sensor",
+            modality="imu",
+            frame_id=1,
+            time=FrameTime(host_time=1.1, monotonic_time=1.1, aligned_time=1.1),
+            payload={"acceleration": [0.2, 0.3, 9.7], "angular_velocity": [0.04, 0.05, 0.06]},
+        )
+        microphone_frame_0 = SensorFrame(
+            sensor_name="microphone",
+            sensor_type="microphone_sensor",
+            modality="audio",
+            frame_id=0,
+            time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+            payload={"audio": np.array([0, 1000, -1000, 500], dtype=np.int16)},
+        )
+        microphone_frame_1 = SensorFrame(
+            sensor_name="microphone",
+            sensor_type="microphone_sensor",
+            modality="audio",
+            frame_id=1,
+            time=FrameTime(host_time=1.1, monotonic_time=1.1, aligned_time=1.1),
+            payload={"audio": np.array([0, 2000, -2000, 1500], dtype=np.int16)},
+        )
+
+        for frame in (
+            camera_frame_0,
+            camera_frame_1,
+            ft_frame_0,
+            ft_frame_1,
+            imu_frame_0,
+            imu_frame_1,
+            microphone_frame_0,
+            microphone_frame_1,
+        ):
+            writer.write_sensor_frame(frame)
+
+        writer.write_aligned_frame(
+            AlignedFrame(
+                sequence_id=0,
+                aligned_time=1.0,
+                frames={
+                    "camera": camera_frame_0,
+                    "ft": ft_frame_0,
+                    "imu": imu_frame_0,
+                    "microphone": microphone_frame_0,
+                },
+                missing_sensors=[],
+                age_by_sensor={"camera": 0.0, "ft": 0.0, "imu": 0.0, "microphone": 0.0},
+            )
+        )
+        writer.write_aligned_frame(
+            AlignedFrame(
+                sequence_id=1,
+                aligned_time=1.1,
+                frames={
+                    "camera": camera_frame_1,
+                    "ft": ft_frame_1,
+                    "imu": imu_frame_1,
+                    "microphone": microphone_frame_1,
+                },
+                missing_sensors=[],
+                age_by_sensor={"camera": 0.0, "ft": 0.0, "imu": 0.0, "microphone": 0.0},
+            )
+        )
+        writer.close()
+        return session.output_dir
+
+    def _create_session_with_motors(self, output_root: str) -> Path:
+        session = create_session_info(
+            output_root,
+            sensors={
+                "camera": {"sensor_type": "camera_sensor", "modality": "rgb"},
+                "motors": {"sensor_type": "motors_sensor", "modality": "motor_state"},
+            },
+            config={"align_rate_hz": 30},
+        )
+        writer = SessionWriter(session)
+
+        camera_frame_0 = SensorFrame(
+            sensor_name="camera",
+            sensor_type="camera_sensor",
+            modality="rgb",
+            frame_id=0,
+            time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+            payload={"color": np.full((4, 6, 3), 16, dtype=np.uint8)},
+        )
+        camera_frame_1 = SensorFrame(
+            sensor_name="camera",
+            sensor_type="camera_sensor",
+            modality="rgb",
+            frame_id=1,
+            time=FrameTime(host_time=1.1, monotonic_time=1.1, aligned_time=1.1),
+            payload={"color": np.full((4, 6, 3), 64, dtype=np.uint8)},
+        )
+        motors_frame_0 = SensorFrame(
+            sensor_name="motors",
+            sensor_type="motors_sensor",
+            modality="motor_state",
+            frame_id=0,
+            time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+            payload={
+                "motor_1": {"position": 1.0, "velocity": 2.0, "torque": 3.0},
+                "motor_2": {"position": 4.0, "velocity": 5.0, "torque": 6.0},
+            },
+        )
+        motors_frame_1 = SensorFrame(
+            sensor_name="motors",
+            sensor_type="motors_sensor",
+            modality="motor_state",
+            frame_id=1,
+            time=FrameTime(host_time=1.1, monotonic_time=1.1, aligned_time=1.1),
+            payload={
+                "motor_1": {"position": 1.1, "velocity": 2.1, "torque": 3.1},
+                "motor_2": {"position": 4.1, "velocity": 5.1, "torque": 6.1},
+            },
+        )
+
+        for frame in (camera_frame_0, camera_frame_1, motors_frame_0, motors_frame_1):
+            writer.write_sensor_frame(frame)
+
+        writer.write_aligned_frame(
+            AlignedFrame(
+                sequence_id=0,
+                aligned_time=1.0,
+                frames={"camera": camera_frame_0, "motors": motors_frame_0},
+                missing_sensors=[],
+                age_by_sensor={"camera": 0.0, "motors": 0.0},
+            )
+        )
+        writer.write_aligned_frame(
+            AlignedFrame(
+                sequence_id=1,
+                aligned_time=1.1,
+                frames={"camera": camera_frame_1, "motors": motors_frame_1},
+                missing_sensors=[],
+                age_by_sensor={"camera": 0.0, "motors": 0.0},
+            )
+        )
+        writer.close()
+        return session.output_dir
+
     def test_annotation_service_crud_and_reader_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             session_dir = self._create_session(tmp_dir)
@@ -309,6 +504,76 @@ class AnnotationIntegrationTest(unittest.TestCase):
                 self.assertTrue(create_payload["ok"])
                 state_payload = json.loads(urlopen(f"{running.url}api/state").read().decode("utf-8"))
                 self.assertEqual(len(state_payload["annotations"]["spans"]), 1)
+            finally:
+                running.close()
+
+    def test_annotation_web_server_shows_only_six_ft_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_session(tmp_dir)
+            running = start_annotation_server(session_dir, port=0)
+            try:
+                state_payload = json.loads(urlopen(f"{running.url}api/state").read().decode("utf-8"))
+                ft_stream_ids = sorted(
+                    item["id"]
+                    for item in state_payload["scalar_streams"]
+                    if item["id"].startswith("ft.")
+                )
+                self.assertEqual(
+                    ft_stream_ids,
+                    [
+                        "ft.force.0",
+                        "ft.force.1",
+                        "ft.force.2",
+                        "ft.torque.0",
+                        "ft.torque.1",
+                        "ft.torque.2",
+                    ],
+                )
+            finally:
+                running.close()
+
+    def test_annotation_web_server_exposes_audio_as_summary_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_session_with_audio(tmp_dir)
+            running = start_annotation_server(session_dir, port=0)
+            try:
+                state_payload = json.loads(urlopen(f"{running.url}api/state").read().decode("utf-8"))
+                stream_ids = {item["id"] for item in state_payload["scalar_streams"]}
+                self.assertIn("microphone.audio_rms", stream_ids)
+                self.assertIn("microphone.audio_peak", stream_ids)
+                self.assertNotIn("microphone.audio.0", stream_ids)
+                self.assertEqual(state_payload["audio_summary"][0]["sensor_name"], "microphone")
+                self.assertEqual(state_payload["audio_streams"][0]["sensor_name"], "microphone")
+                self.assertGreater(state_payload["audio_streams"][0]["duration_sec"], 0.0)
+
+                audio_response = urlopen(f"{running.url}api/audio?sensor_name=microphone")
+                self.assertEqual(audio_response.headers.get_content_type(), "audio/wav")
+                self.assertEqual(audio_response.read(4), b"RIFF")
+            finally:
+                running.close()
+
+    def test_annotation_web_server_shows_only_six_motor_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_session_with_motors(tmp_dir)
+            running = start_annotation_server(session_dir, port=0)
+            try:
+                state_payload = json.loads(urlopen(f"{running.url}api/state").read().decode("utf-8"))
+                motor_stream_ids = sorted(
+                    item["id"]
+                    for item in state_payload["scalar_streams"]
+                    if item["id"].startswith("motors.")
+                )
+                self.assertEqual(
+                    motor_stream_ids,
+                    [
+                        "motors.motor_1.position",
+                        "motors.motor_1.torque",
+                        "motors.motor_1.velocity",
+                        "motors.motor_2.position",
+                        "motors.motor_2.torque",
+                        "motors.motor_2.velocity",
+                    ],
+                )
             finally:
                 running.close()
 

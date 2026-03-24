@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
 import threading
 import webbrowser
+import wave
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -122,6 +124,17 @@ INDEX_HTML = """<!doctype html>
       display: block;
       background: #111827;
     }
+    .audio-card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      background: #fff;
+      display: grid;
+      gap: 8px;
+    }
+    .audio-player {
+      width: 100%;
+    }
     .video-empty {
       aspect-ratio: 4 / 3;
       display: grid;
@@ -134,6 +147,25 @@ INDEX_HTML = """<!doctype html>
       width: 100%;
       height: 120px;
       display: block;
+    }
+    .signal-groups {
+      display: grid;
+      gap: 14px;
+    }
+    .signal-group {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.78);
+    }
+    .signal-group-title {
+      margin: 0;
+      font-size: 14px;
+      color: var(--accent);
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
     }
     .panel h2 {
       margin: 0 0 12px;
@@ -248,7 +280,10 @@ INDEX_HTML = """<!doctype html>
             <span id="time-label">Time 0.000</span>
             <span id="annotation-label">Annotations 0 / 0</span>
           </div>
-          <div class="meta-line" id="audio-summary"></div>
+          <div class="meta-line">
+            <span id="session-duration">Session Duration -</span>
+            <span id="audio-summary"></span>
+          </div>
         </div>
         <div class="slider-wrap">
           <input id="sequence-slider" type="range" min="0" max="0" value="0" />
@@ -262,7 +297,11 @@ INDEX_HTML = """<!doctype html>
         <div id="video-grid" class="grid"></div>
       </div>
       <div class="panel">
-        <h2>Scalar Curves</h2>
+        <h2>Audio Playback</h2>
+        <div id="audio-grid" class="grid"></div>
+      </div>
+      <div class="panel">
+        <h2>Synced Signals</h2>
         <div id="curve-grid" class="grid"></div>
       </div>
     </section>
@@ -307,6 +346,7 @@ INDEX_HTML = """<!doctype html>
     };
 
     const colors = ["#0f766e", "#d97706", "#2563eb", "#9333ea", "#dc2626", "#059669", "#4f46e5"];
+    const SIGNAL_WINDOW_RADIUS = 45;
 
     async function loadState() {
       const response = await fetch("/api/state");
@@ -331,10 +371,67 @@ INDEX_HTML = """<!doctype html>
       return (state.payload.defaults && state.payload.defaults[scope]) || {};
     }
 
+    function formatWallTime(timestampSec) {
+      if (timestampSec === null || timestampSec === undefined || Number.isNaN(timestampSec)) return "";
+      const date = new Date(Number(timestampSec) * 1000);
+      const pad = (value, width = 2) => String(value).padStart(width, "0");
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+        + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.`
+        + `${pad(date.getMilliseconds(), 3)}`;
+    }
+
+    function setWallTimeField(hiddenId, displayId, timestampSec) {
+      const hidden = document.getElementById(hiddenId);
+      const display = document.getElementById(displayId);
+      const raw = timestampSec === null || timestampSec === undefined ? "" : String(timestampSec);
+      if (hidden) hidden.value = raw;
+      if (display) display.value = raw === "" ? "" : formatWallTime(timestampSec);
+    }
+
+    function formatDuration(durationSec) {
+      if (durationSec === null || durationSec === undefined || Number.isNaN(durationSec)) return "-";
+      const totalMs = Math.max(0, Math.round(Number(durationSec) * 1000));
+      const hours = Math.floor(totalMs / 3600000);
+      const minutes = Math.floor((totalMs % 3600000) / 60000);
+      const seconds = Math.floor((totalMs % 60000) / 1000);
+      const milliseconds = totalMs % 1000;
+      const pad = (value, width = 2) => String(value).padStart(width, "0");
+      return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}.${pad(milliseconds, 3)}`;
+    }
+
+    function currentSequenceId() {
+      const record = currentRecord();
+      return record ? record.sequence_id : state.currentSequence;
+    }
+
+    function signalWindow() {
+      const records = state.payload.aligned_records || [];
+      if (!records.length) {
+        return { start: 0, end: 0 };
+      }
+      const minSequence = records[0].sequence_id;
+      const maxSequence = records[records.length - 1].sequence_id;
+      const current = currentSequenceId();
+      return {
+        start: Math.max(minSequence, current - SIGNAL_WINDOW_RADIUS),
+        end: Math.min(maxSequence, current + SIGNAL_WINDOW_RADIUS),
+      };
+    }
+
+    function setCurrentSequence(sequence) {
+      const records = state.payload.aligned_records || [];
+      if (!records.length) return;
+      const next = Math.max(0, Math.min(records.length - 1, sequence));
+      state.currentSequence = next;
+      document.getElementById("sequence-slider").value = String(next);
+      renderAll();
+    }
+
     function renderAll() {
       renderHeader();
       renderTimeline();
       renderVideos();
+      renderAudio();
       renderCurves();
       renderSessionForm();
       renderSpanForm();
@@ -345,19 +442,25 @@ INDEX_HTML = """<!doctype html>
 
     function renderHeader() {
       const summary = state.payload.session_summary;
+      const records = state.payload.aligned_records || [];
       document.getElementById("header-summary").textContent =
         `${summary.session_id} · ${summary.sensor_names.join(", ")} · schema ${state.payload.schema.version}`;
       const record = currentRecord();
       document.getElementById("sequence-label").textContent =
         record ? `Seq ${record.sequence_id}` : "Seq -";
       document.getElementById("time-label").textContent =
-        record ? `Time ${record.aligned_time.toFixed(3)}s` : "Time -";
+        record ? `Time ${formatWallTime(record.aligned_time)}` : "Time -";
+      const duration = records.length >= 2
+        ? records[records.length - 1].aligned_time - records[0].aligned_time
+        : 0;
+      document.getElementById("session-duration").textContent =
+        `Session Duration ${formatDuration(duration)}`;
       document.getElementById("annotation-label").textContent =
         `Annotations ${state.payload.annotations.spans.length} spans / ${state.payload.annotations.keyframes.length} keyframes`;
       const audio = state.payload.audio_summary || [];
       document.getElementById("audio-summary").innerHTML = audio.length
-        ? audio.map((item) => `<span>${item.sensor_name}: ${item.frame_count} audio frames</span>`).join("")
-        : "<span>No audio summary</span>";
+        ? audio.map((item) => `${item.sensor_name}: ${item.frame_count} audio frames`).join(" · ")
+        : "No audio summary";
     }
 
     function renderTimeline() {
@@ -439,36 +542,125 @@ INDEX_HTML = """<!doctype html>
       }).join("");
     }
 
+    function renderAudio() {
+      const target = document.getElementById("audio-grid");
+      const streams = state.payload.audio_streams || [];
+      if (!streams.length) {
+        target.innerHTML = '<div class="empty-note">No audio streams found in this session.</div>';
+        return;
+      }
+      target.innerHTML = streams.map((stream) => {
+        const src = `/api/audio?sensor_name=${encodeURIComponent(stream.sensor_name)}`;
+        const details = [];
+        if (stream.channels) details.push(`${stream.channels} ch`);
+        if (stream.sample_rate) details.push(`${stream.sample_rate} Hz`);
+        if (stream.chunk) details.push(`chunk ${stream.chunk}`);
+        if (stream.duration_sec !== null && stream.duration_sec !== undefined) details.push(`duration ${stream.duration_sec.toFixed(2)}s`);
+        return `
+          <article class="audio-card">
+            <strong>${stream.label}</strong>
+            <div class="meta-line">${details.map((item) => `<span>${item}</span>`).join("")}</div>
+            <audio class="audio-player" controls preload="none" src="${src}"></audio>
+          </article>
+        `;
+      }).join("");
+    }
+
     function renderCurves() {
       const target = document.getElementById("curve-grid");
       const streams = state.payload.scalar_streams || [];
       if (!streams.length) {
-        target.innerHTML = '<div class="empty-note">No scalar curves available for FT / IMU / Motors in this session.</div>';
+        target.innerHTML = '<div class="empty-note">No synchronized FT / IMU / Motors / Audio signals available in this session.</div>';
         return;
       }
-      target.innerHTML = streams.map((stream, index) => `
-        <article class="curve-card">
-          <header>${stream.label}</header>
-          <canvas id="curve-${index}" class="curve-canvas" width="360" height="120"></canvas>
-        </article>
-      `).join("");
-      streams.forEach((stream, index) => drawCurve(document.getElementById(`curve-${index}`), stream, colors[index % colors.length]));
+      const groups = groupSignalStreams(streams);
+      let curveIndex = 0;
+      target.innerHTML = `
+        <div class="signal-groups">
+          ${groups.map((group) => `
+            <section class="signal-group">
+              <h3 class="signal-group-title">${group.sensorName}</h3>
+              <div class="grid">
+                ${group.streams.map((stream) => {
+                  const canvasId = `curve-${curveIndex++}`;
+                  return `
+                    <article class="curve-card">
+                      <header>${stream.shortLabel}</header>
+                      <canvas id="${canvasId}" class="curve-canvas" width="360" height="120"></canvas>
+                    </article>
+                  `;
+                }).join("")}
+              </div>
+            </section>
+          `).join("")}
+        </div>
+      `;
+      curveIndex = 0;
+      streams.forEach((stream, index) => {
+        const canvas = document.getElementById(`curve-${curveIndex++}`);
+        drawCurve(canvas, stream, colors[index % colors.length]);
+        bindCurveScrub(canvas);
+      });
+    }
+
+    function groupSignalStreams(streams) {
+      const groups = [];
+      const bySensor = new Map();
+      streams.forEach((stream) => {
+        const sensorName = signalSensorName(stream);
+        const enriched = { ...stream, shortLabel: signalShortLabel(stream, sensorName) };
+        if (!bySensor.has(sensorName)) {
+          const group = { sensorName, streams: [] };
+          bySensor.set(sensorName, group);
+          groups.push(group);
+        }
+        bySensor.get(sensorName).streams.push(enriched);
+      });
+      return groups;
+    }
+
+    function signalSensorName(stream) {
+      const label = stream.label || stream.id || "signal";
+      const sensorName = label.split(".")[0];
+      return sensorName || "signal";
+    }
+
+    function signalShortLabel(stream, sensorName) {
+      const label = stream.label || stream.id || "";
+      const prefix = `${sensorName}.`;
+      return label.startsWith(prefix) ? label.slice(prefix.length) : label;
     }
 
     function drawCurve(canvas, stream, color) {
       const ctx = canvas.getContext("2d");
-      const points = stream.points || [];
+      const allPoints = stream.points || [];
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.strokeStyle = "#e5e7eb";
       ctx.strokeRect(0, 0, canvas.width, canvas.height);
-      if (!points.length) return;
+      if (!allPoints.length) return;
+      const window = signalWindow();
+      const points = allPoints.filter((point) => point.sequence_id >= window.start && point.sequence_id <= window.end);
+      if (!points.length) {
+        ctx.fillStyle = "#6b7280";
+        ctx.fillText("No samples in current window", 16, 32);
+        return;
+      }
       const minV = Math.min(...points.map((point) => point.value));
       const maxV = Math.max(...points.map((point) => point.value));
       const range = maxV - minV || 1;
-      const xFor = (seq) => 18 + ((canvas.width - 36) * seq) / Math.max(points[points.length - 1].sequence_id, 1);
+      const sequenceRange = Math.max(window.end - window.start, 1);
+      const xFor = (seq) => 18 + ((canvas.width - 36) * (seq - window.start)) / sequenceRange;
       const yFor = (value) => canvas.height - 18 - ((canvas.height - 36) * (value - minV)) / range;
+      ctx.fillStyle = "#6b7280";
+      ctx.font = "11px sans-serif";
+      ctx.fillText(`Seq ${window.start} - ${window.end}`, 12, 14);
+      ctx.strokeStyle = "#f1f5f9";
+      ctx.beginPath();
+      ctx.moveTo(18, canvas.height / 2);
+      ctx.lineTo(canvas.width - 18, canvas.height / 2);
+      ctx.stroke();
       ctx.strokeStyle = color;
       ctx.beginPath();
       points.forEach((point, idx) => {
@@ -479,13 +671,32 @@ INDEX_HTML = """<!doctype html>
       });
       ctx.stroke();
 
-      const currentPoint = points.find((point) => point.sequence_id === state.currentSequence);
+      const currentSeq = currentSequenceId();
+      const cursorX = xFor(currentSeq);
+      ctx.strokeStyle = "#111827";
+      ctx.beginPath();
+      ctx.moveTo(cursorX, 8);
+      ctx.lineTo(cursorX, canvas.height - 8);
+      ctx.stroke();
+
+      const currentPoint = points.find((point) => point.sequence_id === currentSeq);
       if (currentPoint) {
         ctx.fillStyle = "#111827";
         ctx.beginPath();
         ctx.arc(xFor(currentPoint.sequence_id), yFor(currentPoint.value), 4, 0, Math.PI * 2);
         ctx.fill();
+        ctx.fillText(`${currentPoint.value.toFixed(3)}`, canvas.width - 68, 14);
       }
+    }
+
+    function bindCurveScrub(canvas) {
+      canvas.onclick = (event) => {
+        const rect = canvas.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+        const window = signalWindow();
+        const targetSequence = Math.round(window.start + ratio * Math.max(window.end - window.start, 1));
+        setCurrentSequence(targetSequence);
+      };
     }
 
     function fieldControl(scope, field, value) {
@@ -548,8 +759,8 @@ INDEX_HTML = """<!doctype html>
         <div class="field-group">
           <div class="field"><label for="span-start-seq">Start Sequence</label><input id="span-start-seq" type="number" value="${startSeq}" /></div>
           <div class="field"><label for="span-end-seq">End Sequence</label><input id="span-end-seq" type="number" value="${endSeq}" /></div>
-          <div class="field"><label for="span-start-time">Start Time</label><input id="span-start-time" type="number" step="any" value="${startTime ?? ""}" /></div>
-          <div class="field"><label for="span-end-time">End Time</label><input id="span-end-time" type="number" step="any" value="${endTime ?? ""}" /></div>
+          <div class="field"><label for="span-start-time-display">Start Time</label><input id="span-start-time-display" type="text" value="${startTime === null ? "" : formatWallTime(startTime)}" disabled /><input id="span-start-time" type="hidden" value="${startTime ?? ""}" /></div>
+          <div class="field"><label for="span-end-time-display">End Time</label><input id="span-end-time-display" type="text" value="${endTime === null ? "" : formatWallTime(endTime)}" disabled /><input id="span-end-time" type="hidden" value="${endTime ?? ""}" /></div>
         </div>
         ${schemaFields("span").map((field) => fieldControl("span", field, current[field.id] ?? defaultsFor("span")[field.id])).join("")}
       `;
@@ -569,7 +780,7 @@ INDEX_HTML = """<!doctype html>
         </div>
         <div class="field-group">
           <div class="field"><label for="keyframe-sequence">Sequence</label><input id="keyframe-sequence" type="number" value="${sequenceId}" /></div>
-          <div class="field"><label for="keyframe-time">Aligned Time</label><input id="keyframe-time" type="number" step="any" value="${alignedTime ?? ""}" /></div>
+          <div class="field"><label for="keyframe-time-display">Aligned Time</label><input id="keyframe-time-display" type="text" value="${alignedTime === null ? "" : formatWallTime(alignedTime)}" disabled /><input id="keyframe-time" type="hidden" value="${alignedTime ?? ""}" /></div>
         </div>
         ${schemaFields("keyframe").map((field) => fieldControl("keyframe", field, current[field.id] ?? defaultsFor("keyframe")[field.id])).join("")}
       `;
@@ -729,8 +940,7 @@ INDEX_HTML = """<!doctype html>
 
     function bindEvents() {
       document.getElementById("sequence-slider").addEventListener("input", (event) => {
-        state.currentSequence = Number(event.target.value);
-        renderAll();
+        setCurrentSequence(Number(event.target.value));
       });
       document.getElementById("save-session").addEventListener("click", saveSessionAnnotation);
       document.getElementById("save-span").addEventListener("click", saveSpanAnnotation);
@@ -752,8 +962,7 @@ INDEX_HTML = """<!doctype html>
       canvas.addEventListener("mousedown", (event) => {
         state.dragStart = seqFromEvent(event);
         state.dragCurrent = state.dragStart;
-        state.currentSequence = state.dragStart;
-        renderAll();
+        setCurrentSequence(state.dragStart);
       });
       canvas.addEventListener("mousemove", (event) => {
         if (state.dragStart === null) return;
@@ -767,8 +976,8 @@ INDEX_HTML = """<!doctype html>
         const records = state.payload.aligned_records || [];
         document.getElementById("span-start-seq").value = String(start);
         document.getElementById("span-end-seq").value = String(end);
-        document.getElementById("span-start-time").value = String(records[start] ? records[start].aligned_time : "");
-        document.getElementById("span-end-time").value = String(records[end] ? records[end].aligned_time : "");
+        setWallTimeField("span-start-time", "span-start-time-display", records[start] ? records[start].aligned_time : null);
+        setWallTimeField("span-end-time", "span-end-time-display", records[end] ? records[end].aligned_time : null);
         state.dragStart = null;
         state.dragCurrent = null;
         renderTimeline();
@@ -777,8 +986,9 @@ INDEX_HTML = """<!doctype html>
         const sequence = seqFromEvent(event);
         const records = state.payload.aligned_records || [];
         state.currentSequence = sequence;
+        document.getElementById("sequence-slider").value = String(sequence);
         document.getElementById("keyframe-sequence").value = String(sequence);
-        document.getElementById("keyframe-time").value = String(records[sequence] ? records[sequence].aligned_time : "");
+        setWallTimeField("keyframe-time", "keyframe-time-display", records[sequence] ? records[sequence].aligned_time : null);
         renderAll();
       });
     }
@@ -806,6 +1016,7 @@ class AnnotationWebApp:
         self.service = create_annotation_service(self.session_dir, schema_path=schema_path, annotator=annotator)
         self.frame_index = self._build_frame_index()
         self.visual_streams = self._discover_visual_streams()
+        self.audio_feature_index = self._build_audio_feature_index()
         self.audio_summary = self._discover_audio_summary()
 
     def create_server(self, host: str = "127.0.0.1", port: int = 0) -> ThreadingHTTPServer:
@@ -834,6 +1045,22 @@ class AnnotationWebApp:
                             sensor_name=sensor_name,
                             frame_id=int(frame_id),
                             payload_key=payload_key,
+                        )
+                    except Exception as exc:  # pragma: no cover - handled in tests via status code
+                        app._write_error(self, HTTPStatus.BAD_REQUEST, str(exc))
+                    return
+                if parsed.path == "/api/audio":
+                    params = parse_qs(parsed.query)
+                    sensor_name = params.get("sensor_name", [None])[0]
+                    frame_id = params.get("frame_id", [None])[0]
+                    if sensor_name is None:
+                        app._write_error(self, HTTPStatus.BAD_REQUEST, "缺少 audio 参数")
+                        return
+                    try:
+                        app.write_audio_response(
+                            self,
+                            sensor_name=sensor_name,
+                            frame_id=int(frame_id) if frame_id is not None else None,
                         )
                     except Exception as exc:  # pragma: no cover - handled in tests via status code
                         app._write_error(self, HTTPStatus.BAD_REQUEST, str(exc))
@@ -917,6 +1144,7 @@ class AnnotationWebApp:
                 for record in aligned_records
             ],
             "visual_streams": self.visual_streams,
+            "audio_streams": self._discover_audio_streams(),
             "scalar_streams": self._build_scalar_streams(aligned_records),
             "audio_summary": self.audio_summary,
         }
@@ -959,6 +1187,36 @@ class AnnotationWebApp:
             handler.wfile.write(data)
             return
         raise ValueError(f"暂不支持该 artifact 预览: {storage}")
+
+    def write_audio_response(
+        self,
+        handler: BaseHTTPRequestHandler,
+        *,
+        sensor_name: str,
+        frame_id: int | None = None,
+    ) -> None:
+        if frame_id is None:
+            audio_array, metadata = self._load_audio_session(sensor_name)
+        else:
+            frame = self.frame_index.get(sensor_name, {}).get(frame_id)
+            if frame is None:
+                raise FileNotFoundError(f"未找到 frame: {sensor_name}#{frame_id}")
+            if frame.modality != "audio":
+                raise ValueError(f"{sensor_name} 不是音频流")
+
+            audio_payload = frame.payload.get("audio")
+            if audio_payload is None:
+                raise ValueError(f"{sensor_name}#{frame_id} 不包含 audio payload")
+
+            audio_array = self._load_audio_array(audio_payload)
+            metadata = dict(frame.metadata)
+
+        wav_data = self._encode_wav_bytes(audio_array, metadata=metadata)
+        handler.send_response(HTTPStatus.OK)
+        handler.send_header("Content-Type", "audio/wav")
+        handler.send_header("Content-Length", str(len(wav_data)))
+        handler.end_headers()
+        handler.wfile.write(wav_data)
 
     def _write_json(self, handler: BaseHTTPRequestHandler, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1024,6 +1282,31 @@ class AnnotationWebApp:
             )
         return summaries
 
+    def _discover_audio_streams(self) -> list[dict[str, Any]]:
+        streams: list[dict[str, Any]] = []
+        for item in self.audio_summary:
+            metadata = item.get("metadata", {}) or {}
+            sample_rate = metadata.get("sample_rate")
+            total_samples = 0
+            for frame in self.reader.iter_sensor_frames(item["sensor_name"], load_payload=False):
+                total_samples += self._audio_payload_length(frame.payload.get("audio"))
+            duration_sec = (
+                float(total_samples) / float(sample_rate)
+                if sample_rate not in (None, 0) and total_samples > 0
+                else None
+            )
+            streams.append(
+                {
+                    "sensor_name": item["sensor_name"],
+                    "label": item["sensor_name"],
+                    "channels": metadata.get("channels"),
+                    "sample_rate": sample_rate,
+                    "chunk": metadata.get("chunk"),
+                    "duration_sec": duration_sec,
+                }
+            )
+        return streams
+
     def _build_scalar_streams(self, aligned_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         series: dict[str, dict[str, Any]] = {}
         for record in aligned_records:
@@ -1032,25 +1315,75 @@ class AnnotationWebApp:
                 frame = self.frame_index.get(sensor_name, {}).get(frame_info["frame_id"])
                 if frame is None:
                     continue
+                if frame.modality == "audio":
+                    audio_features = self.audio_feature_index.get(sensor_name, {}).get(frame.frame_id, {})
+                    for key, value in audio_features.items():
+                        self._append_scalar_point(
+                            series,
+                            key=key,
+                            sequence_id=sequence_id,
+                            aligned_time=record["aligned_time"],
+                            value=value,
+                        )
+                    continue
+                if frame.modality == "force_torque":
+                    wrench_features = self._extract_wrench_features(sensor_name, frame.payload)
+                    for key, value in wrench_features.items():
+                        self._append_scalar_point(
+                            series,
+                            key=key,
+                            sequence_id=sequence_id,
+                            aligned_time=record["aligned_time"],
+                            value=value,
+                        )
+                    continue
+                if frame.modality == "motor_state":
+                    motor_features = self._extract_motor_features(sensor_name, frame.payload)
+                    for key, value in motor_features.items():
+                        self._append_scalar_point(
+                            series,
+                            key=key,
+                            sequence_id=sequence_id,
+                            aligned_time=record["aligned_time"],
+                            value=value,
+                        )
+                    continue
                 flattened: dict[str, float] = {}
                 self._collect_scalar_values(frame.payload, prefix=sensor_name, output=flattened)
                 for key, value in flattened.items():
-                    stream = series.setdefault(
-                        key,
-                        {
-                            "id": key,
-                            "label": key,
-                            "points": [],
-                        },
+                    self._append_scalar_point(
+                        series,
+                        key=key,
+                        sequence_id=sequence_id,
+                        aligned_time=record["aligned_time"],
+                        value=value,
                     )
-                    stream["points"].append(
-                        {
-                            "sequence_id": sequence_id,
-                            "aligned_time": record["aligned_time"],
-                            "value": value,
-                        }
-                    )
-        return list(series.values())
+        return [series[key] for key in sorted(series.keys())]
+
+    def _append_scalar_point(
+        self,
+        series: dict[str, dict[str, Any]],
+        *,
+        key: str,
+        sequence_id: int,
+        aligned_time: float,
+        value: float,
+    ) -> None:
+        stream = series.setdefault(
+            key,
+            {
+                "id": key,
+                "label": key,
+                "points": [],
+            },
+        )
+        stream["points"].append(
+            {
+                "sequence_id": sequence_id,
+                "aligned_time": aligned_time,
+                "value": value,
+            }
+        )
 
     def _collect_scalar_values(self, value: Any, *, prefix: str, output: dict[str, float]) -> None:
         if isinstance(value, dict):
@@ -1072,6 +1405,184 @@ class AnnotationWebApp:
             return
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             output[prefix] = float(value)
+
+    def _extract_wrench_features(self, sensor_name: str, payload: dict[str, Any]) -> dict[str, float]:
+        features: dict[str, float] = {}
+
+        force = payload.get("force")
+        torque = payload.get("torque")
+        if isinstance(force, list) and len(force) >= 3:
+            for index, value in enumerate(force[:3]):
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    features[f"{sensor_name}.force.{index}"] = float(value)
+        if isinstance(torque, list) and len(torque) >= 3:
+            for index, value in enumerate(torque[:3]):
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    features[f"{sensor_name}.torque.{index}"] = float(value)
+
+        if features:
+            return features
+
+        wrench = payload.get("force_torque")
+        if isinstance(wrench, list) and len(wrench) >= 6:
+            for index, value in enumerate(wrench[:3]):
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    features[f"{sensor_name}.force.{index}"] = float(value)
+            for index, value in enumerate(wrench[3:6]):
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    features[f"{sensor_name}.torque.{index}"] = float(value)
+        return features
+
+    def _extract_motor_features(self, sensor_name: str, payload: dict[str, Any]) -> dict[str, float]:
+        features: dict[str, float] = {}
+
+        for motor_key in ("motor_1", "motor_2"):
+            motor_payload = payload.get(motor_key)
+            if not isinstance(motor_payload, dict):
+                continue
+            for field_name in ("position", "velocity", "torque"):
+                value = motor_payload.get(field_name)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    features[f"{sensor_name}.{motor_key}.{field_name}"] = float(value)
+
+        if features:
+            return features
+
+        state = payload.get("motor_state")
+        if isinstance(state, list) and len(state) >= 6:
+            fallback_fields = (
+                ("motor_1", "position", state[0]),
+                ("motor_1", "velocity", state[1]),
+                ("motor_1", "torque", state[2]),
+                ("motor_2", "position", state[3]),
+                ("motor_2", "velocity", state[4]),
+                ("motor_2", "torque", state[5]),
+            )
+            for motor_key, field_name, value in fallback_fields:
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    features[f"{sensor_name}.{motor_key}.{field_name}"] = float(value)
+        return features
+
+    def _build_audio_feature_index(self) -> dict[str, dict[int, dict[str, float]]]:
+        features: dict[str, dict[int, dict[str, float]]] = {}
+        for sensor_name, stream in self.reader.manifest.sensors.items():
+            if stream.modality != "audio":
+                continue
+            per_frame: dict[int, dict[str, float]] = {}
+            for frame in self.reader.iter_sensor_frames(sensor_name, load_payload=True):
+                audio_payload = frame.payload.get("audio")
+                if audio_payload is None:
+                    continue
+                per_frame[frame.frame_id] = self._extract_audio_features(sensor_name, audio_payload)
+            features[sensor_name] = per_frame
+        return features
+
+    def _load_audio_array(self, value: Any) -> np.ndarray:
+        if isinstance(value, dict) and {"path", "storage", "shape", "dtype"} <= set(value.keys()):
+            loaded = self.reader.load_artifact(value)
+        else:
+            loaded = value
+        array = np.asarray(loaded)
+        if array.size == 0:
+            raise ValueError("音频数据为空")
+        if array.ndim == 1:
+            return array.reshape(-1, 1)
+        if array.ndim == 2:
+            return array
+        raise ValueError(f"不支持的音频形状: {array.shape}")
+
+    def _load_audio_session(self, sensor_name: str) -> tuple[np.ndarray, dict[str, Any]]:
+        stream = self.reader.manifest.sensors.get(sensor_name)
+        if stream is None:
+            raise FileNotFoundError(f"未找到音频流: {sensor_name}")
+        if stream.modality != "audio":
+            raise ValueError(f"{sensor_name} 不是音频流")
+
+        chunks: list[np.ndarray] = []
+        metadata = dict(stream.metadata or {})
+        for frame in self.reader.iter_sensor_frames(sensor_name, load_payload=True):
+            if frame.modality != "audio":
+                continue
+            audio_payload = frame.payload.get("audio")
+            if audio_payload is None:
+                continue
+            array = self._load_audio_array(audio_payload)
+            if not metadata:
+                metadata = dict(frame.metadata)
+            chunks.append(array)
+
+        if not chunks:
+            raise ValueError(f"{sensor_name} 不包含可播放的音频帧")
+
+        channel_count = chunks[0].shape[1]
+        normalized_chunks: list[np.ndarray] = []
+        for chunk in chunks:
+            if chunk.shape[1] != channel_count:
+                raise ValueError(f"{sensor_name} 音频通道数不一致，无法拼接整段音频")
+            normalized_chunks.append(chunk)
+        return np.concatenate(normalized_chunks, axis=0), metadata
+
+    def _audio_payload_length(self, value: Any) -> int:
+        if value is None:
+            return 0
+        if isinstance(value, dict) and {"path", "storage", "shape", "dtype"} <= set(value.keys()):
+            shape = value.get("shape") or []
+            if isinstance(shape, list) and shape:
+                return int(shape[0])
+            return 0
+        if isinstance(value, list):
+            return len(value)
+        if isinstance(value, np.ndarray):
+            return int(value.shape[0]) if value.ndim >= 1 else 0
+        return 0
+
+    def _encode_wav_bytes(self, audio_array: np.ndarray, *, metadata: dict[str, Any]) -> bytes:
+        sample_rate = int(metadata.get("sample_rate") or 48000)
+        channels = int(metadata.get("channels") or (audio_array.shape[1] if audio_array.ndim == 2 else 1))
+        pcm = np.asarray(audio_array)
+        if pcm.ndim == 1:
+            pcm = pcm.reshape(-1, 1)
+        if pcm.shape[1] != channels:
+            channels = pcm.shape[1]
+
+        if pcm.dtype != np.int16:
+            if np.issubdtype(pcm.dtype, np.floating):
+                pcm = np.clip(pcm, -1.0, 1.0)
+                pcm = (pcm * 32767.0).astype(np.int16)
+            else:
+                pcm = np.clip(pcm, -32768, 32767).astype(np.int16)
+
+        with io.BytesIO() as buffer:
+            with wave.open(buffer, "wb") as wav_file:
+                wav_file.setnchannels(channels)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(sample_rate)
+                wav_file.writeframes(np.ascontiguousarray(pcm).tobytes())
+            return buffer.getvalue()
+
+    def _extract_audio_features(self, sensor_name: str, audio_payload: Any) -> dict[str, float]:
+        array = np.asarray(audio_payload, dtype=np.float64)
+        if array.size == 0:
+            return {}
+        if array.ndim == 1:
+            array = array.reshape(-1, 1)
+        elif array.ndim > 2:
+            array = array.reshape(array.shape[0], -1)
+
+        rms = np.sqrt(np.mean(np.square(array), axis=0))
+        peak = np.max(np.abs(array), axis=0)
+        if array.shape[1] == 1:
+            return {
+                f"{sensor_name}.audio_rms": float(rms[0]),
+                f"{sensor_name}.audio_peak": float(peak[0]),
+            }
+
+        features: dict[str, float] = {}
+        for channel_index, value in enumerate(rms.tolist()):
+            features[f"{sensor_name}.audio_rms.{channel_index}"] = float(value)
+        for channel_index, value in enumerate(peak.tolist()):
+            features[f"{sensor_name}.audio_peak.{channel_index}"] = float(value)
+        return features
 
     def _is_visual_reference(self, value: Any) -> bool:
         if not isinstance(value, dict) or "path" not in value:

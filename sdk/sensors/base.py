@@ -23,6 +23,10 @@ class SensorAdapter(abc.ABC):
     def read_frame(self) -> SensorFrame | None:
         pass
 
+    def read_available_frames(self) -> list[SensorFrame]:
+        frame = self.read_frame()
+        return [frame] if frame is not None else []
+
     @abc.abstractmethod
     def get_metadata(self) -> dict[str, object]:
         pass

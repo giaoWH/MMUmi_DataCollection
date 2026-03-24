@@ -22,7 +22,7 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 
 其中当前闭环里的两个能力边界需要明确：
 
-- `inspect` 当前输出 session 基础摘要
+- `inspect` 当前输出 session 基础摘要，时间字段默认按墙上时间展示
 - `validate` 当前主要执行导出产物的结构级 / 数量级一致性校验，不做逐字段、逐 payload 的深度比对
 
 当前推荐使用方式已经切换到“配置文件优先”：
@@ -119,6 +119,7 @@ RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接�
 - `FrameTime` 同时保留秒级字段与纳秒级字段
 - 采集侧显式区分 `host_capture_time`、`host_arrival_time`、`host_read_start/end`
 - 对齐器优先基于单调纳秒时间计算帧龄与最近帧
+- 录制侧会按目标 `align_rate_hz` 维护对齐时间格，主循环单次变慢时会补齐多个 `aligned` 序号，尽量贴近配置频率
 
 ### 3. 校准与 ready 等待
 
@@ -273,7 +274,13 @@ python scripts/sdk_annotate.py /abs/path/to/session_xxx --schema configs/annotat
 
 - 多路图像流同步回看
 - 基于 `aligned.sequence_id` 的统一时间轴
+- `Synced Signals` 按传感器分组展示，并围绕当前进度条位置显示局部时间窗口
 - FT / IMU / Motors 标量曲线查看
+- FT 仅显示真实 6 自由度：`force[3] + torque[3]`
+- Motors 仅显示真实 6 自由度：`motor_1` / `motor_2` 的 `position`、`velocity`、`torque`
+- 麦克风保留原始 `audio` 表示，同时提供整段 session 音频回放与音频摘要特征查看
+- 页面时间统一按墙上时间展示
+- 右上角显示当前 session duration
 - `session` 表单编辑
 - `span` 创建、更新、删除
 - `keyframe` 创建、更新、删除
