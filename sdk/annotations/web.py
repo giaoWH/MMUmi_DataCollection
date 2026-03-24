@@ -54,8 +54,33 @@ INDEX_HTML = """<!doctype html>
     header {
       padding: 20px 24px 8px;
     }
+    .header-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
     h1 { margin: 0 0 6px; font-size: 28px; }
     p { margin: 0; color: var(--muted); }
+    .header-actions {
+      display: grid;
+      gap: 8px;
+      justify-items: end;
+    }
+    .page-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .page-status {
+      color: var(--muted);
+      font-size: 13px;
+      min-width: 96px;
+      text-align: right;
+    }
     main {
       display: grid;
       grid-template-columns: minmax(0, 1.6fr) minmax(360px, 0.9fr);
@@ -224,9 +249,27 @@ INDEX_HTML = """<!doctype html>
       color: white;
       cursor: pointer;
       font-weight: 600;
+      transition: transform 120ms ease, opacity 120ms ease, box-shadow 120ms ease;
+    }
+    button:hover { box-shadow: 0 6px 18px rgba(15, 118, 110, 0.18); }
+    button:active { transform: translateY(1px) scale(0.98); }
+    button:disabled {
+      cursor: wait;
+      opacity: 0.78;
+      box-shadow: none;
     }
     button.secondary { background: #374151; }
     button.danger { background: var(--danger); }
+    .feedback {
+      min-height: 18px;
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--muted);
+      transition: color 120ms ease;
+    }
+    .feedback.success { color: var(--accent); }
+    .feedback.error { color: var(--danger); }
+    .feedback.pending { color: #1d4ed8; }
     .list-table {
       width: 100%;
       border-collapse: collapse;
@@ -266,10 +309,22 @@ INDEX_HTML = """<!doctype html>
     }
   </style>
 </head>
-<body>
+  <body>
   <header>
-    <h1>Session Annotation Workbench</h1>
-    <p id="header-summary">Loading session…</p>
+    <div class="header-bar">
+      <div>
+        <h1>Session Annotation Workbench</h1>
+        <p id="header-summary">Loading session…</p>
+      </div>
+      <div class="header-actions">
+        <div class="page-controls">
+          <span id="page-status" class="page-status">Page - / -</span>
+          <button id="page-up" class="secondary" type="button">PageUp</button>
+          <button id="page-down" class="secondary" type="button">PageDown</button>
+        </div>
+        <div id="navigation-feedback" class="feedback" aria-live="polite"></div>
+      </div>
+    </div>
   </header>
   <main>
     <section class="stack">
@@ -313,6 +368,7 @@ INDEX_HTML = """<!doctype html>
           <button id="save-session" type="button">Save Session</button>
           <button id="close-annotator" class="secondary" type="button">Close</button>
         </div>
+        <div id="session-feedback" class="feedback" aria-live="polite"></div>
       </div>
       <div class="panel">
         <h2>Span Annotation</h2>
@@ -322,6 +378,7 @@ INDEX_HTML = """<!doctype html>
           <button id="new-span" class="secondary" type="button">New Span</button>
           <button id="delete-span" class="danger" type="button">Delete Span</button>
         </div>
+        <div id="span-feedback" class="feedback" aria-live="polite"></div>
         <div id="span-list-wrap"></div>
       </div>
       <div class="panel">
@@ -332,6 +389,7 @@ INDEX_HTML = """<!doctype html>
           <button id="new-keyframe" class="secondary" type="button">New Keyframe</button>
           <button id="delete-keyframe" class="danger" type="button">Delete Keyframe</button>
         </div>
+        <div id="keyframe-feedback" class="feedback" aria-live="polite"></div>
         <div id="keyframe-list-wrap"></div>
       </div>
     </aside>
@@ -344,6 +402,8 @@ INDEX_HTML = """<!doctype html>
       selectedKeyframeId: null,
       dragStart: null,
       dragCurrent: null,
+      feedbackTimers: {},
+      isDirty: false,
     };
 
     const colors = ["#0f766e", "#d97706", "#2563eb", "#9333ea", "#dc2626", "#059669", "#4f46e5"];
@@ -357,6 +417,7 @@ INDEX_HTML = """<!doctype html>
       slider.max = String(Math.max(records.length - 1, 0));
       state.currentSequence = Math.min(state.currentSequence, Math.max(records.length - 1, 0));
       slider.value = String(state.currentSequence);
+      state.isDirty = false;
       renderAll();
     }
 
@@ -429,6 +490,7 @@ INDEX_HTML = """<!doctype html>
       const spanEnd = document.getElementById("span-end-seq");
       const keyframeSequence = document.getElementById("keyframe-sequence");
       const customControls = document.querySelectorAll("[data-other-toggle]");
+      const editableControls = document.querySelectorAll("form input, form select, form textarea");
       if (spanStart) spanStart.addEventListener("input", syncSpanTimesFromSequences);
       if (spanEnd) spanEnd.addEventListener("input", syncSpanTimesFromSequences);
       if (keyframeSequence) keyframeSequence.addEventListener("input", syncKeyframeTimeFromSequence);
@@ -438,6 +500,58 @@ INDEX_HTML = """<!doctype html>
         input.addEventListener("input", update);
         update();
       });
+      editableControls.forEach((input) => {
+        if (input.type === "hidden" || input.readOnly || input.disabled) return;
+        const markDirty = () => {
+          state.isDirty = true;
+        };
+        input.addEventListener("input", markDirty);
+        input.addEventListener("change", markDirty);
+      });
+    }
+
+    function setFeedback(scope, message, kind = "success", timeoutMs = 2200) {
+      const target = document.getElementById(`${scope}-feedback`);
+      if (!target) return;
+      target.textContent = message;
+      target.className = `feedback ${kind}`;
+      if (state.feedbackTimers[scope]) {
+        clearTimeout(state.feedbackTimers[scope]);
+      }
+      if (timeoutMs > 0) {
+        state.feedbackTimers[scope] = setTimeout(() => {
+          target.textContent = "";
+          target.className = "feedback";
+          state.feedbackTimers[scope] = null;
+        }, timeoutMs);
+      }
+    }
+
+    async function runButtonAction({
+      buttonId,
+      scope,
+      pendingLabel,
+      pendingMessage,
+      successMessage,
+      action,
+      timeoutMs = 2200,
+    }) {
+      const button = document.getElementById(buttonId);
+      const defaultLabel = button.dataset.defaultLabel || button.textContent;
+      button.dataset.defaultLabel = defaultLabel;
+      button.disabled = true;
+      button.textContent = pendingLabel;
+      setFeedback(scope, pendingMessage, "pending", 0);
+      try {
+        await action();
+        setFeedback(scope, successMessage, "success", timeoutMs);
+      } catch (error) {
+        const message = error && error.message ? error.message : String(error);
+        setFeedback(scope, message, "error", 4200);
+      } finally {
+        button.disabled = false;
+        button.textContent = defaultLabel;
+      }
     }
 
     function signalWindow() {
@@ -479,9 +593,16 @@ INDEX_HTML = """<!doctype html>
 
     function renderHeader() {
       const summary = state.payload.session_summary;
+      const navigation = state.payload.navigation || {};
       const records = state.payload.aligned_records || [];
       document.getElementById("header-summary").textContent =
         `${summary.session_id} · ${summary.sensor_names.join(", ")} · schema ${state.payload.schema.version}`;
+      document.getElementById("page-status").textContent =
+        `Page ${navigation.position ?? "-"} / ${navigation.total ?? "-"}`;
+      const pageUpButton = document.getElementById("page-up");
+      const pageDownButton = document.getElementById("page-down");
+      pageUpButton.disabled = !navigation.has_previous;
+      pageDownButton.disabled = !navigation.has_next;
       const record = currentRecord();
       document.getElementById("sequence-label").textContent =
         record ? `Seq ${record.sequence_id}` : "Seq -";
@@ -973,20 +1094,35 @@ INDEX_HTML = """<!doctype html>
     }
 
     async function saveSessionAnnotation() {
-      try {
-        await fetch("/api/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ data: readScopedData("session") }),
-        });
-        await loadState();
-      } catch (error) {
-        window.alert(error.message || String(error));
-      }
+      await runButtonAction({
+        buttonId: "save-session",
+        scope: "session",
+        pendingLabel: "Saving...",
+        pendingMessage: "正在保存 session 标注...",
+        successMessage: "Session 标注已保存",
+        action: async () => {
+          const response = await fetch("/api/session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ data: readScopedData("session") }),
+          });
+          const result = await response.json();
+          if (!response.ok || !result.ok) {
+            throw new Error(result.error || "failed to save session annotation");
+          }
+          await loadState();
+        },
+      });
     }
 
     async function saveSpanAnnotation() {
-      try {
+      await runButtonAction({
+        buttonId: "save-span",
+        scope: "span",
+        pendingLabel: "Saving...",
+        pendingMessage: "正在保存 span 标注...",
+        successMessage: "Span 标注已保存",
+        action: async () => {
         const numOrNull = (value) => value === "" ? null : Number(value);
         const rawId = document.getElementById("span-id").value.trim();
         const payload = {
@@ -1009,13 +1145,18 @@ INDEX_HTML = """<!doctype html>
         }
         state.selectedSpanId = result.result.id;
         await loadState();
-      } catch (error) {
-        window.alert(error.message || String(error));
-      }
+        },
+      });
     }
 
     async function saveKeyframeAnnotation() {
-      try {
+      await runButtonAction({
+        buttonId: "save-keyframe",
+        scope: "keyframe",
+        pendingLabel: "Saving...",
+        pendingMessage: "正在保存 keyframe 标注...",
+        successMessage: "Keyframe 标注已保存",
+        action: async () => {
         const numOrNull = (value) => value === "" ? null : Number(value);
         const rawId = document.getElementById("keyframe-id").value.trim();
         const payload = {
@@ -1036,23 +1177,86 @@ INDEX_HTML = """<!doctype html>
         }
         state.selectedKeyframeId = result.result.id;
         await loadState();
-      } catch (error) {
-        window.alert(error.message || String(error));
-      }
+        },
+      });
     }
 
     async function deleteSpanAnnotation() {
-      if (!state.selectedSpanId) return;
-      await fetch(`/api/spans/${state.selectedSpanId}`, { method: "DELETE" });
-      state.selectedSpanId = null;
-      await loadState();
+      if (!state.selectedSpanId) {
+        setFeedback("span", "请先选择一个 span 标注", "error", 2600);
+        return;
+      }
+      await runButtonAction({
+        buttonId: "delete-span",
+        scope: "span",
+        pendingLabel: "Deleting...",
+        pendingMessage: "正在删除 span 标注...",
+        successMessage: "Span 标注已删除",
+        action: async () => {
+          const response = await fetch(`/api/spans/${state.selectedSpanId}`, { method: "DELETE" });
+          const result = await response.json();
+          if (!response.ok || !result.ok) {
+            throw new Error(result.error || "failed to delete span annotation");
+          }
+          state.selectedSpanId = null;
+          await loadState();
+        },
+      });
     }
 
     async function deleteKeyframeAnnotation() {
-      if (!state.selectedKeyframeId) return;
-      await fetch(`/api/keyframes/${state.selectedKeyframeId}`, { method: "DELETE" });
-      state.selectedKeyframeId = null;
-      await loadState();
+      if (!state.selectedKeyframeId) {
+        setFeedback("keyframe", "请先选择一个 keyframe 标注", "error", 2600);
+        return;
+      }
+      await runButtonAction({
+        buttonId: "delete-keyframe",
+        scope: "keyframe",
+        pendingLabel: "Deleting...",
+        pendingMessage: "正在删除 keyframe 标注...",
+        successMessage: "Keyframe 标注已删除",
+        action: async () => {
+          const response = await fetch(`/api/keyframes/${state.selectedKeyframeId}`, { method: "DELETE" });
+          const result = await response.json();
+          if (!response.ok || !result.ok) {
+            throw new Error(result.error || "failed to delete keyframe annotation");
+          }
+          state.selectedKeyframeId = null;
+          await loadState();
+        },
+      });
+    }
+
+    async function navigateSession(direction) {
+      if (state.isDirty) {
+        setFeedback("navigation", "当前有未保存修改，请先保存后再翻页", "error", 3200);
+        window.alert("当前有未保存修改，请先保存后再翻页");
+        return;
+      }
+      const buttonId = direction === "previous" ? "page-up" : "page-down";
+      const successMessage = direction === "previous" ? "已切换到上一段 session" : "已切换到下一段 session";
+      await runButtonAction({
+        buttonId,
+        scope: "navigation",
+        pendingLabel: "Loading...",
+        pendingMessage: "正在切换 session...",
+        successMessage,
+        action: async () => {
+          const response = await fetch("/api/navigate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ direction }),
+          });
+          const result = await response.json();
+          if (!response.ok || !result.ok) {
+            throw new Error(result.error || "failed to navigate session");
+          }
+          state.currentSequence = 0;
+          state.selectedSpanId = null;
+          state.selectedKeyframeId = null;
+          await loadState();
+        },
+      });
     }
 
     async function closeAnnotator() {
@@ -1080,19 +1284,25 @@ INDEX_HTML = """<!doctype html>
       state.selectedSpanId = null;
       state.dragStart = null;
       state.dragCurrent = null;
+      state.isDirty = false;
       renderSpanForm();
       renderTimeline();
+      setFeedback("span", "已切换到新建 span 模式", "success", 1800);
     }
 
     function resetKeyframeForm() {
       state.selectedKeyframeId = null;
+      state.isDirty = false;
       renderKeyframeForm();
+      setFeedback("keyframe", "已切换到新建 keyframe 模式", "success", 1800);
     }
 
     function bindEvents() {
       document.getElementById("sequence-slider").addEventListener("input", (event) => {
         setCurrentSequence(Number(event.target.value));
       });
+      document.getElementById("page-up").addEventListener("click", () => navigateSession("previous"));
+      document.getElementById("page-down").addEventListener("click", () => navigateSession("next"));
       document.getElementById("save-session").addEventListener("click", saveSessionAnnotation);
       document.getElementById("close-annotator").addEventListener("click", closeAnnotator);
       document.getElementById("save-span").addEventListener("click", saveSpanAnnotation);
@@ -1162,6 +1372,8 @@ class AnnotationWebApp:
         schema_path: str | None = None,
         annotator: str | None = None,
     ) -> None:
+        self.schema_path = schema_path
+        self.annotator = annotator
         self.session_dir = Path(session_dir)
         self.reader = SessionReader(self.session_dir)
         self.service = create_annotation_service(self.session_dir, schema_path=schema_path, annotator=annotator)
@@ -1170,6 +1382,7 @@ class AnnotationWebApp:
         self.audio_feature_index = self._build_audio_feature_index()
         self.audio_summary = self._discover_audio_summary()
         self._server: ThreadingHTTPServer | None = None
+        self._refresh_navigation()
 
     def create_server(self, host: str = "127.0.0.1", port: int = 0) -> ThreadingHTTPServer:
         app = self
@@ -1235,6 +1448,8 @@ class AnnotationWebApp:
                 try:
                     if parsed.path == "/api/session" and method == "POST":
                         result = app.service.upsert_session_annotation(payload.get("data", {}))
+                    elif parsed.path == "/api/navigate" and method == "POST":
+                        result = app.navigate_session(str(payload.get("direction", "")))
                     elif parsed.path == "/api/shutdown" and method == "POST":
                         result = {"stopping": True}
                         app.schedule_shutdown()
@@ -1304,6 +1519,25 @@ class AnnotationWebApp:
             "audio_streams": self._discover_audio_streams(),
             "scalar_streams": self._build_scalar_streams(aligned_records),
             "audio_summary": self.audio_summary,
+            "navigation": self._navigation_payload(),
+        }
+
+    def navigate_session(self, direction: str) -> dict[str, Any]:
+        if direction not in {"previous", "next"}:
+            raise ValueError("direction 必须是 previous 或 next")
+        if not self.sibling_sessions:
+            raise ValueError("当前目录下没有可翻页的 session")
+        if self.current_session_index is None:
+            raise ValueError("当前 session 不在可翻页列表中")
+        offset = -1 if direction == "previous" else 1
+        target_index = self.current_session_index + offset
+        if not (0 <= target_index < len(self.sibling_sessions)):
+            raise ValueError("没有更多 session 可以翻页")
+        self._load_session(self.sibling_sessions[target_index])
+        return {
+            "session_dir": str(self.session_dir),
+            "session_id": self.reader.manifest.session_id,
+            "navigation": self._navigation_payload(),
         }
 
     def write_frame_response(
@@ -1393,6 +1627,57 @@ class AnnotationWebApp:
 
     def _write_error(self, handler: BaseHTTPRequestHandler, status: HTTPStatus, message: str) -> None:
         self._write_json(handler, {"ok": False, "error": message}, status=status)
+
+    def _load_session(self, session_dir: str | Path) -> None:
+        self.session_dir = Path(session_dir)
+        self.reader = SessionReader(self.session_dir)
+        self.service = create_annotation_service(
+            self.session_dir,
+            schema_path=self.schema_path,
+            annotator=self.annotator,
+        )
+        self.frame_index = self._build_frame_index()
+        self.visual_streams = self._discover_visual_streams()
+        self.audio_feature_index = self._build_audio_feature_index()
+        self.audio_summary = self._discover_audio_summary()
+        self._refresh_navigation()
+
+    def _refresh_navigation(self) -> None:
+        self.sibling_sessions = self._discover_sibling_sessions()
+        try:
+            self.current_session_index = self.sibling_sessions.index(self.session_dir)
+        except ValueError:
+            self.current_session_index = None
+
+    def _navigation_payload(self) -> dict[str, Any]:
+        total = len(self.sibling_sessions)
+        current_index = self.current_session_index
+        return {
+            "total": total,
+            "position": (current_index + 1) if current_index is not None else None,
+            "has_previous": current_index is not None and current_index > 0,
+            "has_next": current_index is not None and current_index < total - 1,
+            "current_session_dir": str(self.session_dir),
+            "current_session_name": self.session_dir.name,
+        }
+
+    def _discover_sibling_sessions(self) -> list[Path]:
+        parent = self.session_dir.parent
+        if not parent.exists():
+            return [self.session_dir]
+        candidates = [
+            path
+            for path in parent.iterdir()
+            if path.is_dir() and self._looks_like_session_dir(path)
+        ]
+        if self.session_dir not in candidates:
+            candidates.append(self.session_dir)
+        return sorted(candidates, key=lambda item: item.name)
+
+    def _looks_like_session_dir(self, path: Path) -> bool:
+        if (path / "manifest.json").exists() or (path / "meta.json").exists():
+            return True
+        return (path / "streams").is_dir() and (path / "aligned.jsonl").exists()
 
     def _build_frame_index(self) -> dict[str, dict[int, Any]]:
         return {
