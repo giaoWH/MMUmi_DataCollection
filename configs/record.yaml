@@ -6,11 +6,11 @@
 output_root: sessions
 sensor_source: real
 align_rate_hz: 30.0
-duration_sec: 2.0
+duration_sec: 30.0
 max_frame_age: 0.2
 enable_ft: true
 enable_imu: true
-enable_realsense: false
+enable_realsense: true
 enable_motors: true
 enable_microphone: true
 enable_camera: true
@@ -21,6 +21,7 @@ ft:
   port: /dev/ttyACM0
   baudrate: 115200
   calibration_duration: 3.0
+  enable_torque: false
 imu:
   name: imu
   port: /dev/ttyUSB0
@@ -61,6 +62,8 @@ motors:
   port: /dev/ttyACM1
   baudrate: 115200
   calibration_duration: 3.0
+  enable_motor_1: true
+  enable_motor_2: false
 microphone:
   name: microphone
   channels: 1
@@ -73,7 +76,7 @@ camera:
   width: 640
   height: 480
   fps: 30
-  flip_vertical: false
+  flip_vertical: true
 gelsight:
   name: gelsight
   device_index: 0
