@@ -171,3 +171,30 @@ class RecorderConfigLoadingTest(unittest.TestCase):
         self.assertTrue(config.realsense.derived.enable_pointcloud)
         self.assertEqual(config.trajectory.mode, "stereo_inertial")
         self.assertEqual(config.trajectory.output_mode, "stdout_jsonl")
+
+    def test_parse_args_loads_ft_and_motor_channel_switches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "record.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "enable_ft: true",
+                        "enable_motors: true",
+                        "ft:",
+                        "  enable_torque: false",
+                        "motors:",
+                        "  enable_motor_1: false",
+                        "  enable_motor_2: true",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config, loaded_path = sdk_record.parse_args(["--config", str(config_path)])
+
+        self.assertEqual(loaded_path, config_path.resolve())
+        self.assertTrue(config.enable_ft)
+        self.assertFalse(config.ft.enable_torque)
+        self.assertTrue(config.enable_motors)
+        self.assertFalse(config.motors.enable_motor_1)
+        self.assertTrue(config.motors.enable_motor_2)

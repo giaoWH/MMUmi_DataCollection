@@ -19,6 +19,17 @@
 3. 运行 `scripts/sdk_record.py`
 4. 按配置决定是否在录制结束后自动执行轨迹解算
 
+录制配置当前还支持一部分模态内的细粒度裁剪：
+
+- `ft.enable_torque`
+  - 关闭后只保存 `force[3]`
+- `motors.enable_motor_1`
+  - 关闭后不保存 `motor_1` 的 `position / velocity / torque`
+- `motors.enable_motor_2`
+  - 关闭后不保存 `motor_2` 的 `position / velocity / torque`
+- `microphone.device_index`
+  - 设为 `null` 时会自动选择第一个可录音输入设备；显式指定索引时会强制绑定该设备
+
 对于具身学习数据整理，当前推荐的跨设备工作流是：
 
 ```text
@@ -350,6 +361,7 @@ UMI_DataCollection/
 - ready 等待
 - FT 重力补偿输入
 - 真实落盘 payload 仅保留 `force` 与 `torque` 两组共 6 自由度；旧 session 中的 `force_torque` 仅作为兼容读取路径
+- `record.yaml` 中可通过 `ft.enable_torque` 关闭 `torque[3]` 落盘，仅保留 `force[3]`
 
 对应代码：
 
@@ -421,6 +433,8 @@ UMI_DataCollection/
 - ready 等待
 - 真实落盘 payload 仅保留 `motor_1`、`motor_2` 两组共 6 自由度
 - 旧 session 中的 `motor_state` 仅作为兼容读取路径
+- `record.yaml` 中可通过 `enable_motor_1 / enable_motor_2` 分别控制是否落盘对应电机状态
+- 若 `enable_motors: true` 但两个 motor 开关都为 `false`，录制时会跳过 motors 传感器注册
 
 对应代码：
 
@@ -440,6 +454,7 @@ UMI_DataCollection/
 - 支持 `channels / rate / chunk / device_index`
 - 采集侧使用队列缓存并在录制循环中批量落盘，避免完整 session 音频被后续 chunk 覆盖
 - 标注端支持整段 session 音频回放，方便确认录音有效性
+- `device_index: null` 时自动选择第一个可录音输入设备
 
 对应代码：
 
@@ -542,6 +557,13 @@ python scripts/sdk_record.py
 - Microphone：`--microphone-device-index` / `--microphone-channels` / `--microphone-rate` / `--microphone-chunk`
 - Camera：`--camera-device-index` / `--camera-width` / `--camera-height` / `--camera-fps`
 - GelSight：`--gelsight-device-index` / `--gelsight-width` / `--gelsight-height` / `--gelsight-fps`
+
+更推荐写在 `record.yaml` 里的细粒度配置包括：
+
+- `ft.enable_torque`
+- `motors.enable_motor_1`
+- `motors.enable_motor_2`
+- `microphone.device_index`
 
 当前还支持：
 

@@ -14,6 +14,7 @@ class FTSensorConfig:
     port: str = "COM3"
     baudrate: int = 115200
     calibration_duration: float = 3.0
+    enable_torque: bool = True
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,8 @@ class MotorsSensorConfig:
     port: str = "/dev/ttyUSB0"
     baudrate: int = 115200
     calibration_duration: float = 3.0
+    enable_motor_1: bool = True
+    enable_motor_2: bool = True
 
 
 @dataclass(frozen=True)
@@ -123,17 +126,21 @@ class LegacyFTAdapter(SensorAdapter):
             return None
 
         frame_time = _build_frame_time(clock=self.clock, time_info=time_info)
+        payload = {
+            "force": data[:3].tolist(),
+        }
+        units = {"force": "N"}
+        if self.config.enable_torque:
+            payload["torque"] = data[3:].tolist()
+            units["torque"] = "Nm"
         return SensorFrame(
             sensor_name=self.name,
             sensor_type=self.sensor_type,
             modality=self.modality,
             frame_id=frame_id,
             time=frame_time,
-            payload={
-                "force": data[:3].tolist(),
-                "torque": data[3:].tolist(),
-            },
-            metadata={"units": {"force": "N", "torque": "Nm"}},
+            payload=payload,
+            metadata={"units": units},
         )
 
     def get_metadata(self) -> dict[str, object]:
@@ -143,6 +150,7 @@ class LegacyFTAdapter(SensorAdapter):
             "port": self.config.port,
             "baudrate": self.config.baudrate,
             "calibration_duration": self.config.calibration_duration,
+            "enable_torque": self.config.enable_torque,
         }
 
     def get_status(self) -> dict[str, object]:
@@ -243,34 +251,30 @@ class LegacyMotorsAdapter(SensorAdapter):
             return None
 
         frame_time = _build_frame_time(clock=self.clock, time_info=time_info)
+        payload: dict[str, dict[str, float]] = {}
+        channels: list[str] = []
+        if self.config.enable_motor_1:
+            payload["motor_1"] = {
+                "position": float(data[0]),
+                "velocity": float(data[1]),
+                "torque": float(data[2]),
+            }
+            channels.extend(["M1_P", "M1_V", "M1_T"])
+        if self.config.enable_motor_2:
+            payload["motor_2"] = {
+                "position": float(data[3]),
+                "velocity": float(data[4]),
+                "torque": float(data[5]),
+            }
+            channels.extend(["M2_P", "M2_V", "M2_T"])
         return SensorFrame(
             sensor_name=self.name,
             sensor_type=self.sensor_type,
             modality=self.modality,
             frame_id=frame_id,
             time=frame_time,
-            payload={
-                "motor_1": {
-                    "position": float(data[0]),
-                    "velocity": float(data[1]),
-                    "torque": float(data[2]),
-                },
-                "motor_2": {
-                    "position": float(data[3]),
-                    "velocity": float(data[4]),
-                    "torque": float(data[5]),
-                },
-            },
-            metadata={
-                "channels": [
-                    "M1_P",
-                    "M1_V",
-                    "M1_T",
-                    "M2_P",
-                    "M2_V",
-                    "M2_T",
-                ]
-            },
+            payload=payload,
+            metadata={"channels": channels},
         )
 
     def get_metadata(self) -> dict[str, object]:
@@ -280,6 +284,8 @@ class LegacyMotorsAdapter(SensorAdapter):
             "port": self.config.port,
             "baudrate": self.config.baudrate,
             "calibration_duration": self.config.calibration_duration,
+            "enable_motor_1": self.config.enable_motor_1,
+            "enable_motor_2": self.config.enable_motor_2,
         }
 
     def get_status(self) -> dict[str, object]:
