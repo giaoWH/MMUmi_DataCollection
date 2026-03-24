@@ -16,6 +16,7 @@ from .base import SensorAdapter
 class FakeFTSensorConfig:
     name: str = "ft"
     sample_rate_hz: float = 100.0
+    enable_torque: bool = True
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,8 @@ class FakeRealSenseConfig:
 class FakeMotorsConfig:
     name: str = "motors"
     sample_rate_hz: float = 100.0
+    enable_motor_1: bool = True
+    enable_motor_2: bool = True
 
 
 @dataclass(frozen=True)
@@ -156,19 +159,20 @@ class FakeFTAdapter(_BaseFakeAdapter):
             0.2 * math.cos(phase * 1.4),
             0.3 * math.sin(phase * 1.7),
         ]
-        wrench = force + torque
+        payload = {"force": force}
+        units = {"force": "N"}
+        if self.config.enable_torque:
+            payload["torque"] = torque
+            units["torque"] = "Nm"
         return SensorFrame(
             sensor_name=self.name,
             sensor_type=self.sensor_type,
             modality=self.modality,
             frame_id=self._frame_id,
             time=frame_time,
-            payload={
-                "force": force,
-                "torque": torque,
-            },
+            payload=payload,
             metadata={
-                "units": {"force": "N", "torque": "Nm"},
+                "units": units,
                 "source": "fake",
             },
         )
@@ -178,6 +182,7 @@ class FakeFTAdapter(_BaseFakeAdapter):
             "sensor_type": self.sensor_type,
             "modality": self.modality,
             "sample_rate_hz": self.sample_rate_hz,
+            "enable_torque": self.config.enable_torque,
             "source": "fake",
         }
 
@@ -393,26 +398,31 @@ class FakeMotorsAdapter(_BaseFakeAdapter):
             0.25 * math.sin(phase * 1.1),
             0.15 * math.cos(phase * 1.5),
         ]
+        payload: dict[str, dict[str, float]] = {}
+        channels: list[str] = []
+        if self.config.enable_motor_1:
+            payload["motor_1"] = {
+                "position": motor_1[0],
+                "velocity": motor_1[1],
+                "torque": motor_1[2],
+            }
+            channels.extend(["M1_P", "M1_V", "M1_T"])
+        if self.config.enable_motor_2:
+            payload["motor_2"] = {
+                "position": motor_2[0],
+                "velocity": motor_2[1],
+                "torque": motor_2[2],
+            }
+            channels.extend(["M2_P", "M2_V", "M2_T"])
         return SensorFrame(
             sensor_name=self.name,
             sensor_type=self.sensor_type,
             modality=self.modality,
             frame_id=self._frame_id,
             time=frame_time,
-            payload={
-                "motor_1": {
-                    "position": motor_1[0],
-                    "velocity": motor_1[1],
-                    "torque": motor_1[2],
-                },
-                "motor_2": {
-                    "position": motor_2[0],
-                    "velocity": motor_2[1],
-                    "torque": motor_2[2],
-                },
-            },
+            payload=payload,
             metadata={
-                "channels": ["M1_P", "M1_V", "M1_T", "M2_P", "M2_V", "M2_T"],
+                "channels": channels,
                 "source": "fake",
             },
         )
@@ -422,6 +432,8 @@ class FakeMotorsAdapter(_BaseFakeAdapter):
             "sensor_type": self.sensor_type,
             "modality": self.modality,
             "sample_rate_hz": self.sample_rate_hz,
+            "enable_motor_1": self.config.enable_motor_1,
+            "enable_motor_2": self.config.enable_motor_2,
             "source": "fake",
         }
 

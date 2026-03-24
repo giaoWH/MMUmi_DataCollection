@@ -35,6 +35,17 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 6. 在 PC 上运行 `python scripts/sdk_annotate.py <session_dir>`
 7. 在 PC 上运行 `python scripts/sdk_export.py <session_dir> --format lerobot`
 
+录制配置当前还支持一部分“模态内细粒度开关”：
+
+- `ft.enable_torque`
+  - 关闭后只保存 `force[3]`
+- `motors.enable_motor_1`
+  - 关闭后不保存 `motor_1` 的 `position / velocity / torque`
+- `motors.enable_motor_2`
+  - 关闭后不保存 `motor_2` 的 `position / velocity / torque`
+- `microphone.device_index`
+  - 设为 `null` 时会自动选择第一个可录音输入设备；显式指定索引时会强制绑定该设备
+
 ## 当前支持的传感器
 
 当前已经接入 SDK 录制层的模态包括：
@@ -138,8 +149,14 @@ RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接�
 - 零点校准
 - 静态校准
 - 重力补偿
+- `record.yaml` 中通过 `ft.enable_torque` 控制是否落盘 `torque[3]`
 
 这里依赖的仍然是“独立串口 IMU”的姿态输入，而不是 D435i 板载 IMU。
+
+当前 FT 落盘规则：
+
+- 默认保存 `force[3] + torque[3]`
+- `ft.enable_torque: false` 时，仅保存 `force[3]`
 
 ### 5. RealSense 多流录制
 
@@ -162,6 +179,19 @@ RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接�
 - `color / depth / infrared` 三组独立分辨率与帧率
 - `imu.accel_fps / imu.gyro_fps / imu.max_samples_per_frame`
 - `derived.enable_aligned_depth_to_color / enable_pointcloud / pointcloud_colored`
+
+### 5.1 Motors 录制补充
+
+当前 `motors` 配置支持：
+
+- `enable_motor_1`
+- `enable_motor_2`
+
+对应行为：
+
+- `enable_motor_1: false` 时，不保存 `motor_1.position / velocity / torque`
+- `enable_motor_2: false` 时，不保存 `motor_2.position / velocity / torque`
+- 若 `enable_motors: true` 但 `enable_motor_1` 与 `enable_motor_2` 同时为 `false`，录制时会跳过 motors 传感器注册
 
 ### 6. ORB-SLAM3 软件接入
 

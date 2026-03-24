@@ -128,6 +128,30 @@ class LegacySerialAdaptersTest(unittest.TestCase):
         self.assertIsNotNone(frame.time.host_time_ns)
         self.assertIsNotNone(frame.time.host_read_end_time_ns)
 
+    def test_legacy_ft_adapter_can_disable_torque_output(self):
+        _MappedDummySerial.PAYLOADS = {
+            "FT_PORT": [
+                _make_ft_frame([1.0, 2.0, 3.0], [0.1, 0.2, 0.3])
+                + _make_ft_frame([1.5, 2.5, 3.5], [0.2, 0.4, 0.6]),
+            ]
+        }
+        adapter = LegacyFTAdapter(
+            FTSensorConfig(port="FT_PORT", calibration_duration=0.0, enable_torque=False),
+            SystemClock(),
+        )
+
+        with mock.patch("sensors.common.serial_base.serial.Serial", _MappedDummySerial):
+            adapter.start()
+            try:
+                self.assertTrue(adapter.wait_until_ready(timeout=2.0))
+                frame = self._wait_for_frame(adapter)
+            finally:
+                adapter.stop()
+
+        np.testing.assert_allclose(frame.payload["force"], [0.5, 0.5, 0.5], atol=1e-6)
+        self.assertNotIn("torque", frame.payload)
+        self.assertEqual(frame.metadata["units"], {"force": "N"})
+
     def test_legacy_imu_adapter_returns_full_frame_from_process_sensor(self):
         acc_payload = struct.pack("<hhhhhhhhh", 0, 0, 0, 0, 0, 0, 0, 0, 0)
         quat_payload = struct.pack("<ffff", 1.0, 0.0, 0.0, 0.0)
@@ -179,3 +203,32 @@ class LegacySerialAdaptersTest(unittest.TestCase):
         self.assertEqual(frame.payload["motor_1"]["position"], 1.0)
         self.assertEqual(frame.payload["motor_2"]["torque"], 6.0)
         self.assertNotIn("motor_state", frame.payload)
+
+    def test_legacy_motors_adapter_can_disable_individual_motor_outputs(self):
+        _MappedDummySerial.PAYLOADS = {
+            "MOTOR_PORT": [
+                b"M1: P: 1 V: 2 T: 3 | M2: P: 4 V: 5 T: 6\n"
+                b"M1: P: 2 V: 4 T: 6 | M2: P: 8 V: 10 T: 12\n",
+            ]
+        }
+        adapter = LegacyMotorsAdapter(
+            MotorsSensorConfig(
+                port="MOTOR_PORT",
+                calibration_duration=0.0,
+                enable_motor_1=False,
+                enable_motor_2=True,
+            ),
+            SystemClock(),
+        )
+
+        with mock.patch("sensors.common.serial_base.serial.Serial", _MappedDummySerial):
+            adapter.start()
+            try:
+                self.assertTrue(adapter.wait_until_ready(timeout=2.0))
+                frame = self._wait_for_frame(adapter)
+            finally:
+                adapter.stop()
+
+        self.assertNotIn("motor_1", frame.payload)
+        self.assertEqual(frame.payload["motor_2"]["position"], 4.0)
+        self.assertEqual(frame.metadata["channels"], ["M2_P", "M2_V", "M2_T"])

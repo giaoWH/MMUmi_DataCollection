@@ -97,7 +97,15 @@ def build_registry(config: RecorderConfig, clock: SystemClock) -> SensorRegistry
     registry = SensorRegistry()
     if config.sensor_source == "fake":
         if config.enable_ft:
-            registry.register(FakeFTAdapter(FakeFTSensorConfig(name=config.ft.name), clock))
+            registry.register(
+                FakeFTAdapter(
+                    FakeFTSensorConfig(
+                        name=config.ft.name,
+                        enable_torque=config.ft.enable_torque,
+                    ),
+                    clock,
+                )
+            )
         if config.enable_imu:
             registry.register(FakeIMUAdapter(FakeIMUSensorConfig(name=config.imu.name), clock))
         if config.enable_realsense:
@@ -119,12 +127,14 @@ def build_registry(config: RecorderConfig, clock: SystemClock) -> SensorRegistry
                     clock,
                 )
             )
-        if config.enable_motors:
+        if config.enable_motors and (config.motors.enable_motor_1 or config.motors.enable_motor_2):
             registry.register(
                 FakeMotorsAdapter(
                     FakeMotorsConfig(
                         name=config.motors.name,
                         sample_rate_hz=100.0,
+                        enable_motor_1=config.motors.enable_motor_1,
+                        enable_motor_2=config.motors.enable_motor_2,
                     ),
                     clock,
                 )
@@ -173,7 +183,7 @@ def build_registry(config: RecorderConfig, clock: SystemClock) -> SensorRegistry
         registry.register(LegacyIMUAdapter(config.imu, clock))
     if config.enable_realsense:
         registry.register(RealSenseRGBDAdapter(config.realsense, clock))
-    if config.enable_motors:
+    if config.enable_motors and (config.motors.enable_motor_1 or config.motors.enable_motor_2):
         registry.register(LegacyMotorsAdapter(config.motors, clock))
     if config.enable_microphone:
         registry.register(LegacyMicrophoneAdapter(config.microphone, clock))
