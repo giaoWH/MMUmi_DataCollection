@@ -6,11 +6,11 @@
 output_root: sessions
 sensor_source: real
 align_rate_hz: 30.0
-duration_sec: 2.0
+duration_sec: 10.0
 max_frame_age: 0.2
 enable_ft: true
 enable_imu: true
-enable_realsense: false
+enable_realsense: true
 enable_motors: true
 enable_microphone: true
 enable_camera: true
@@ -49,7 +49,7 @@ realsense:
     height: 480
     fps: 30
   imu:
-    accel_fps: 250
+    accel_fps: 200
     gyro_fps: 200
     max_samples_per_frame: 512
   derived:

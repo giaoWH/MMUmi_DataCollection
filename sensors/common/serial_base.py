@@ -1,4 +1,5 @@
 import abc
+from collections.abc import Iterable
 import multiprocessing as mp
 import queue
 import time
@@ -14,11 +15,12 @@ class SerialBaseSensor(BaseSensor):
     串口传感器基类，封装了 buffer 管理和基础读取逻辑。
     """
 
-    def __init__(self, name, port, baudrate, data_length):
+    def __init__(self, name, port, baudrate, data_length, frame_queue_size=1024):
         super().__init__(name)
         self.port = port
         self.baudrate = baudrate
         self.data_length = data_length
+        self.frame_queue_size = max(1, int(frame_queue_size))
         self.process = None
         self._ser = None
         self._buffer = bytearray()
@@ -28,6 +30,10 @@ class SerialBaseSensor(BaseSensor):
         self._shared_frame_count = mp.Value("q", 0)
         self._shared_latest_timestamp = mp.Value("d", 0.0)
         self._latest_packet_queue = mp.Queue(maxsize=1)
+        self._frame_packet_queue = mp.Queue(maxsize=self.frame_queue_size)
+        self._shared_dropped_frame_count = mp.Value("q", 0)
+        self._shared_max_queue_depth = mp.Value("q", 0)
+        self._delivered_frame_count = 0
 
     @property
     def running(self):
@@ -78,6 +84,33 @@ class SerialBaseSensor(BaseSensor):
             dict(self.latest_time_info),
         )
 
+    def get_next_data_with_time_info(self):
+        packet = self._pop_next_packet()
+        if packet is None:
+            return None, 0.0, 0, {}
+        return (
+            self._copy_packet_data(packet["data"]),
+            packet["timestamp"],
+            packet["frame_id"],
+            dict(packet["time_info"]),
+        )
+
+    def get_all_data_with_time_info(self):
+        packets = []
+        while True:
+            packet = self._pop_next_packet()
+            if packet is None:
+                break
+            packets.append(
+                (
+                    self._copy_packet_data(packet["data"]),
+                    packet["timestamp"],
+                    packet["frame_id"],
+                    dict(packet["time_info"]),
+                )
+            )
+        return packets
+
     def latest_data_copy(self):
         if self.latest_data is None:
             return None
@@ -107,7 +140,7 @@ class SerialBaseSensor(BaseSensor):
                     new_frame, remaining_buf = self._parse_protocol(self._buffer)
                     self._buffer = remaining_buf
 
-                    if new_frame is not None:
+                    for frame in self._normalize_parsed_frames(new_frame):
                         capture_wall_ns = (read_start_wall_ns + read_end_wall_ns) // 2
                         capture_mono_ns = (read_start_mono_ns + read_end_mono_ns) // 2
                         frame_count = self._shared_frame_count.value + 1
@@ -126,6 +159,7 @@ class SerialBaseSensor(BaseSensor):
                             },
                         }
                         self._publish_latest_packet(packet)
+                        self._publish_frame_packet(packet)
                 else:
                     time.sleep(0.0001)
             except Exception as e:
@@ -183,17 +217,74 @@ class SerialBaseSensor(BaseSensor):
         # packet silently. The next loop iteration will publish a newer one.
         return
 
+    def _publish_frame_packet(self, packet):
+        for _ in range(3):
+            try:
+                self._frame_packet_queue.put_nowait(packet)
+                self._update_max_queue_depth()
+                return
+            except queue.Full:
+                self._shared_dropped_frame_count.value += 1
+                try:
+                    self._frame_packet_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                time.sleep(0.0005)
+        return
+
+    def _pop_next_packet(self):
+        try:
+            packet = self._frame_packet_queue.get_nowait()
+        except queue.Empty:
+            return None
+        self._delivered_frame_count += 1
+        self.latest_data = packet["data"]
+        self.latest_timestamp = packet["timestamp"]
+        self.frame_count = packet["frame_id"]
+        self.latest_time_info = packet["time_info"]
+        return packet
+
+    def _update_max_queue_depth(self):
+        try:
+            depth = self._frame_packet_queue.qsize()
+        except (NotImplementedError, OSError):
+            return
+        if depth > self._shared_max_queue_depth.value:
+            self._shared_max_queue_depth.value = depth
+
+    def _copy_packet_data(self, value):
+        if value is None:
+            return None
+        if hasattr(value, "copy"):
+            return value.copy()
+        return value
+
+    def _normalize_parsed_frames(self, value) -> list:
+        if value is None:
+            return []
+        if isinstance(value, Iterable) and not hasattr(value, "shape") and not isinstance(value, (bytes, bytearray, dict)):
+            return [item for item in value if item is not None]
+        return [value]
+
     def _reset_shared_runtime_state(self):
         self.latest_data = None
         self.latest_timestamp = 0.0
         self.frame_count = 0
         self.latest_time_info = {}
+        self._delivered_frame_count = 0
         self._worker_running.value = False
         self._shared_frame_count.value = 0
         self._shared_latest_timestamp.value = 0.0
+        self._shared_dropped_frame_count.value = 0
+        self._shared_max_queue_depth.value = 0
         while True:
             try:
                 self._latest_packet_queue.get_nowait()
+            except queue.Empty:
+                break
+        while True:
+            try:
+                self._frame_packet_queue.get_nowait()
             except queue.Empty:
                 break
 
@@ -211,8 +302,20 @@ class SerialBaseSensor(BaseSensor):
             "worker_running": worker_running,
             "requested_running": bool(self._requested_running),
             "frame_count": self._shared_frame_count.value,
+            "produced_frame_count": self._shared_frame_count.value,
+            "delivered_frame_count": self._delivered_frame_count,
+            "dropped_frame_count": self._shared_dropped_frame_count.value,
             "latest_timestamp": self._shared_latest_timestamp.value,
+            "queue_depth": self._safe_queue_depth(),
+            "max_queue_depth": self._shared_max_queue_depth.value,
+            "queue_capacity": self.frame_queue_size,
         }
+
+    def _safe_queue_depth(self):
+        try:
+            return self._frame_packet_queue.qsize()
+        except (NotImplementedError, OSError):
+            return 0
 
     def _on_open(self):
         pass
@@ -224,7 +327,7 @@ class SerialBaseSensor(BaseSensor):
     def _parse_protocol(self, buffer):
         """
         输入: 当前积累的 bytearray
-        输出: (解析出的最新一帧numpy数组, 剩余未处理的buffer)
+        输出: (解析出的一帧或多帧, 剩余未处理的buffer)
         如果数据不足一帧，返回 (None, buffer)
         """
         return None, buffer

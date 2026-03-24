@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
+import queue
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +22,16 @@ except ImportError:  # pragma: no cover
 
 
 class SessionWriter:
-    def __init__(self, session_info: SessionInfo) -> None:
+    _STOP = object()
+
+    def __init__(
+        self,
+        session_info: SessionInfo,
+        *,
+        async_writes: bool = False,
+        write_queue_size: int = 0,
+        artifact_worker_count: int = 4,
+    ) -> None:
         self.session_info = session_info
         self.base_dir = session_info.output_dir
         self.streams_dir = self.base_dir / "streams"
@@ -26,10 +39,34 @@ class SessionWriter:
         self.trajectory_dir = self.base_dir / "trajectory"
         self.exports_dir = self.base_dir / "exports"
         self.sensor_dirs: dict[str, Path] = {}
+        self.async_writes = async_writes
+        self.write_queue_size = max(0, int(write_queue_size))
+        self.artifact_worker_count = max(1, int(artifact_worker_count))
+        self._write_queue: queue.Queue[object] | None = None
+        self._writer_thread: threading.Thread | None = None
+        self._writer_error: Exception | None = None
+        self._artifact_executor: ThreadPoolExecutor | None = None
+        self._artifact_futures: list[Future] = []
+        self._artifact_submitted_count = 0
+        self._artifact_completed_count = 0
+        self._artifact_max_pending = 0
+        self._jsonl_handles: dict[Path, object] = {}
+        self._closed = False
+        self._enqueued_counts = {"sensor": 0, "aligned": 0, "trajectory": 0}
+        self._written_counts = {"sensor": 0, "aligned": 0, "trajectory": 0}
+        self._max_queue_depth = 0
+        self._write_latency_total_sec = 0.0
+        self._write_latency_samples = 0
+        self._max_write_latency_sec = 0.0
         self.manifest = self._build_manifest()
         self._prepare_layout()
         self._write_meta()
         self._write_manifest()
+        if self.async_writes:
+            self._write_queue = queue.Queue(maxsize=self.write_queue_size)
+            self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
+            self._artifact_executor = ThreadPoolExecutor(max_workers=self.artifact_worker_count)
+            self._writer_thread.start()
 
     @classmethod
     def open_existing(cls, session_dir: str | Path) -> "SessionWriter":
@@ -48,11 +85,81 @@ class SessionWriter:
             sensor_name: writer.streams_dir / sensor_name
             for sensor_name in manifest.sensors
         }
+        writer.async_writes = False
+        writer.write_queue_size = 0
+        writer.artifact_worker_count = 1
+        writer._write_queue = None
+        writer._writer_thread = None
+        writer._writer_error = None
+        writer._artifact_executor = None
+        writer._artifact_futures = []
+        writer._artifact_submitted_count = 0
+        writer._artifact_completed_count = 0
+        writer._artifact_max_pending = 0
+        writer._jsonl_handles = {}
+        writer._closed = False
+        writer._enqueued_counts = {"sensor": 0, "aligned": 0, "trajectory": 0}
+        writer._written_counts = {"sensor": 0, "aligned": 0, "trajectory": 0}
+        writer._max_queue_depth = 0
+        writer._write_latency_total_sec = 0.0
+        writer._write_latency_samples = 0
+        writer._max_write_latency_sec = 0.0
         writer.manifest = manifest
         writer._prepare_existing_layout()
         return writer
 
     def write_sensor_frame(self, frame: SensorFrame) -> None:
+        self._submit_write("sensor", frame)
+
+    def write_aligned_frame(self, aligned: AlignedFrame) -> None:
+        self._submit_write("aligned", aligned)
+
+    def write_trajectory_frame(self, frame: TrajectoryFrame) -> None:
+        self._submit_write("trajectory", frame)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._finish_async_writes()
+        if self.session_info is not None:
+            self.session_info.notes["writer_diagnostics"] = self.get_diagnostics()
+            self._write_meta()
+            self._write_manifest()
+        self._close_jsonl_handles()
+        self._raise_if_writer_failed()
+
+    def get_diagnostics(self) -> dict[str, Any]:
+        pending_items = 0
+        if self._write_queue is not None:
+            pending_items = self._write_queue.qsize()
+        return {
+            "async_writes": self.async_writes,
+            "write_queue_size": self.write_queue_size,
+            "artifact_worker_count": self.artifact_worker_count,
+            "pending_items": pending_items,
+            "max_queue_depth": self._max_queue_depth,
+            "enqueued_counts": dict(self._enqueued_counts),
+            "written_counts": dict(self._written_counts),
+            "artifacts": {
+                "submitted": self._artifact_submitted_count,
+                "completed": self._artifact_completed_count,
+                "pending": len(self._artifact_futures),
+                "max_pending": self._artifact_max_pending,
+            },
+            "write_latency": {
+                "samples": self._write_latency_samples,
+                "mean_sec": (
+                    self._write_latency_total_sec / self._write_latency_samples
+                    if self._write_latency_samples
+                    else 0.0
+                ),
+                "max_sec": self._max_write_latency_sec,
+            },
+            "error": str(self._writer_error) if self._writer_error is not None else None,
+        }
+
+    def _write_sensor_frame_sync(self, frame: SensorFrame) -> None:
         sensor_dir = self._ensure_sensor_dir(frame.sensor_name)
         record = {
             "sensor_name": frame.sensor_name,
@@ -82,7 +189,7 @@ class SessionWriter:
         }
         self._append_jsonl(sensor_dir / "frames.jsonl", record)
 
-    def write_aligned_frame(self, aligned: AlignedFrame) -> None:
+    def _write_aligned_frame_sync(self, aligned: AlignedFrame) -> None:
         record = {
             "sequence_id": aligned.sequence_id,
             "aligned_time": aligned.aligned_time,
@@ -107,7 +214,7 @@ class SessionWriter:
         }
         self._append_jsonl(self.aligned_dir / "frames.jsonl", record)
 
-    def write_trajectory_frame(self, frame: TrajectoryFrame) -> None:
+    def _write_trajectory_frame_sync(self, frame: TrajectoryFrame) -> None:
         record = {
             "source": frame.source,
             "frame_id": frame.frame_id,
@@ -131,9 +238,6 @@ class SessionWriter:
             "metadata": self._to_jsonable(frame.metadata),
         }
         self._append_jsonl(self.trajectory_dir / "frames.jsonl", record)
-
-    def close(self) -> None:
-        pass
 
     def _prepare_existing_layout(self) -> None:
         self.streams_dir.mkdir(parents=True, exist_ok=True)
@@ -207,9 +311,73 @@ class SessionWriter:
         )
 
     def _append_jsonl(self, path: Path, record: dict[str, Any]) -> None:
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False))
-            handle.write("\n")
+        handle = self._jsonl_handles.get(path)
+        if handle is None:
+            handle = path.open("a", encoding="utf-8")
+            self._jsonl_handles[path] = handle
+        handle.write(json.dumps(record, ensure_ascii=False))
+        handle.write("\n")
+
+    def _submit_write(self, kind: str, payload: SensorFrame | AlignedFrame | TrajectoryFrame) -> None:
+        self._raise_if_writer_failed()
+        if not self.async_writes or self._write_queue is None:
+            self._process_write(kind, payload)
+            return
+        self._write_queue.put((kind, payload))
+        self._enqueued_counts[kind] += 1
+        self._max_queue_depth = max(self._max_queue_depth, self._write_queue.qsize())
+
+    def _process_write(self, kind: str, payload: SensorFrame | AlignedFrame | TrajectoryFrame) -> None:
+        started_at = time.perf_counter()
+        self._collect_completed_artifact_futures(wait=False)
+        if kind == "sensor":
+            self._write_sensor_frame_sync(payload)
+        elif kind == "aligned":
+            self._write_aligned_frame_sync(payload)
+        elif kind == "trajectory":
+            self._write_trajectory_frame_sync(payload)
+        else:  # pragma: no cover
+            raise ValueError(f"不支持的写入类型: {kind}")
+        latency_sec = time.perf_counter() - started_at
+        self._written_counts[kind] += 1
+        self._write_latency_samples += 1
+        self._write_latency_total_sec += latency_sec
+        self._max_write_latency_sec = max(self._max_write_latency_sec, latency_sec)
+
+    def _writer_loop(self) -> None:
+        if self._write_queue is None:
+            return
+        while True:
+            item = self._write_queue.get()
+            try:
+                if item is self._STOP:
+                    return
+                kind, payload = item
+                self._process_write(kind, payload)
+            except Exception as exc:  # pragma: no cover
+                self._writer_error = exc
+                return
+            finally:
+                self._write_queue.task_done()
+
+    def _finish_async_writes(self) -> None:
+        if not self.async_writes or self._write_queue is None:
+            self._collect_completed_artifact_futures(wait=True)
+            if self._artifact_executor is not None:
+                self._artifact_executor.shutdown(wait=True)
+            return
+        self._raise_if_writer_failed()
+        self._write_queue.put(self._STOP)
+        if self._writer_thread is not None:
+            self._writer_thread.join()
+        self._collect_completed_artifact_futures(wait=True)
+        if self._artifact_executor is not None:
+            self._artifact_executor.shutdown(wait=True)
+        self._raise_if_writer_failed()
+
+    def _raise_if_writer_failed(self) -> None:
+        if self._writer_error is not None:
+            raise RuntimeError(f"异步写盘失败: {self._writer_error}") from self._writer_error
 
     def _serialize_payload(
         self,
@@ -256,7 +424,7 @@ class SessionWriter:
         base_name = f"{frame_id:06d}_{key}"
         if cv2 is not None and value.dtype == np.uint8 and value.ndim in {2, 3}:
             target = artifacts_dir / f"{base_name}.png"
-            cv2.imwrite(str(target), value)
+            self._store_artifact(target, value)
             return {
                 "path": str(target.relative_to(self.base_dir)),
                 "storage": "png",
@@ -265,13 +433,61 @@ class SessionWriter:
             }
 
         target = artifacts_dir / f"{base_name}.npy"
-        np.save(target, value)
+        self._store_artifact(target, value)
         return {
             "path": str(target.relative_to(self.base_dir)),
             "storage": "npy",
             "shape": list(value.shape),
             "dtype": str(value.dtype),
         }
+
+    def _store_artifact(self, target: Path, value: np.ndarray) -> None:
+        if self._artifact_executor is None:
+            self._artifact_submitted_count += 1
+            self._write_artifact(target, value)
+            self._artifact_completed_count += 1
+            return
+        future = self._artifact_executor.submit(self._write_artifact, target, value)
+        self._artifact_futures.append(future)
+        self._artifact_submitted_count += 1
+        self._artifact_max_pending = max(self._artifact_max_pending, len(self._artifact_futures))
+
+    def _collect_completed_artifact_futures(self, *, wait: bool) -> None:
+        if not self._artifact_futures:
+            return
+        remaining: list[Future] = []
+        for future in self._artifact_futures:
+            if not wait and not future.done():
+                remaining.append(future)
+                continue
+            try:
+                future.result()
+            except Exception as exc:  # pragma: no cover
+                self._writer_error = exc
+            else:
+                self._artifact_completed_count += 1
+        self._artifact_futures = remaining
+        self._raise_if_writer_failed()
+
+    def _write_artifact(self, target: Path, value: np.ndarray) -> None:
+        if cv2 is not None and value.dtype == np.uint8 and value.ndim in {2, 3}:
+            ok = cv2.imwrite(str(target), value)
+            if not ok:
+                raise RuntimeError(f"写入 PNG 失败: {target}")
+            return
+        np.save(target, value)
+
+    def _close_jsonl_handles(self) -> None:
+        for handle in self._jsonl_handles.values():
+            try:
+                handle.flush()
+            except Exception:
+                pass
+            try:
+                handle.close()
+            except Exception:
+                pass
+        self._jsonl_handles = {}
 
     def _to_jsonable(self, value: Any) -> Any:
         if isinstance(value, np.ndarray):

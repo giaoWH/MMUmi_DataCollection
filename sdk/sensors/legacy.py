@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import numpy as np
 
 from sdk.core.clock import SystemClock
 from sdk.core.frame import SensorFrame
@@ -51,6 +52,7 @@ class CameraSensorConfig:
     height: int = 480
     fps: int = 30
     flip_vertical: bool = False
+    frame_queue_size: int = 128
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,7 @@ class GelSightSensorConfig:
     width: int = 640
     height: int = 480
     fps: int = 30
+    frame_queue_size: int = 128
 
 
 def _build_frame_time(
@@ -124,7 +127,49 @@ class LegacyFTAdapter(SensorAdapter):
         data, _timestamp, frame_id, time_info = self.sensor.get_data_with_time_info()
         if data is None:
             return None
+        return self._build_sensor_frame(data, frame_id=frame_id, time_info=time_info)
 
+    def read_available_frames(self) -> list[SensorFrame]:
+        frames: list[SensorFrame] = []
+        for data, _timestamp, frame_id, time_info in self.sensor.get_all_data_with_time_info():
+            if data is None:
+                continue
+            frames.append(self._build_sensor_frame(data, frame_id=frame_id, time_info=time_info))
+        return frames
+
+    def get_metadata(self) -> dict[str, object]:
+        return {
+            "sensor_type": self.sensor_type,
+            "modality": self.modality,
+            "port": self.config.port,
+            "baudrate": self.config.baudrate,
+            "calibration_duration": self.config.calibration_duration,
+            "enable_torque": self.config.enable_torque,
+        }
+
+    def get_status(self) -> dict[str, object]:
+        runtime_status = self.sensor.get_runtime_status()
+        return {
+            "running": runtime_status["running"],
+            "frame_count": runtime_status["frame_count"],
+            "produced_frame_count": runtime_status["produced_frame_count"],
+            "delivered_frame_count": runtime_status["delivered_frame_count"],
+            "dropped_frame_count": runtime_status["dropped_frame_count"],
+            "latest_timestamp": runtime_status["latest_timestamp"],
+            "queue_depth": runtime_status["queue_depth"],
+            "max_queue_depth": runtime_status["max_queue_depth"],
+            "queue_capacity": runtime_status["queue_capacity"],
+            "calibration_finished": self.sensor.calibration_finished,
+        }
+
+    def is_ready(self) -> bool:
+        return self.sensor.is_calibrated()
+
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        return self.sensor.wait_until_calibrated(timeout=timeout)
+
+    def _build_sensor_frame(self, data, *, frame_id: int, time_info: dict[str, object]) -> SensorFrame:
+        data = np.asarray(data, dtype=np.float64).reshape(-1)
         frame_time = _build_frame_time(clock=self.clock, time_info=time_info)
         payload = {
             "force": data[:3].tolist(),
@@ -142,31 +187,6 @@ class LegacyFTAdapter(SensorAdapter):
             payload=payload,
             metadata={"units": units},
         )
-
-    def get_metadata(self) -> dict[str, object]:
-        return {
-            "sensor_type": self.sensor_type,
-            "modality": self.modality,
-            "port": self.config.port,
-            "baudrate": self.config.baudrate,
-            "calibration_duration": self.config.calibration_duration,
-            "enable_torque": self.config.enable_torque,
-        }
-
-    def get_status(self) -> dict[str, object]:
-        runtime_status = self.sensor.get_runtime_status()
-        return {
-            "running": runtime_status["running"],
-            "frame_count": runtime_status["frame_count"],
-            "latest_timestamp": runtime_status["latest_timestamp"],
-            "calibration_finished": self.sensor.calibration_finished,
-        }
-
-    def is_ready(self) -> bool:
-        return self.sensor.is_calibrated()
-
-    def wait_until_ready(self, timeout: float | None = None) -> bool:
-        return self.sensor.wait_until_calibrated(timeout=timeout)
 
 
 class LegacyIMUAdapter(SensorAdapter):
@@ -188,7 +208,40 @@ class LegacyIMUAdapter(SensorAdapter):
         data, _timestamp, frame_id, time_info = self.sensor.get_data_with_time_info()
         if data is None:
             return None
+        return self._build_sensor_frame(data, frame_id=frame_id, time_info=time_info)
 
+    def read_available_frames(self) -> list[SensorFrame]:
+        frames: list[SensorFrame] = []
+        for data, _timestamp, frame_id, time_info in self.sensor.get_all_data_with_time_info():
+            if data is None:
+                continue
+            frames.append(self._build_sensor_frame(data, frame_id=frame_id, time_info=time_info))
+        return frames
+
+    def get_metadata(self) -> dict[str, object]:
+        return {
+            "sensor_type": self.sensor_type,
+            "modality": self.modality,
+            "port": self.config.port,
+            "baudrate": self.config.baudrate,
+        }
+
+    def get_status(self) -> dict[str, object]:
+        runtime_status = self.sensor.get_runtime_status()
+        return {
+            "running": runtime_status["running"],
+            "frame_count": runtime_status["frame_count"],
+            "produced_frame_count": runtime_status["produced_frame_count"],
+            "delivered_frame_count": runtime_status["delivered_frame_count"],
+            "dropped_frame_count": runtime_status["dropped_frame_count"],
+            "latest_timestamp": runtime_status["latest_timestamp"],
+            "queue_depth": runtime_status["queue_depth"],
+            "max_queue_depth": runtime_status["max_queue_depth"],
+            "queue_capacity": runtime_status["queue_capacity"],
+        }
+
+    def _build_sensor_frame(self, data, *, frame_id: int, time_info: dict[str, object]) -> SensorFrame:
+        data = np.asarray(data, dtype=np.float64).reshape(-1)
         frame_time = _build_frame_time(clock=self.clock, time_info=time_info)
         return SensorFrame(
             sensor_name=self.name,
@@ -208,22 +261,6 @@ class LegacyIMUAdapter(SensorAdapter):
                 }
             },
         )
-
-    def get_metadata(self) -> dict[str, object]:
-        return {
-            "sensor_type": self.sensor_type,
-            "modality": self.modality,
-            "port": self.config.port,
-            "baudrate": self.config.baudrate,
-        }
-
-    def get_status(self) -> dict[str, object]:
-        runtime_status = self.sensor.get_runtime_status()
-        return {
-            "running": runtime_status["running"],
-            "frame_count": runtime_status["frame_count"],
-            "latest_timestamp": runtime_status["latest_timestamp"],
-        }
 
 
 class LegacyMotorsAdapter(SensorAdapter):
@@ -249,7 +286,50 @@ class LegacyMotorsAdapter(SensorAdapter):
         data, _timestamp, frame_id, time_info = self.sensor.get_data_with_time_info()
         if data is None:
             return None
+        return self._build_sensor_frame(data, frame_id=frame_id, time_info=time_info)
 
+    def read_available_frames(self) -> list[SensorFrame]:
+        frames: list[SensorFrame] = []
+        for data, _timestamp, frame_id, time_info in self.sensor.get_all_data_with_time_info():
+            if data is None:
+                continue
+            frames.append(self._build_sensor_frame(data, frame_id=frame_id, time_info=time_info))
+        return frames
+
+    def get_metadata(self) -> dict[str, object]:
+        return {
+            "sensor_type": self.sensor_type,
+            "modality": self.modality,
+            "port": self.config.port,
+            "baudrate": self.config.baudrate,
+            "calibration_duration": self.config.calibration_duration,
+            "enable_motor_1": self.config.enable_motor_1,
+            "enable_motor_2": self.config.enable_motor_2,
+        }
+
+    def get_status(self) -> dict[str, object]:
+        runtime_status = self.sensor.get_runtime_status()
+        return {
+            "running": runtime_status["running"],
+            "frame_count": runtime_status["frame_count"],
+            "produced_frame_count": runtime_status["produced_frame_count"],
+            "delivered_frame_count": runtime_status["delivered_frame_count"],
+            "dropped_frame_count": runtime_status["dropped_frame_count"],
+            "latest_timestamp": runtime_status["latest_timestamp"],
+            "queue_depth": runtime_status["queue_depth"],
+            "max_queue_depth": runtime_status["max_queue_depth"],
+            "queue_capacity": runtime_status["queue_capacity"],
+            "calibration_finished": self.sensor.calibration_finished,
+        }
+
+    def is_ready(self) -> bool:
+        return self.sensor.is_calibrated()
+
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        return self.sensor.wait_until_calibrated(timeout=timeout)
+
+    def _build_sensor_frame(self, data, *, frame_id: int, time_info: dict[str, object]) -> SensorFrame:
+        data = np.asarray(data, dtype=np.float64).reshape(-1)
         frame_time = _build_frame_time(clock=self.clock, time_info=time_info)
         payload: dict[str, dict[str, float]] = {}
         channels: list[str] = []
@@ -276,32 +356,6 @@ class LegacyMotorsAdapter(SensorAdapter):
             payload=payload,
             metadata={"channels": channels},
         )
-
-    def get_metadata(self) -> dict[str, object]:
-        return {
-            "sensor_type": self.sensor_type,
-            "modality": self.modality,
-            "port": self.config.port,
-            "baudrate": self.config.baudrate,
-            "calibration_duration": self.config.calibration_duration,
-            "enable_motor_1": self.config.enable_motor_1,
-            "enable_motor_2": self.config.enable_motor_2,
-        }
-
-    def get_status(self) -> dict[str, object]:
-        runtime_status = self.sensor.get_runtime_status()
-        return {
-            "running": runtime_status["running"],
-            "frame_count": runtime_status["frame_count"],
-            "latest_timestamp": runtime_status["latest_timestamp"],
-            "calibration_finished": self.sensor.calibration_finished,
-        }
-
-    def is_ready(self) -> bool:
-        return self.sensor.is_calibrated()
-
-    def wait_until_ready(self, timeout: float | None = None) -> bool:
-        return self.sensor.wait_until_calibrated(timeout=timeout)
 
 
 class LegacyMicrophoneAdapter(SensorAdapter):
@@ -401,6 +455,7 @@ class LegacyCameraAdapter(SensorAdapter):
             height=config.height,
             fps=config.fps,
             flip_vertical=config.flip_vertical,
+            frame_queue_size=config.frame_queue_size,
         )
 
     def start(self) -> None:
@@ -410,7 +465,7 @@ class LegacyCameraAdapter(SensorAdapter):
         self.sensor.stop()
 
     def read_frame(self) -> SensorFrame | None:
-        data, _timestamp, frame_id, time_info = self.sensor.get_data_with_time_info()
+        data, _timestamp, frame_id, time_info = self.sensor.get_next_data_with_time_info()
         if data is None:
             return None
 
@@ -428,8 +483,35 @@ class LegacyCameraAdapter(SensorAdapter):
                 "fps": self.config.fps,
                 "device_index": self.config.device_index,
                 "flip_vertical": self.config.flip_vertical,
+                "frame_queue_size": self.config.frame_queue_size,
             },
         )
+
+    def read_available_frames(self) -> list[SensorFrame]:
+        frames: list[SensorFrame] = []
+        for data, _timestamp, frame_id, time_info in self.sensor.get_all_data_with_time_info():
+            if data is None:
+                continue
+            frame_time = _build_frame_time(clock=self.clock, time_info=time_info)
+            frames.append(
+                SensorFrame(
+                    sensor_name=self.name,
+                    sensor_type=self.sensor_type,
+                    modality=self.modality,
+                    frame_id=frame_id,
+                    time=frame_time,
+                    payload={"color": data},
+                    metadata={
+                        "width": self.config.width,
+                        "height": self.config.height,
+                        "fps": self.config.fps,
+                        "device_index": self.config.device_index,
+                        "flip_vertical": self.config.flip_vertical,
+                        "frame_queue_size": self.config.frame_queue_size,
+                    },
+                )
+            )
+        return frames
 
     def get_metadata(self) -> dict[str, object]:
         return {
@@ -440,14 +522,11 @@ class LegacyCameraAdapter(SensorAdapter):
             "fps": self.config.fps,
             "device_index": self.config.device_index,
             "flip_vertical": self.config.flip_vertical,
+            "frame_queue_size": self.config.frame_queue_size,
         }
 
     def get_status(self) -> dict[str, object]:
-        return {
-            "running": self.sensor.running,
-            "frame_count": self.sensor.frame_count,
-            "latest_timestamp": self.sensor.latest_timestamp,
-        }
+        return self.sensor.get_runtime_status()
 
 
 class LegacyGelSightAdapter(SensorAdapter):
@@ -463,6 +542,7 @@ class LegacyGelSightAdapter(SensorAdapter):
             width=config.width,
             height=config.height,
             fps=config.fps,
+            frame_queue_size=config.frame_queue_size,
         )
 
     def start(self) -> None:
@@ -472,7 +552,7 @@ class LegacyGelSightAdapter(SensorAdapter):
         self.sensor.stop()
 
     def read_frame(self) -> SensorFrame | None:
-        data, _timestamp, frame_id, time_info = self.sensor.get_data_with_time_info()
+        data, _timestamp, frame_id, time_info = self.sensor.get_next_data_with_time_info()
         if data is None:
             return None
 
@@ -490,8 +570,35 @@ class LegacyGelSightAdapter(SensorAdapter):
                 "fps": self.config.fps,
                 "device_index": self.config.device_index,
                 "sensor_family": "gelsight_mini",
+                "frame_queue_size": self.config.frame_queue_size,
             },
         )
+
+    def read_available_frames(self) -> list[SensorFrame]:
+        frames: list[SensorFrame] = []
+        for data, _timestamp, frame_id, time_info in self.sensor.get_all_data_with_time_info():
+            if data is None:
+                continue
+            frame_time = _build_frame_time(clock=self.clock, time_info=time_info)
+            frames.append(
+                SensorFrame(
+                    sensor_name=self.name,
+                    sensor_type=self.sensor_type,
+                    modality=self.modality,
+                    frame_id=frame_id,
+                    time=frame_time,
+                    payload={"image": data},
+                    metadata={
+                        "width": self.config.width,
+                        "height": self.config.height,
+                        "fps": self.config.fps,
+                        "device_index": self.config.device_index,
+                        "sensor_family": "gelsight_mini",
+                        "frame_queue_size": self.config.frame_queue_size,
+                    },
+                )
+            )
+        return frames
 
     def get_metadata(self) -> dict[str, object]:
         return {
@@ -502,11 +609,8 @@ class LegacyGelSightAdapter(SensorAdapter):
             "fps": self.config.fps,
             "device_index": self.config.device_index,
             "sensor_family": "gelsight_mini",
+            "frame_queue_size": self.config.frame_queue_size,
         }
 
     def get_status(self) -> dict[str, object]:
-        return {
-            "running": self.sensor.running,
-            "frame_count": self.sensor.frame_count,
-            "latest_timestamp": self.sensor.latest_timestamp,
-        }
+        return self.sensor.get_runtime_status()

@@ -101,3 +101,33 @@ class ProcessSerialSensorTest(unittest.TestCase):
                 np.testing.assert_array_equal(data, np.array([8.0], dtype=np.float64))
             finally:
                 sensor.stop()
+
+    def test_serial_sensor_exposes_all_queued_packets(self):
+        class _BurstDummySerial(_DummySerial):
+            def __init__(self, port, baudrate, timeout=0):
+                super().__init__(port, baudrate, timeout=timeout)
+                self._payloads = [b"a", b"abcd", b"abcdefgh"]
+
+        sensor = _DummyProcessSerialSensor()
+
+        with mock.patch("sensors.common.serial_base.serial.Serial", _BurstDummySerial):
+            sensor.start()
+            try:
+                deadline = time.time() + 2.0
+                while time.time() < deadline:
+                    runtime_status = sensor.get_runtime_status()
+                    if runtime_status["frame_count"] >= 3:
+                        break
+                    time.sleep(0.01)
+
+                packets = sensor.get_all_data_with_time_info()
+                self.assertEqual(len(packets), 3)
+                self.assertEqual([frame_id for _data, _ts, frame_id, _info in packets], [1, 2, 3])
+                np.testing.assert_array_equal(packets[0][0], np.array([1.0], dtype=np.float64))
+                np.testing.assert_array_equal(packets[-1][0], np.array([8.0], dtype=np.float64))
+
+                runtime_status = sensor.get_runtime_status()
+                self.assertEqual(runtime_status["delivered_frame_count"], 3)
+                self.assertEqual(runtime_status["dropped_frame_count"], 0)
+            finally:
+                sensor.stop()

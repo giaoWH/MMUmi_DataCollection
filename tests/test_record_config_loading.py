@@ -198,3 +198,22 @@ class RecorderConfigLoadingTest(unittest.TestCase):
         self.assertTrue(config.enable_motors)
         self.assertFalse(config.motors.enable_motor_1)
         self.assertTrue(config.motors.enable_motor_2)
+
+    def test_parse_args_loads_startup_discard_sec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "record.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "duration_sec: 10.0",
+                        "startup_discard_sec: 0.5",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config, loaded_path = sdk_record.parse_args(["--config", str(config_path)])
+
+        self.assertEqual(loaded_path, config_path.resolve())
+        self.assertEqual(config.duration_sec, 10.0)
+        self.assertEqual(config.startup_discard_sec, 0.5)
