@@ -404,6 +404,145 @@ class AnnotationIntegrationTest(unittest.TestCase):
             self.assertIn("review_note", field_ids)
             self.assertEqual(bundle.schema.version, "custom-v1")
 
+    def test_annotation_service_allows_editing_span_and_keyframe_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_session(tmp_dir)
+            service = AnnotationService(session_dir, schema=AnnotationSchema.default())
+            service.ensure_initialized()
+
+            span = service.create_span(
+                {
+                    "id": "span_a",
+                    "start_sequence_id": 0,
+                    "end_sequence_id": 1,
+                    "start_time": 1.0,
+                    "end_time": 1.1,
+                    "data": {"phase": "manipulate"},
+                }
+            )
+            keyframe = service.create_keyframe(
+                {
+                    "id": "keyframe_a",
+                    "sequence_id": 1,
+                    "aligned_time": 1.1,
+                    "data": {"event": "released"},
+                }
+            )
+
+            updated_span = service.update_span(
+                span["id"],
+                {
+                    "id": "span_b",
+                    "start_sequence_id": 0,
+                    "end_sequence_id": 1,
+                    "start_time": 1.0,
+                    "end_time": 1.1,
+                    "data": {"phase": "contact"},
+                },
+            )
+            updated_keyframe = service.update_keyframe(
+                keyframe["id"],
+                {
+                    "id": "keyframe_b",
+                    "sequence_id": 1,
+                    "aligned_time": 1.1,
+                    "data": {"event": "grasped"},
+                },
+            )
+
+            self.assertEqual(updated_span["id"], "span_b")
+            self.assertEqual(updated_keyframe["id"], "keyframe_b")
+            bundle = service.load_bundle().to_dict()
+            self.assertEqual(bundle["spans"][0]["id"], "span_b")
+            self.assertEqual(bundle["keyframes"][0]["id"], "keyframe_b")
+
+    def test_annotation_service_rejects_duplicate_annotation_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_session(tmp_dir)
+            service = AnnotationService(session_dir, schema=AnnotationSchema.default())
+            service.ensure_initialized()
+
+            service.create_span(
+                {
+                    "id": "duplicate_id",
+                    "start_sequence_id": 0,
+                    "end_sequence_id": 0,
+                    "start_time": 1.0,
+                    "end_time": 1.0,
+                    "data": {},
+                }
+            )
+            with self.assertRaisesRegex(ValueError, "已存在"):
+                service.create_span(
+                    {
+                        "id": "duplicate_id",
+                        "start_sequence_id": 1,
+                        "end_sequence_id": 1,
+                        "start_time": 1.1,
+                        "end_time": 1.1,
+                        "data": {},
+                    }
+                )
+
+    def test_annotation_service_accepts_custom_other_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_session(tmp_dir)
+            service = AnnotationService(session_dir, schema=AnnotationSchema.default())
+            service.ensure_initialized()
+
+            span = service.create_span(
+                {
+                    "start_sequence_id": 0,
+                    "end_sequence_id": 1,
+                    "start_time": 1.0,
+                    "end_time": 1.1,
+                    "data": {
+                        "phase": "fine_adjustment",
+                        "event_tags": ["grasp", "gentle_regrasp"],
+                    },
+                }
+            )
+            keyframe = service.create_keyframe(
+                {
+                    "sequence_id": 1,
+                    "aligned_time": 1.1,
+                    "data": {
+                        "event": "tool_handover",
+                        "quality_tags": ["sensor_drop", "minor_blur"],
+                    },
+                }
+            )
+
+            self.assertEqual(span["data"]["phase"], "fine_adjustment")
+            self.assertEqual(span["data"]["event_tags"], ["grasp", "gentle_regrasp"])
+            self.assertEqual(keyframe["data"]["event"], "tool_handover")
+            self.assertEqual(keyframe["data"]["quality_tags"], ["sensor_drop", "minor_blur"])
+
+    def test_annotation_service_rejects_literal_other_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_session(tmp_dir)
+            service = AnnotationService(session_dir, schema=AnnotationSchema.default())
+            service.ensure_initialized()
+
+            with self.assertRaisesRegex(ValueError, "必须提供自定义标签"):
+                service.create_span(
+                    {
+                        "start_sequence_id": 0,
+                        "end_sequence_id": 0,
+                        "start_time": 1.0,
+                        "end_time": 1.0,
+                        "data": {"phase": "other"},
+                    }
+                )
+            with self.assertRaisesRegex(ValueError, "必须提供自定义标签"):
+                service.create_keyframe(
+                    {
+                        "sequence_id": 0,
+                        "aligned_time": 1.0,
+                        "data": {"quality_tags": ["other"]},
+                    }
+                )
+
     def test_lerobot_export_includes_annotation_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             session_dir = self._create_session(tmp_dir)
@@ -574,6 +713,26 @@ class AnnotationIntegrationTest(unittest.TestCase):
                         "motors.motor_2.velocity",
                     ],
                 )
+            finally:
+                running.close()
+
+    def test_annotation_web_server_shutdown_endpoint_stops_server(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_session(tmp_dir)
+            running = start_annotation_server(session_dir, port=0)
+            try:
+                request = Request(
+                    f"{running.url}api/shutdown",
+                    data=b"{}",
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                payload = json.loads(urlopen(request).read().decode("utf-8"))
+                self.assertTrue(payload["ok"])
+                self.assertTrue(payload["result"]["stopping"])
+                if running.thread is not None:
+                    running.thread.join(timeout=5.0)
+                    self.assertFalse(running.thread.is_alive())
             finally:
                 running.close()
 

@@ -6,7 +6,7 @@
 output_root: /mnt/m2ssd/umi-data/sessions
 sensor_source: real
 align_rate_hz: 30.0
-duration_sec: 2.0
+duration_sec: 10.0
 startup_discard_sec: 0.5
 max_frame_age: 0.2
 enable_ft: true
@@ -82,10 +82,10 @@ camera:
   frame_queue_size: 128
 gelsight:
   name: gelsight
-  device_index: 0
+  device_index: 8
   width: 320
   height: 240
-  fps: 30
+  fps: 25
   frame_queue_size: 128
 gravity_compensation:
   enabled: false
