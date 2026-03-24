@@ -1,3 +1,4 @@
+from collections import deque
 import threading
 import time
 import numpy as np
@@ -37,6 +38,7 @@ class MicrophoneSensor(BaseSensor):
         self.device_name = None
         self.open_error = None
         self._ready_event = threading.Event()
+        self._frame_queue = deque()
 
     def start(self):
         self.effective_rate = self.rate
@@ -44,6 +46,8 @@ class MicrophoneSensor(BaseSensor):
         self.device_name = None
         self.open_error = None
         self._ready_event.clear()
+        with self.lock:
+            self._frame_queue.clear()
         super().start()
 
     def _worker(self):
@@ -83,19 +87,43 @@ class MicrophoneSensor(BaseSensor):
                 capture_wall_ns = (read_start_wall_ns + read_end_wall_ns) // 2
                 capture_mono_ns = (read_start_mono_ns + read_end_mono_ns) // 2
                 with self.lock:
-                    self.latest_data = frame
-                    self.latest_timestamp = capture_wall_ns / 1_000_000_000.0
                     self.frame_count += 1
-                    self.latest_time_info = {
-                        "host_capture_time_ns": capture_wall_ns,
-                        "monotonic_capture_time_ns": capture_mono_ns,
-                        "host_arrival_time_ns": read_start_wall_ns,
-                        "host_read_start_time_ns": read_start_wall_ns,
-                        "host_read_end_time_ns": read_end_wall_ns,
+                    packet = {
+                        "data": frame,
+                        "timestamp": capture_wall_ns / 1_000_000_000.0,
+                        "frame_id": self.frame_count,
+                        "time_info": {
+                            "host_capture_time_ns": capture_wall_ns,
+                            "monotonic_capture_time_ns": capture_mono_ns,
+                            "host_arrival_time_ns": read_start_wall_ns,
+                            "host_read_start_time_ns": read_start_wall_ns,
+                            "host_read_end_time_ns": read_end_wall_ns,
+                        },
                     }
+                    self._frame_queue.append(packet)
+                    self.latest_data = frame
+                    self.latest_timestamp = packet["timestamp"]
+                    self.latest_time_info = dict(packet["time_info"])
             except Exception as e:
                 print(f"[{self.name}] 运行时错误: {e}")
                 time.sleep(0.05)
+
+    def get_next_data_with_time_info(self):
+        with self.lock:
+            if not self._frame_queue:
+                return None, 0.0, 0, {}
+            packet = self._frame_queue.popleft()
+            data = packet["data"].copy() if packet["data"] is not None else None
+            return data, packet["timestamp"], packet["frame_id"], dict(packet["time_info"])
+
+    def get_all_data_with_time_info(self):
+        packets = []
+        with self.lock:
+            while self._frame_queue:
+                packet = self._frame_queue.popleft()
+                data = packet["data"].copy() if packet["data"] is not None else None
+                packets.append((data, packet["timestamp"], packet["frame_id"], dict(packet["time_info"])))
+        return packets
 
     def _close_hardware(self):
         if self._stream is not None:
@@ -119,6 +147,8 @@ class MicrophoneSensor(BaseSensor):
             self._audio = None
 
         self._ready_event.clear()
+        with self.lock:
+            self._frame_queue.clear()
 
     def is_calibrated(self):
         return self._ready_event.is_set()

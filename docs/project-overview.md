@@ -96,7 +96,7 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 
 ### `inspect`
 
-当前负责输出 session 基础摘要；若 session 已带标注，也会输出 annotation summary。
+当前负责输出 session 基础摘要；若 session 已带标注，也会输出 annotation summary。面向人工查看的时间字段默认按墙上时间展示。
 
 ### `annotate`
 
@@ -109,7 +109,13 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - 本地 Web 标注入口 `scripts/sdk_annotate.py`
 - 多路图像流同步回看
 - 基于 `aligned.sequence_id` 的统一时间轴
+- `Synced Signals` 按传感器分组展示，并围绕当前进度条位置显示局部时间窗口
 - FT / IMU / Motors 标量曲线查看
+- FT 仅显示真实 6 自由度：`force[3] + torque[3]`
+- Motors 仅显示真实 6 自由度：`motor_1` / `motor_2` 的 `position`、`velocity`、`torque`
+- 麦克风保留原始 `audio` 表示，同时支持整段 session 音频回放与音频摘要特征查看
+- 页面时间统一按墙上时间展示
+- 右上角显示当前 session duration
 
 标注结果当前直接写回 session 的 `annotations/` 目录。
 
@@ -343,6 +349,7 @@ UMI_DataCollection/
 - 3 秒零点校准
 - ready 等待
 - FT 重力补偿输入
+- 真实落盘 payload 仅保留 `force` 与 `torque` 两组共 6 自由度；旧 session 中的 `force_torque` 仅作为兼容读取路径
 
 对应代码：
 
@@ -412,7 +419,8 @@ UMI_DataCollection/
 - 串口多进程采集
 - 3 秒零点校准
 - ready 等待
-- `motor_state`、`motor_1`、`motor_2` payload
+- 真实落盘 payload 仅保留 `motor_1`、`motor_2` 两组共 6 自由度
+- 旧 session 中的 `motor_state` 仅作为兼容读取路径
 
 对应代码：
 
@@ -430,6 +438,8 @@ UMI_DataCollection/
 - fake microphone 适配
 - `audio` payload 写盘
 - 支持 `channels / rate / chunk / device_index`
+- 采集侧使用队列缓存并在录制循环中批量落盘，避免完整 session 音频被后续 chunk 覆盖
+- 标注端支持整段 session 音频回放，方便确认录音有效性
 
 对应代码：
 

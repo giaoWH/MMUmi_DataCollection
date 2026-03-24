@@ -124,6 +124,7 @@ class LegacySerialAdaptersTest(unittest.TestCase):
         self.assertEqual(frame.modality, "force_torque")
         np.testing.assert_allclose(frame.payload["force"], [0.5, 0.5, 0.5], atol=1e-6)
         np.testing.assert_allclose(frame.payload["torque"], [0.1, 0.2, 0.3], atol=1e-6)
+        self.assertNotIn("force_torque", frame.payload)
         self.assertIsNotNone(frame.time.host_time_ns)
         self.assertIsNotNone(frame.time.host_read_end_time_ns)
 
@@ -175,6 +176,6 @@ class LegacySerialAdaptersTest(unittest.TestCase):
 
         self.assertTrue(status["calibration_finished"])
         self.assertEqual(frame.modality, "motor_state")
-        np.testing.assert_allclose(frame.payload["motor_state"], [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], atol=1e-6)
         self.assertEqual(frame.payload["motor_1"]["position"], 1.0)
         self.assertEqual(frame.payload["motor_2"]["torque"], 6.0)
+        self.assertNotIn("motor_state", frame.payload)

@@ -465,60 +465,77 @@ def main() -> None:
         print("录制时长: 持续运行，按 Ctrl+C 停止")
 
     loop_interval = 1.0 / config.align_rate_hz
-    start_time = time.time()
+    start_wall_time_ns = time.time_ns()
+    start_monotonic_time_ns = time.perf_counter_ns()
+    next_aligned_time_ns = start_wall_time_ns
+    next_aligned_monotonic_time_ns = start_monotonic_time_ns
+    align_interval_ns = max(1, int(round(1_000_000_000.0 / config.align_rate_hz)))
+    end_monotonic_time_ns = (
+        start_monotonic_time_ns + int(round(config.duration_sec * 1_000_000_000.0))
+        if config.duration_sec > 0
+        else None
+    )
 
     try:
         while is_running:
-            if config.duration_sec > 0 and (time.time() - start_time) >= config.duration_sec:
-                break
-
             loop_start = time.perf_counter()
-            aligned_time_ns = time.time_ns()
-            aligned_monotonic_time_ns = time.perf_counter_ns()
-            aligned_time = aligned_time_ns / 1_000_000_000.0
 
             for sensor_name, sensor in registry.sensors.items():
-                frame = sensor.read_frame()
-                if frame is None:
+                frames = sensor.read_available_frames()
+                if not frames:
                     continue
-                if frame.frame_id == last_written_frame_ids[sensor_name]:
-                    continue
+                for frame in frames:
+                    if frame.frame_id == last_written_frame_ids[sensor_name]:
+                        continue
+                    aligner.add_frame(frame)
+                    writer.write_sensor_frame(frame)
+                    last_written_frame_ids[sensor_name] = frame.frame_id
 
-                aligner.add_frame(frame)
-                writer.write_sensor_frame(frame)
-                last_written_frame_ids[sensor_name] = frame.frame_id
+            current_monotonic_time_ns = time.perf_counter_ns()
+            cutoff_monotonic_ns = current_monotonic_time_ns
+            if end_monotonic_time_ns is not None:
+                cutoff_monotonic_ns = min(cutoff_monotonic_ns, end_monotonic_time_ns)
 
-            aligned = aligner.align(
-                aligned_time,
-                aligned_time_ns=aligned_time_ns,
-                aligned_monotonic_time_ns=aligned_monotonic_time_ns,
-            )
-            if (
-                compensator is not None
-                and ft_sensor_name is not None
-                and imu_sensor_name is not None
-                and ft_sensor_name in aligned.frames
-                and imu_sensor_name in aligned.frames
-            ):
-                ft_force = np.asarray(aligned.frames[ft_sensor_name].payload["force"], dtype=np.float64)
-                imu_quaternion = np.asarray(aligned.frames[imu_sensor_name].payload["quaternion"], dtype=np.float64)
-                pure_force, gravity_force = compensator.process(ft_force, imu_quaternion)
-                aligned.metadata["gravity_compensation"] = {
-                    "applied": True,
-                    "pure_force": pure_force.tolist(),
-                    "gravity_force": gravity_force.tolist(),
-                    "bias": compensator.bias.tolist(),
-                }
-                logger.debug("重力补偿已应用: seq=%d", aligned.sequence_id)
-            writer.write_aligned_frame(aligned)
+            last_aligned = None
+            while next_aligned_monotonic_time_ns <= cutoff_monotonic_ns:
+                aligned = aligner.align(
+                    next_aligned_time_ns / 1_000_000_000.0,
+                    aligned_time_ns=next_aligned_time_ns,
+                    aligned_monotonic_time_ns=next_aligned_monotonic_time_ns,
+                )
+                if (
+                    compensator is not None
+                    and ft_sensor_name is not None
+                    and imu_sensor_name is not None
+                    and ft_sensor_name in aligned.frames
+                    and imu_sensor_name in aligned.frames
+                ):
+                    ft_force = np.asarray(aligned.frames[ft_sensor_name].payload["force"], dtype=np.float64)
+                    imu_quaternion = np.asarray(aligned.frames[imu_sensor_name].payload["quaternion"], dtype=np.float64)
+                    pure_force, gravity_force = compensator.process(ft_force, imu_quaternion)
+                    aligned.metadata["gravity_compensation"] = {
+                        "applied": True,
+                        "pure_force": pure_force.tolist(),
+                        "gravity_force": gravity_force.tolist(),
+                        "bias": compensator.bias.tolist(),
+                    }
+                    logger.debug("重力补偿已应用: seq=%d", aligned.sequence_id)
+                writer.write_aligned_frame(aligned)
+                last_aligned = aligned
+                next_aligned_time_ns += align_interval_ns
+                next_aligned_monotonic_time_ns += align_interval_ns
 
-            missing = ",".join(aligned.missing_sensors) if aligned.missing_sensors else "-"
-            print(
-                f"\r[Align] seq={aligned.sequence_id:06d} "
-                f"missing={missing:<20} "
-                f"frames={len(aligned.frames)}",
-                end="",
-            )
+            if last_aligned is not None:
+                missing = ",".join(last_aligned.missing_sensors) if last_aligned.missing_sensors else "-"
+                print(
+                    f"\r[Align] seq={last_aligned.sequence_id:06d} "
+                    f"missing={missing:<20} "
+                    f"frames={len(last_aligned.frames)}",
+                    end="",
+                )
+
+            if end_monotonic_time_ns is not None and next_aligned_monotonic_time_ns > end_monotonic_time_ns:
+                break
 
             elapsed = time.perf_counter() - loop_start
             time.sleep(max(0.0, loop_interval - elapsed))

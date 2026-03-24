@@ -39,7 +39,8 @@ class SensorRegistryExtensionsTest(unittest.TestCase):
             self.assertEqual(seen_frames["camera"].modality, "rgb")
             self.assertEqual(seen_frames["gelsight"].modality, "visuotactile")
             self.assertIn("audio", seen_frames["microphone"].payload)
-            self.assertIn("motor_state", seen_frames["motors"].payload)
+            self.assertIn("motor_1", seen_frames["motors"].payload)
+            self.assertIn("motor_2", seen_frames["motors"].payload)
             self.assertIn("color", seen_frames["camera"].payload)
             self.assertIn("image", seen_frames["gelsight"].payload)
         finally:

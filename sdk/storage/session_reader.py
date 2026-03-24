@@ -8,6 +8,7 @@ import numpy as np
 
 from sdk.core.frame import FrameTime, SensorFrame, TrajectoryFrame
 from sdk.storage.schema import SessionManifest, manifest_path_for
+from sdk.time_utils import format_wall_time
 
 try:
     import cv2
@@ -33,7 +34,7 @@ class SessionReader:
         payload = {
             "schema_version": self.manifest.schema_version,
             "session_id": self.manifest.session_id,
-            "started_at": self.manifest.started_at,
+            "started_at": format_wall_time(self.manifest.started_at),
             "sensor_names": self.sensor_names(),
             "aligned_path": self.manifest.aligned_path,
             "trajectory_path": self.manifest.trajectory_path,

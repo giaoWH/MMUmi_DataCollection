@@ -130,7 +130,6 @@ class LegacyFTAdapter(SensorAdapter):
             frame_id=frame_id,
             time=frame_time,
             payload={
-                "force_torque": data.tolist(),
                 "force": data[:3].tolist(),
                 "torque": data[3:].tolist(),
             },
@@ -251,7 +250,6 @@ class LegacyMotorsAdapter(SensorAdapter):
             frame_id=frame_id,
             time=frame_time,
             payload={
-                "motor_state": data.tolist(),
                 "motor_1": {
                     "position": float(data[0]),
                     "velocity": float(data[1]),
@@ -322,10 +320,21 @@ class LegacyMicrophoneAdapter(SensorAdapter):
         self.sensor.stop()
 
     def read_frame(self) -> SensorFrame | None:
-        data, _timestamp, frame_id, time_info = self.sensor.get_data_with_time_info()
+        data, _timestamp, frame_id, time_info = self.sensor.get_next_data_with_time_info()
         if data is None:
             return None
 
+        return self._build_sensor_frame(data, frame_id=frame_id, time_info=time_info)
+
+    def read_available_frames(self) -> list[SensorFrame]:
+        frames: list[SensorFrame] = []
+        for data, _timestamp, frame_id, time_info in self.sensor.get_all_data_with_time_info():
+            if data is None:
+                continue
+            frames.append(self._build_sensor_frame(data, frame_id=frame_id, time_info=time_info))
+        return frames
+
+    def _build_sensor_frame(self, data, *, frame_id: int, time_info: dict[str, object]) -> SensorFrame:
         frame_time = _build_frame_time(clock=self.clock, time_info=time_info)
         return SensorFrame(
             sensor_name=self.name,
