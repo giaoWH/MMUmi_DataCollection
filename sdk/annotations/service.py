@@ -90,8 +90,9 @@ class AnnotationService:
 
     def create_span(self, payload: dict[str, Any]) -> dict[str, Any]:
         bundle = self.ensure_initialized()
-        item = self._normalize_span_payload(payload, schema=bundle.schema)
         spans = self.store.load_spans()
+        item = self._normalize_span_payload(payload, schema=bundle.schema)
+        self._ensure_unique_id(spans, item["id"])
         spans.append(item)
         spans.sort(key=lambda record: (record["start_sequence_id"], record["end_sequence_id"], record["id"]))
         self.store.save_spans(spans)
@@ -108,8 +109,8 @@ class AnnotationService:
                 payload,
                 schema=bundle.schema,
                 existing=item,
-                forced_id=span_id,
             )
+            self._ensure_unique_id(spans, updated["id"], exclude_id=span_id)
             spans[index] = updated
             spans.sort(key=lambda record: (record["start_sequence_id"], record["end_sequence_id"], record["id"]))
             self.store.save_spans(spans)
@@ -131,8 +132,9 @@ class AnnotationService:
 
     def create_keyframe(self, payload: dict[str, Any]) -> dict[str, Any]:
         bundle = self.ensure_initialized()
-        item = self._normalize_keyframe_payload(payload, schema=bundle.schema)
         keyframes = self.store.load_keyframes()
+        item = self._normalize_keyframe_payload(payload, schema=bundle.schema)
+        self._ensure_unique_id(keyframes, item["id"])
         keyframes.append(item)
         keyframes.sort(key=lambda record: (record["sequence_id"], record["id"]))
         self.store.save_keyframes(keyframes)
@@ -149,8 +151,8 @@ class AnnotationService:
                 payload,
                 schema=bundle.schema,
                 existing=item,
-                forced_id=keyframe_id,
             )
+            self._ensure_unique_id(keyframes, updated["id"], exclude_id=keyframe_id)
             keyframes[index] = updated
             keyframes.sort(key=lambda record: (record["sequence_id"], record["id"]))
             self.store.save_keyframes(keyframes)
@@ -236,7 +238,6 @@ class AnnotationService:
         *,
         schema: AnnotationSchema,
         existing: dict[str, Any] | None = None,
-        forced_id: str | None = None,
     ) -> dict[str, Any]:
         start_sequence_id = int(payload["start_sequence_id"])
         end_sequence_id = int(payload["end_sequence_id"])
@@ -249,7 +250,7 @@ class AnnotationService:
         data = schema.validate_annotation_data("span", payload.get("data", {}))
         now = utc_now_iso()
         return {
-            "id": forced_id or (existing.get("id") if existing else uuid.uuid4().hex),
+            "id": self._resolve_annotation_id(payload, existing=existing),
             "start_sequence_id": start_sequence_id,
             "end_sequence_id": end_sequence_id,
             "start_time": float(start_time) if start_time is not None else None,
@@ -266,7 +267,6 @@ class AnnotationService:
         *,
         schema: AnnotationSchema,
         existing: dict[str, Any] | None = None,
-        forced_id: str | None = None,
     ) -> dict[str, Any]:
         sequence_id = int(payload["sequence_id"])
         aligned_time = payload.get("aligned_time")
@@ -274,7 +274,7 @@ class AnnotationService:
         data = schema.validate_annotation_data("keyframe", payload.get("data", {}))
         now = utc_now_iso()
         return {
-            "id": forced_id or (existing.get("id") if existing else uuid.uuid4().hex),
+            "id": self._resolve_annotation_id(payload, existing=existing),
             "sequence_id": sequence_id,
             "aligned_time": float(aligned_time) if aligned_time is not None else None,
             "sensor_refs": sensor_refs,
@@ -282,6 +282,33 @@ class AnnotationService:
             "created_at": existing.get("created_at", now) if existing else now,
             "updated_at": now,
         }
+
+    def _resolve_annotation_id(self, payload: dict[str, Any], *, existing: dict[str, Any] | None = None) -> str:
+        raw_id = payload.get("id")
+        if raw_id is None:
+            if existing is not None:
+                return str(existing["id"])
+            return uuid.uuid4().hex
+        annotation_id = str(raw_id).strip()
+        if not annotation_id:
+            if existing is not None:
+                return str(existing["id"])
+            return uuid.uuid4().hex
+        return annotation_id
+
+    def _ensure_unique_id(
+        self,
+        records: list[dict[str, Any]],
+        annotation_id: str,
+        *,
+        exclude_id: str | None = None,
+    ) -> None:
+        for record in records:
+            record_id = str(record["id"])
+            if exclude_id is not None and record_id == exclude_id:
+                continue
+            if record_id == annotation_id:
+                raise ValueError(f"annotation id 已存在: {annotation_id}")
 
 
 def create_annotation_service(

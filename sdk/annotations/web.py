@@ -311,6 +311,7 @@ INDEX_HTML = """<!doctype html>
         <form id="session-form" class="form-grid"></form>
         <div class="actions">
           <button id="save-session" type="button">Save Session</button>
+          <button id="close-annotator" class="secondary" type="button">Close</button>
         </div>
       </div>
       <div class="panel">
@@ -404,6 +405,41 @@ INDEX_HTML = """<!doctype html>
       return record ? record.sequence_id : state.currentSequence;
     }
 
+    function recordForSequenceId(sequenceId) {
+      return (state.payload.aligned_records || []).find((record) => record.sequence_id === sequenceId) || null;
+    }
+
+    function syncSpanTimesFromSequences() {
+      const startSequence = Number(document.getElementById("span-start-seq").value);
+      const endSequence = Number(document.getElementById("span-end-seq").value);
+      const startRecord = Number.isFinite(startSequence) ? recordForSequenceId(startSequence) : null;
+      const endRecord = Number.isFinite(endSequence) ? recordForSequenceId(endSequence) : null;
+      setWallTimeField("span-start-time", "span-start-time-display", startRecord ? startRecord.aligned_time : null);
+      setWallTimeField("span-end-time", "span-end-time-display", endRecord ? endRecord.aligned_time : null);
+    }
+
+    function syncKeyframeTimeFromSequence() {
+      const sequence = Number(document.getElementById("keyframe-sequence").value);
+      const record = Number.isFinite(sequence) ? recordForSequenceId(sequence) : null;
+      setWallTimeField("keyframe-time", "keyframe-time-display", record ? record.aligned_time : null);
+    }
+
+    function bindDynamicFormEvents() {
+      const spanStart = document.getElementById("span-start-seq");
+      const spanEnd = document.getElementById("span-end-seq");
+      const keyframeSequence = document.getElementById("keyframe-sequence");
+      const customControls = document.querySelectorAll("[data-other-toggle]");
+      if (spanStart) spanStart.addEventListener("input", syncSpanTimesFromSequences);
+      if (spanEnd) spanEnd.addEventListener("input", syncSpanTimesFromSequences);
+      if (keyframeSequence) keyframeSequence.addEventListener("input", syncKeyframeTimeFromSequence);
+      customControls.forEach((input) => {
+        const update = () => syncOtherInputVisibility(input.dataset.scope, input.dataset.field);
+        input.addEventListener("change", update);
+        input.addEventListener("input", update);
+        update();
+      });
+    }
+
     function signalWindow() {
       const records = state.payload.aligned_records || [];
       if (!records.length) {
@@ -438,6 +474,7 @@ INDEX_HTML = """<!doctype html>
       renderKeyframeForm();
       renderSpanList();
       renderKeyframeList();
+      bindDynamicFormEvents();
     }
 
     function renderHeader() {
@@ -699,10 +736,43 @@ INDEX_HTML = """<!doctype html>
       };
     }
 
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function customOtherValue(field, value) {
+      if (!field.options || !field.options.includes("other")) return "";
+      if (field.type === "enum") {
+        return value && !field.options.includes(value) ? String(value) : "";
+      }
+      if (field.type === "multi_enum" && Array.isArray(value)) {
+        const custom = value.find((item) => !field.options.includes(item));
+        return custom ? String(custom) : "";
+      }
+      return "";
+    }
+
+    function syncOtherInputVisibility(scope, fieldId) {
+      const wrapper = document.getElementById(`${scope}-${fieldId}-other-wrap`);
+      const input = document.getElementById(`${scope}-${fieldId}-other-input`);
+      if (!wrapper || !input) return;
+      const toggleInputs = [...document.querySelectorAll(`[data-scope="${scope}"][data-field="${fieldId}"][data-other-toggle]`)];
+      const visible = toggleInputs.some((element) => {
+        if (element.type === "checkbox") return element.checked;
+        return element.value === "__custom__";
+      });
+      wrapper.style.display = visible ? "grid" : "none";
+      if (!visible) input.value = "";
+    }
+
     function fieldControl(scope, field, value) {
       const fieldId = `${scope}-${field.id}`;
       if (field.type === "string") {
-        return `<div class="field"><label for="${fieldId}">${field.label}</label><textarea id="${fieldId}" data-scope="${scope}" data-field="${field.id}">${value ?? ""}</textarea></div>`;
+        return `<div class="field"><label for="${fieldId}">${field.label}</label><textarea id="${fieldId}" data-scope="${scope}" data-field="${field.id}">${escapeHtml(value ?? "")}</textarea></div>`;
       }
       if (field.type === "number") {
         return `<div class="field"><label for="${fieldId}">${field.label}</label><input id="${fieldId}" type="number" step="any" data-scope="${scope}" data-field="${field.id}" value="${value ?? ""}" /></div>`;
@@ -711,18 +781,30 @@ INDEX_HTML = """<!doctype html>
         return `<div class="field"><label class="inline-check"><input id="${fieldId}" type="checkbox" data-scope="${scope}" data-field="${field.id}" ${value ? "checked" : ""} />${field.label}</label></div>`;
       }
       if (field.type === "enum") {
-        const options = ['<option value=""></option>'].concat(field.options.map((option) =>
-          `<option value="${option}" ${value === option ? "selected" : ""}>${option}</option>`
-        ));
-        return `<div class="field"><label for="${fieldId}">${field.label}</label><select id="${fieldId}" data-scope="${scope}" data-field="${field.id}">${options.join("")}</select></div>`;
+        const customValue = customOtherValue(field, value);
+        const selectedValue = customValue ? "__custom__" : (value ?? "");
+        const options = ['<option value=""></option>'].concat(field.options.map((option) => {
+          const optionValue = option === "other" ? "__custom__" : option;
+          const optionLabel = option === "other" ? "other (specify)" : option;
+          return `<option value="${optionValue}" ${selectedValue === optionValue ? "selected" : ""}>${escapeHtml(optionLabel)}</option>`;
+        }));
+        if (!field.options.includes("other")) {
+          return `<div class="field"><label for="${fieldId}">${field.label}</label><select id="${fieldId}" data-scope="${scope}" data-field="${field.id}">${options.join("")}</select></div>`;
+        }
+        return `<div class="field"><label for="${fieldId}">${field.label}</label><select id="${fieldId}" data-scope="${scope}" data-field="${field.id}" data-other-toggle="true">${options.join("")}</select><div id="${fieldId}-other-wrap" class="field" style="display:${selectedValue === "__custom__" ? "grid" : "none"};"><label for="${fieldId}-other-input">Other Label</label><input id="${fieldId}-other-input" type="text" value="${escapeHtml(customValue)}" placeholder="Enter custom label" /></div></div>`;
       }
       if (field.type === "multi_enum") {
         const selected = new Set(Array.isArray(value) ? value : []);
+        const customValue = customOtherValue(field, value);
         return `<div class="field"><label>${field.label}</label><div class="field-group check-group">${
-          field.options.map((option, index) => `
-            <label><input type="checkbox" data-scope="${scope}" data-field="${field.id}" data-kind="multi_enum" value="${option}" ${selected.has(option) ? "checked" : ""} />${option}</label>
-          `).join("")
-        }</div></div>`;
+          field.options.map((option) => {
+            const optionValue = option === "other" ? "__custom__" : option;
+            const checked = option === "other" ? Boolean(customValue) : selected.has(option);
+            const toggleAttr = option === "other" ? ' data-other-toggle="true"' : "";
+            const optionLabel = option === "other" ? "other (specify)" : option;
+            return `<label><input type="checkbox" data-scope="${scope}" data-field="${field.id}" data-kind="multi_enum" value="${optionValue}"${toggleAttr} ${checked ? "checked" : ""} />${escapeHtml(optionLabel)}</label>`;
+          }).join("")
+        }</div><div id="${fieldId}-other-wrap" class="field" style="display:${customValue ? "grid" : "none"};"><label for="${fieldId}-other-input">Other Label</label><input id="${fieldId}-other-input" type="text" value="${escapeHtml(customValue)}" placeholder="Enter custom label" /></div></div>`;
       }
       return "";
     }
@@ -747,20 +829,20 @@ INDEX_HTML = """<!doctype html>
       const selected = selectedSpan();
       const record = currentRecord();
       const current = selected ? selected.data : defaultsFor("span");
-      const startSeq = selected ? selected.start_sequence_id : state.currentSequence;
-      const endSeq = selected ? selected.end_sequence_id : state.currentSequence;
+      const startSeq = selected ? selected.start_sequence_id : currentSequenceId();
+      const endSeq = selected ? selected.end_sequence_id : currentSequenceId();
       const startTime = selected ? selected.start_time : record ? record.aligned_time : null;
       const endTime = selected ? selected.end_time : record ? record.aligned_time : null;
       target.innerHTML = `
         <div class="field">
           <label for="span-id">Span ID</label>
-          <input id="span-id" type="text" value="${selected ? selected.id : ""}" disabled />
+          <input id="span-id" type="text" value="${selected ? selected.id : ""}" placeholder="Auto generate" />
         </div>
         <div class="field-group">
           <div class="field"><label for="span-start-seq">Start Sequence</label><input id="span-start-seq" type="number" value="${startSeq}" /></div>
           <div class="field"><label for="span-end-seq">End Sequence</label><input id="span-end-seq" type="number" value="${endSeq}" /></div>
-          <div class="field"><label for="span-start-time-display">Start Time</label><input id="span-start-time-display" type="text" value="${startTime === null ? "" : formatWallTime(startTime)}" disabled /><input id="span-start-time" type="hidden" value="${startTime ?? ""}" /></div>
-          <div class="field"><label for="span-end-time-display">End Time</label><input id="span-end-time-display" type="text" value="${endTime === null ? "" : formatWallTime(endTime)}" disabled /><input id="span-end-time" type="hidden" value="${endTime ?? ""}" /></div>
+          <div class="field"><label for="span-start-time-display">Start Time</label><input id="span-start-time-display" type="text" value="${startTime === null ? "" : formatWallTime(startTime)}" readonly /><input id="span-start-time" type="hidden" value="${startTime ?? ""}" /></div>
+          <div class="field"><label for="span-end-time-display">End Time</label><input id="span-end-time-display" type="text" value="${endTime === null ? "" : formatWallTime(endTime)}" readonly /><input id="span-end-time" type="hidden" value="${endTime ?? ""}" /></div>
         </div>
         ${schemaFields("span").map((field) => fieldControl("span", field, current[field.id] ?? defaultsFor("span")[field.id])).join("")}
       `;
@@ -771,16 +853,16 @@ INDEX_HTML = """<!doctype html>
       const selected = selectedKeyframe();
       const record = currentRecord();
       const current = selected ? selected.data : defaultsFor("keyframe");
-      const sequenceId = selected ? selected.sequence_id : state.currentSequence;
+      const sequenceId = selected ? selected.sequence_id : currentSequenceId();
       const alignedTime = selected ? selected.aligned_time : record ? record.aligned_time : null;
       target.innerHTML = `
         <div class="field">
           <label for="keyframe-id">Keyframe ID</label>
-          <input id="keyframe-id" type="text" value="${selected ? selected.id : ""}" disabled />
+          <input id="keyframe-id" type="text" value="${selected ? selected.id : ""}" placeholder="Auto generate" />
         </div>
         <div class="field-group">
           <div class="field"><label for="keyframe-sequence">Sequence</label><input id="keyframe-sequence" type="number" value="${sequenceId}" /></div>
-          <div class="field"><label for="keyframe-time-display">Aligned Time</label><input id="keyframe-time-display" type="text" value="${alignedTime === null ? "" : formatWallTime(alignedTime)}" disabled /><input id="keyframe-time" type="hidden" value="${alignedTime ?? ""}" /></div>
+          <div class="field"><label for="keyframe-time-display">Aligned Time</label><input id="keyframe-time-display" type="text" value="${alignedTime === null ? "" : formatWallTime(alignedTime)}" readonly /><input id="keyframe-time" type="hidden" value="${alignedTime ?? ""}" /></div>
         </div>
         ${schemaFields("keyframe").map((field) => fieldControl("keyframe", field, current[field.id] ?? defaultsFor("keyframe")[field.id])).join("")}
       `;
@@ -851,7 +933,17 @@ INDEX_HTML = """<!doctype html>
           const checked = [...document.querySelectorAll(`[data-scope="${scope}"][data-field="${field.id}"]`)]
             .filter((input) => input.checked)
             .map((input) => input.value);
-          if (checked.length) data[field.id] = checked;
+          const supportsCustom = Array.isArray(field.options) && field.options.includes("other");
+          const normalized = checked.filter((item) => item !== "__custom__");
+          if (supportsCustom && checked.includes("__custom__")) {
+            const otherInput = document.getElementById(`${scope}-${field.id}-other-input`);
+            const customValue = otherInput ? otherInput.value.trim() : "";
+            if (!customValue) {
+              throw new Error(`${field.label}: selecting other requires a custom label`);
+            }
+            normalized.push(customValue);
+          }
+          if (normalized.length) data[field.id] = normalized;
           return;
         }
         const input = document.querySelector(`[data-scope="${scope}"][data-field="${field.id}"]`);
@@ -862,53 +954,91 @@ INDEX_HTML = """<!doctype html>
         }
         const raw = input.value;
         if (raw === "") return;
-        if (field.type === "number") data[field.id] = Number(raw);
-        else data[field.id] = raw;
+        if (field.type === "number") {
+          data[field.id] = Number(raw);
+          return;
+        }
+        if (field.type === "enum" && Array.isArray(field.options) && field.options.includes("other") && raw === "__custom__") {
+          const otherInput = document.getElementById(`${scope}-${field.id}-other-input`);
+          const customValue = otherInput ? otherInput.value.trim() : "";
+          if (!customValue) {
+            throw new Error(`${field.label}: selecting other requires a custom label`);
+          }
+          data[field.id] = customValue;
+          return;
+        }
+        data[field.id] = raw;
       });
       return data;
     }
 
     async function saveSessionAnnotation() {
-      await fetch("/api/session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data: readScopedData("session") }),
-      });
-      await loadState();
+      try {
+        await fetch("/api/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ data: readScopedData("session") }),
+        });
+        await loadState();
+      } catch (error) {
+        window.alert(error.message || String(error));
+      }
     }
 
     async function saveSpanAnnotation() {
-      const numOrNull = (value) => value === "" ? null : Number(value);
-      const payload = {
-        start_sequence_id: Number(document.getElementById("span-start-seq").value),
-        end_sequence_id: Number(document.getElementById("span-end-seq").value),
-        start_time: numOrNull(document.getElementById("span-start-time").value),
-        end_time: numOrNull(document.getElementById("span-end-time").value),
-        data: readScopedData("span"),
-      };
-      const id = state.selectedSpanId;
-      await fetch(id ? `/api/spans/${id}` : "/api/spans", {
-        method: id ? "PUT" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      await loadState();
+      try {
+        const numOrNull = (value) => value === "" ? null : Number(value);
+        const rawId = document.getElementById("span-id").value.trim();
+        const payload = {
+          id: rawId || undefined,
+          start_sequence_id: Number(document.getElementById("span-start-seq").value),
+          end_sequence_id: Number(document.getElementById("span-end-seq").value),
+          start_time: numOrNull(document.getElementById("span-start-time").value),
+          end_time: numOrNull(document.getElementById("span-end-time").value),
+          data: readScopedData("span"),
+        };
+        const id = state.selectedSpanId;
+        const response = await fetch(id ? `/api/spans/${id}` : "/api/spans", {
+          method: id ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.ok) {
+          throw new Error(result.error || "failed to save span annotation");
+        }
+        state.selectedSpanId = result.result.id;
+        await loadState();
+      } catch (error) {
+        window.alert(error.message || String(error));
+      }
     }
 
     async function saveKeyframeAnnotation() {
-      const numOrNull = (value) => value === "" ? null : Number(value);
-      const payload = {
-        sequence_id: Number(document.getElementById("keyframe-sequence").value),
-        aligned_time: numOrNull(document.getElementById("keyframe-time").value),
-        data: readScopedData("keyframe"),
-      };
-      const id = state.selectedKeyframeId;
-      await fetch(id ? `/api/keyframes/${id}` : "/api/keyframes", {
-        method: id ? "PUT" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      await loadState();
+      try {
+        const numOrNull = (value) => value === "" ? null : Number(value);
+        const rawId = document.getElementById("keyframe-id").value.trim();
+        const payload = {
+          id: rawId || undefined,
+          sequence_id: Number(document.getElementById("keyframe-sequence").value),
+          aligned_time: numOrNull(document.getElementById("keyframe-time").value),
+          data: readScopedData("keyframe"),
+        };
+        const id = state.selectedKeyframeId;
+        const response = await fetch(id ? `/api/keyframes/${id}` : "/api/keyframes", {
+          method: id ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.ok) {
+          throw new Error(result.error || "failed to save keyframe annotation");
+        }
+        state.selectedKeyframeId = result.result.id;
+        await loadState();
+      } catch (error) {
+        window.alert(error.message || String(error));
+      }
     }
 
     async function deleteSpanAnnotation() {
@@ -923,6 +1053,27 @@ INDEX_HTML = """<!doctype html>
       await fetch(`/api/keyframes/${state.selectedKeyframeId}`, { method: "DELETE" });
       state.selectedKeyframeId = null;
       await loadState();
+    }
+
+    async function closeAnnotator() {
+      const button = document.getElementById("close-annotator");
+      button.disabled = true;
+      try {
+        await fetch("/api/shutdown", { method: "POST" });
+      } catch (error) {
+        console.error("failed to stop annotation server", error);
+      }
+      document.body.innerHTML = `
+        <main style="display:grid;place-items:center;min-height:100vh;padding:24px;">
+          <section class="panel" style="max-width:520px;text-align:center;">
+            <h1>Annotation Closed</h1>
+            <p>The local annotation server has been stopped. You can close this tab now.</p>
+          </section>
+        </main>
+      `;
+      setTimeout(() => {
+        window.close();
+      }, 150);
     }
 
     function resetSpanForm() {
@@ -943,6 +1094,7 @@ INDEX_HTML = """<!doctype html>
         setCurrentSequence(Number(event.target.value));
       });
       document.getElementById("save-session").addEventListener("click", saveSessionAnnotation);
+      document.getElementById("close-annotator").addEventListener("click", closeAnnotator);
       document.getElementById("save-span").addEventListener("click", saveSpanAnnotation);
       document.getElementById("new-span").addEventListener("click", resetSpanForm);
       document.getElementById("delete-span").addEventListener("click", deleteSpanAnnotation);
@@ -974,10 +1126,9 @@ INDEX_HTML = """<!doctype html>
         const start = Math.min(state.dragStart, state.dragCurrent);
         const end = Math.max(state.dragStart, state.dragCurrent);
         const records = state.payload.aligned_records || [];
-        document.getElementById("span-start-seq").value = String(start);
-        document.getElementById("span-end-seq").value = String(end);
-        setWallTimeField("span-start-time", "span-start-time-display", records[start] ? records[start].aligned_time : null);
-        setWallTimeField("span-end-time", "span-end-time-display", records[end] ? records[end].aligned_time : null);
+        document.getElementById("span-start-seq").value = String(records[start] ? records[start].sequence_id : start);
+        document.getElementById("span-end-seq").value = String(records[end] ? records[end].sequence_id : end);
+        syncSpanTimesFromSequences();
         state.dragStart = null;
         state.dragCurrent = null;
         renderTimeline();
@@ -987,8 +1138,8 @@ INDEX_HTML = """<!doctype html>
         const records = state.payload.aligned_records || [];
         state.currentSequence = sequence;
         document.getElementById("sequence-slider").value = String(sequence);
-        document.getElementById("keyframe-sequence").value = String(sequence);
-        setWallTimeField("keyframe-time", "keyframe-time-display", records[sequence] ? records[sequence].aligned_time : null);
+        document.getElementById("keyframe-sequence").value = String(records[sequence] ? records[sequence].sequence_id : sequence);
+        syncKeyframeTimeFromSequence();
         renderAll();
       });
     }
@@ -1018,6 +1169,7 @@ class AnnotationWebApp:
         self.visual_streams = self._discover_visual_streams()
         self.audio_feature_index = self._build_audio_feature_index()
         self.audio_summary = self._discover_audio_summary()
+        self._server: ThreadingHTTPServer | None = None
 
     def create_server(self, host: str = "127.0.0.1", port: int = 0) -> ThreadingHTTPServer:
         app = self
@@ -1083,6 +1235,9 @@ class AnnotationWebApp:
                 try:
                     if parsed.path == "/api/session" and method == "POST":
                         result = app.service.upsert_session_annotation(payload.get("data", {}))
+                    elif parsed.path == "/api/shutdown" and method == "POST":
+                        result = {"stopping": True}
+                        app.schedule_shutdown()
                     elif parsed.path == "/api/spans" and method == "POST":
                         result = app.service.create_span(payload)
                     elif parsed.path.startswith("/api/spans/"):
@@ -1116,7 +1271,9 @@ class AnnotationWebApp:
             def log_message(self, format: str, *args: object) -> None:  # noqa: A003
                 return
 
-        return ThreadingHTTPServer((host, port), AnnotationRequestHandler)
+        server = ThreadingHTTPServer((host, port), AnnotationRequestHandler)
+        self._server = server
+        return server
 
     def build_state(self) -> dict[str, Any]:
         aligned_records = list(self.reader.iter_aligned_records())
@@ -1591,6 +1748,11 @@ class AnnotationWebApp:
         if storage == "png":
             return True
         return storage == "npy" and cv2 is not None
+
+    def schedule_shutdown(self) -> None:
+        if self._server is None:
+            return
+        threading.Thread(target=self._server.shutdown, daemon=True).start()
 
 
 class RunningAnnotationServer:

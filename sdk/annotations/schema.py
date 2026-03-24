@@ -84,18 +84,36 @@ class AnnotationField:
                 raise ValueError(f"annotation field {self.id} 需要 number")
             return
         if self.type == "enum":
-            if not isinstance(value, str) or value not in self.options:
-                raise ValueError(f"annotation field {self.id} 默认值必须在 options 中")
+            if not isinstance(value, str):
+                raise ValueError(f"annotation field {self.id} 需要 string")
+            if value in self.options:
+                return
+            if self._supports_custom_other_value() and value.strip():
+                return
+            raise ValueError(f"annotation field {self.id} 默认值必须在 options 中")
             return
         if self.type == "multi_enum":
             if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
                 raise ValueError(f"annotation field {self.id} 需要 string 列表")
-            invalid = [item for item in value if item not in self.options]
+            invalid = [item for item in value if not self._is_allowed_multi_enum_item(item)]
             if invalid:
                 raise ValueError(f"annotation field {self.id} 默认值不在 options 中: {invalid}")
 
     def validate_annotation_value(self, value: Any) -> None:
         self._validate_value(value, allow_none=not self.required)
+        if self.type == "enum" and self._supports_custom_other_value() and value == "other":
+            raise ValueError(f"annotation field {self.id} 选择 other 时必须提供自定义标签")
+        if self.type == "multi_enum" and self._supports_custom_other_value() and isinstance(value, list):
+            if any(item == "other" for item in value):
+                raise ValueError(f"annotation field {self.id} 选择 other 时必须提供自定义标签")
+
+    def _supports_custom_other_value(self) -> bool:
+        return self.type in {"enum", "multi_enum"} and "other" in self.options
+
+    def _is_allowed_multi_enum_item(self, item: str) -> bool:
+        if item in self.options:
+            return True
+        return self._supports_custom_other_value() and bool(item.strip())
 
 
 @dataclass(frozen=True)
