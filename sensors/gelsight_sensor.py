@@ -24,6 +24,7 @@ class GelSightSensor(CameraBaseSensor):
         width=640,
         height=480,
         fps=30,
+        frame_queue_size=128,
     ):
         super().__init__(
             name=name,
@@ -32,6 +33,7 @@ class GelSightSensor(CameraBaseSensor):
             height=height,
             fps=fps,
             flip_vertical=False,
+            frame_queue_size=frame_queue_size,
         )
 
     def _process_frame(self, frame_bgr: np.ndarray) -> np.ndarray:

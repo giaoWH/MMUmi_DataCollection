@@ -45,6 +45,11 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
   - 关闭后不保存 `motor_2` 的 `position / velocity / torque`
 - `microphone.device_index`
   - 设为 `null` 时会自动选择第一个可录音输入设备；显式指定索引时会强制绑定该设备
+- `startup_discard_sec`
+  - 传感器 ready 后继续丢弃开头一小段采集数据；默认 `0.5s`
+  - 这段数据不会进入 session，也不计入 `duration_sec`
+- `realsense.frame_queue_size` / `camera.frame_queue_size` / `gelsight.frame_queue_size`
+  - 控制视觉链路的本地缓存队列深度，用于降低主循环瞬时抖动带来的帧覆盖风险
 
 ## 当前支持的传感器
 
@@ -142,6 +147,12 @@ RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接�
 - FT 会先进行零点校准
 - Motors 会先进行零点校准
 
+当前录制入口还支持一个更明确的“开头数据丢弃窗口”：
+
+- `startup_discard_sec > 0` 时，传感器 ready 后不会立刻开始写 session
+- 这段时间主循环只会持续消费各路缓存，避免把设备启动瞬态写进正式数据
+- `duration_sec` 的计时会从丢弃窗口结束后才开始
+
 ### 4. FT 重力补偿
 
 当前 FT 处理链已经支持：
@@ -176,9 +187,28 @@ RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接�
 `configs/record.yaml` 中的 `realsense` 配置已经支持：
 
 - `enable_color / enable_depth / enable_ir1 / enable_ir2 / enable_imu`
+- `frame_queue_size`
 - `color / depth / infrared` 三组独立分辨率与帧率
 - `imu.accel_fps / imu.gyro_fps / imu.max_samples_per_frame`
 - `derived.enable_aligned_depth_to_color / enable_pointcloud / pointcloud_colored`
+
+当前普通 RGB 相机 / GelSight 也支持对应的 `frame_queue_size` 配置，用于在主循环偶发抖动时保留更多待写入帧。
+
+### 5.2 采集缓冲与写盘
+
+当前录制链路已经补上了两类关键缓冲：
+
+- `camera` / `realsense` / `gelsight` 使用进程内队列缓存，主循环会批量 drain，而不再只拿 latest frame
+- `ft` / `imu` / `motors` 使用跨进程队列缓存，主循环同样会批量 drain，降低串口 burst 时的覆盖风险
+- session writer 默认启用异步写盘，并并行写入图像 / 数组 artifact，降低 `cv2.imwrite` / `np.save` 对主循环的阻塞
+
+录制结束后，session 会额外保存：
+
+- `notes.sensor_runtime_status`
+- `notes.writer_diagnostics`
+- `notes.startup_discard`
+
+这些字段可用于排查“设备没出帧”“主循环没及时消费”以及“写盘吞吐不足”等问题。
 
 ### 5.1 Motors 录制补充
 
@@ -258,6 +288,17 @@ RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接�
 - `rosbag2` 的真实验证还依赖本机 ROS 2 环境
 - `validate` 当前主要检查导出目录、关键文件以及 step / frame 数等结构级 / 数量级一致性
 - `rosbag2` 在 `validate` 环节当前只检查输出目录存在且非空，不代表已经完成更强的语义一致性验证
+
+## 录制结束后的操作员摘要
+
+当前 `scripts/sdk_record.py` 在终端收尾阶段会输出一段结构化摘要，便于现场操作人员快速检查：
+
+- session id / 输出目录 / 日志文件
+- 目标录制时长与启动阶段丢弃时长
+- 各传感器的 `产出 / 写入 / 丢弃 / 队列 / 队列峰值`
+- writer 的 `pending / peak / artifact_pending / artifact_peak / mean latency / max latency`
+
+终端只保留面向操作员的摘要；完整 JSON 诊断仍会写入 session 内的 `logs/sdk_record.log`。
 
 ### 8. Session 标注
 

@@ -13,7 +13,7 @@ class IMUSensor(SerialBaseSensor):
         self._temp_quat = np.array([1.0, 0.0, 0.0, 0.0])
 
     def _parse_protocol(self, buffer):
-        complete_frame = None
+        complete_frames = []
         
         while len(buffer) >= 3:
             if buffer[0] != 0x7E or buffer[1] != 0x23:
@@ -50,8 +50,8 @@ class IMUSensor(SerialBaseSensor):
             elif func == 0x26:
                 # 收到这个包，说明这一时刻的所有数据已齐备
                 # 组装完整帧：Acc(3) + Gyro(3) + Quat(4)
-                complete_frame = np.concatenate([
-                    self._temp_acc, self._temp_gyro, self._temp_quat
-                ])
+                complete_frames.append(
+                    np.concatenate([self._temp_acc, self._temp_gyro, self._temp_quat])
+                )
                 
-        return complete_frame, buffer
+        return complete_frames, buffer

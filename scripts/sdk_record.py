@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import signal
 import sys
@@ -65,6 +66,7 @@ class RecorderConfig:
     sensor_source: str = "real"
     align_rate_hz: float = 30.0
     duration_sec: float = 0.0
+    startup_discard_sec: float = 0.5
     max_frame_age: float = 0.2
     enable_ft: bool = True
     enable_imu: bool = True
@@ -86,6 +88,18 @@ class RecorderConfig:
 
 
 is_running = True
+
+
+def _to_jsonable(value: object) -> object:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(key): _to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(item) for item in value]
+    return value
 
 
 def _handle_signal(_sig: int, _frame: object) -> None:
@@ -259,6 +273,121 @@ def run_static_calibration(
     return compensator, notes
 
 
+def discard_startup_frames(
+    registry: SensorRegistry,
+    *,
+    discard_sec: float,
+    poll_sleep_sec: float = 0.002,
+) -> dict[str, int]:
+    discarded_counts = {sensor_name: 0 for sensor_name in registry.sensors}
+    if discard_sec <= 0:
+        return discarded_counts
+
+    deadline = time.perf_counter() + discard_sec
+    while is_running and time.perf_counter() < deadline:
+        consumed_any = False
+        for sensor_name, sensor in registry.sensors.items():
+            frames = sensor.read_available_frames()
+            if not frames:
+                continue
+            discarded_counts[sensor_name] += len(frames)
+            consumed_any = True
+        if not consumed_any:
+            time.sleep(poll_sleep_sec)
+    return discarded_counts
+
+
+def _format_int(value: object) -> str:
+    if value is None:
+        return "-"
+    try:
+        return str(int(value))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_float(value: object, digits: int = 3) -> str:
+    if value is None:
+        return "-"
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _print_operator_summary(
+    *,
+    session_info,
+    config: RecorderConfig,
+    sensor_status: dict[str, dict[str, object]],
+    writer_diagnostics: dict[str, object],
+    startup_discard_notes: dict[str, object] | None = None,
+) -> None:
+    print("")
+    print("=== 录制摘要 ===")
+    print(f"Session: {session_info.session_id}")
+    print(f"输出目录: {session_info.output_dir}")
+    print(f"日志文件: {session_info.output_dir / 'logs' / 'sdk_record.log'}")
+    if config.duration_sec > 0:
+        summary = f"目标录制时长: {config.duration_sec:.1f} 秒"
+        if config.startup_discard_sec > 0:
+            summary += f" | 开头丢弃: {config.startup_discard_sec:.1f} 秒"
+        print(summary)
+
+    if startup_discard_notes and startup_discard_notes.get("enabled"):
+        discarded = startup_discard_notes.get("discarded_frames", {})
+        discarded_summary = ", ".join(
+            f"{sensor}={count}"
+            for sensor, count in discarded.items()
+            if int(count) > 0
+        )
+        print(f"启动阶段丢弃帧: {discarded_summary or '-'}")
+
+    print("")
+    print("传感器状态:")
+    print("名称         产出    写入    丢弃    队列    队列峰值")
+    for sensor_name, status in sensor_status.items():
+        produced = status.get("produced_frame_count", status.get("frame_count"))
+        delivered = status.get("delivered_frame_count", status.get("frame_count"))
+        dropped = status.get("dropped_frame_count")
+        queue_depth = status.get("queue_depth")
+        max_queue_depth = status.get("max_queue_depth")
+        print(
+            f"{sensor_name:<10} "
+            f"{_format_int(produced):>6} "
+            f"{_format_int(delivered):>7} "
+            f"{_format_int(dropped):>7} "
+            f"{_format_int(queue_depth):>7} "
+            f"{_format_int(max_queue_depth):>10}"
+        )
+
+    write_latency = writer_diagnostics.get("write_latency", {})
+    artifacts = writer_diagnostics.get("artifacts", {})
+    enqueued_counts = writer_diagnostics.get("enqueued_counts", {})
+    print("")
+    print("写盘状态:")
+    print(
+        "  记录数: "
+        f"sensor={_format_int(enqueued_counts.get('sensor'))}, "
+        f"aligned={_format_int(enqueued_counts.get('aligned'))}, "
+        f"trajectory={_format_int(enqueued_counts.get('trajectory'))}"
+    )
+    print(
+        "  队列: "
+        f"pending={_format_int(writer_diagnostics.get('pending_items'))}, "
+        f"peak={_format_int(writer_diagnostics.get('max_queue_depth'))}, "
+        f"artifact_pending={_format_int(artifacts.get('pending'))}, "
+        f"artifact_peak={_format_int(artifacts.get('max_pending'))}"
+    )
+    print(
+        "  延迟: "
+        f"mean={_format_float(write_latency.get('mean_sec'), 6)}s, "
+        f"max={_format_float(write_latency.get('max_sec'), 6)}s"
+    )
+    error = writer_diagnostics.get("error")
+    print(f"  错误: {error or '-'}")
+
+
 def _build_default_payload() -> dict[str, object]:
     return asdict(RecorderConfig())
 
@@ -300,6 +429,7 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict[str, object]:
         "sensor_source": ("sensor_source",),
         "align_rate_hz": ("align_rate_hz",),
         "duration_sec": ("duration_sec",),
+        "startup_discard_sec": ("startup_discard_sec",),
         "max_frame_age": ("max_frame_age",),
         "enable_ft": ("enable_ft",),
         "enable_imu": ("enable_imu",),
@@ -354,6 +484,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
     parser.add_argument("--sensor-source", choices=["real", "fake"])
     parser.add_argument("--align-rate", dest="align_rate_hz", type=float)
     parser.add_argument("--duration", dest="duration_sec", type=float)
+    parser.add_argument("--startup-discard-sec", dest="startup_discard_sec", type=float)
     parser.add_argument("--max-frame-age", type=float)
     _add_toggle_arguments(parser, "ft", "enable_ft")
     _add_toggle_arguments(parser, "imu", "enable_imu")
@@ -396,6 +527,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
         sensor_source=payload.get("sensor_source", "real"),
         align_rate_hz=payload["align_rate_hz"],
         duration_sec=payload["duration_sec"],
+        startup_discard_sec=payload["startup_discard_sec"],
         max_frame_age=payload["max_frame_age"],
         enable_ft=payload["enable_ft"],
         enable_imu=payload["enable_imu"],
@@ -442,6 +574,7 @@ def main() -> None:
         print("录制在传感器就绪前被中断")
         registry.stop_all()
         return
+
     session_info = create_session_info(
         config.output_root,
         sensors=registry.get_metadata(),
@@ -451,13 +584,36 @@ def main() -> None:
             "config_file": str(config_path) if config_path is not None else None,
         },
     )
-    logger = build_logger("sdk.record", log_file=session_info.output_dir / "logs" / "sdk_record.log")
+    logger = build_logger(
+        "sdk.record",
+        log_file=session_info.output_dir / "logs" / "sdk_record.log",
+        include_stream=False,
+    )
     logger.info("SDK 录制启动，数据源=%s", config.sensor_source)
     if config_path is not None:
         logger.info("加载配置文件: %s", config_path)
     compensator, calibration_notes = run_static_calibration(registry, config.gravity_compensation, logger)
     session_info.notes["gravity_compensation"] = calibration_notes
-    writer = SessionWriter(session_info)
+
+    startup_discard_notes = {
+        "enabled": bool(config.startup_discard_sec > 0),
+        "discard_sec": float(max(0.0, config.startup_discard_sec)),
+        "discarded_frames": {sensor_name: 0 for sensor_name in registry.sensors},
+    }
+    if config.startup_discard_sec > 0:
+        discard_sec = max(0.0, config.startup_discard_sec)
+        print(f"丢弃启动阶段数据: {discard_sec:.1f} 秒")
+        logger.info("开始丢弃启动阶段数据 %.2f 秒", discard_sec)
+        discarded_counts = discard_startup_frames(registry, discard_sec=discard_sec)
+        startup_discard_notes["discarded_frames"] = discarded_counts
+        logger.info("启动阶段数据丢弃完成: %s", json.dumps(discarded_counts, ensure_ascii=False))
+        if not is_running:
+            print("录制在启动阶段数据丢弃期间被中断")
+            registry.stop_all()
+            return
+    session_info.notes["startup_discard"] = startup_discard_notes
+
+    writer = SessionWriter(session_info, async_writes=True)
     aligner = BufferedFrameAligner(
         required_sensors=list(registry.sensors.keys()),
         max_frame_age=config.max_frame_age,
@@ -470,7 +626,10 @@ def main() -> None:
     print(f"输出目录: {session_info.output_dir}")
     logger.info("Session 创建完成: %s", session_info.output_dir)
     if config.duration_sec > 0:
-        print(f"录制时长: {config.duration_sec:.1f} 秒")
+        if config.startup_discard_sec > 0:
+            print(f"录制时长: {config.duration_sec:.1f} 秒（前 {config.startup_discard_sec:.1f} 秒已丢弃）")
+        else:
+            print(f"录制时长: {config.duration_sec:.1f} 秒")
     else:
         print("录制时长: 持续运行，按 Ctrl+C 停止")
 
@@ -553,8 +712,23 @@ def main() -> None:
         print("\n正在停止传感器...")
         logger.info("正在停止传感器")
         registry.stop_all()
+        sensor_status = registry.get_status()
+        session_info.notes["sensor_runtime_status"] = _to_jsonable(sensor_status)
+        writer_diagnostics = writer.get_diagnostics()
+        session_info.notes["writer_diagnostics_snapshot"] = _to_jsonable(writer_diagnostics)
+        logger.info("传感器运行状态: %s", json.dumps(_to_jsonable(sensor_status), ensure_ascii=False))
+        logger.info("写盘诊断: %s", json.dumps(_to_jsonable(writer_diagnostics), ensure_ascii=False))
         writer.close()
+        final_writer_diagnostics = writer.get_diagnostics()
+        logger.info("最终写盘诊断: %s", json.dumps(_to_jsonable(final_writer_diagnostics), ensure_ascii=False))
         logger.info("录制结束")
+        _print_operator_summary(
+            session_info=session_info,
+            config=config,
+            sensor_status=sensor_status,
+            writer_diagnostics=final_writer_diagnostics,
+            startup_discard_notes=session_info.notes.get("startup_discard"),
+        )
 
     if config.enable_trajectory:
         print("开始轨迹解算...")

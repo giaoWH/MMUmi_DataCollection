@@ -19,6 +19,7 @@ class CameraSensor(CameraBaseSensor):
         height=480,
         fps=30,
         flip_vertical=False,
+        frame_queue_size=128,
     ):
         super().__init__(
             name=name,
@@ -27,4 +28,5 @@ class CameraSensor(CameraBaseSensor):
             height=height,
             fps=fps,
             flip_vertical=flip_vertical,
+            frame_queue_size=frame_queue_size,
         )

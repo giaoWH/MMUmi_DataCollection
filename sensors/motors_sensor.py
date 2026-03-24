@@ -43,7 +43,7 @@ class MotorsSensor(SerialBaseSensor):
             self._calibration_event.clear()
 
     def _parse_protocol(self, buffer):
-        latest_frame = None
+        frames = []
 
         while True:
             newline_idx = buffer.find(b"\n")
@@ -83,12 +83,13 @@ class MotorsSensor(SerialBaseSensor):
                         f"[{self.name}] 零点校准完成，基线: "
                         f"{self._baseline.round(4).tolist()}"
                     )
+                    continue
 
-                latest_frame = frame - self._baseline
+                frames.append(frame - self._baseline)
             except ValueError:
                 continue
 
-        return latest_frame, buffer
+        return frames, buffer
 
     def is_calibrated(self):
         return bool(self._calibration_finished.value)

@@ -62,6 +62,7 @@ class RealSenseConfig:
     width: int = 640
     height: int = 480
     fps: int = 30
+    frame_queue_size: int = 128
     color: RealSenseImageConfig = field(default_factory=RealSenseImageConfig)
     depth: RealSenseImageConfig = field(default_factory=RealSenseImageConfig)
     infrared: RealSenseImageConfig = field(default_factory=RealSenseImageConfig)
@@ -104,6 +105,7 @@ class RealSenseConfig:
             width=width,
             height=height,
             fps=fps,
+            frame_queue_size=int(payload.get("frame_queue_size", 128)),
             color=_image_config("color"),
             depth=_image_config("depth"),
             infrared=_image_config("infrared"),
@@ -134,6 +136,7 @@ class RealSenseConfig:
             enable_imu=self.enable_imu,
             enable_aligned_depth_to_color=self.derived.enable_aligned_depth_to_color,
             enable_pointcloud=self.derived.enable_pointcloud,
+            frame_queue_size=self.frame_queue_size,
             color=LowLevelRealsenseImageStreamConfig(
                 width=self.color.width,
                 height=self.color.height,
@@ -184,35 +187,22 @@ class RealSenseRGBDAdapter(SensorAdapter):
         if self.sensor is None:
             return None
 
-        payload, _timestamp, frame_id, time_info = self.sensor.get_data_with_time_info()
+        payload, _timestamp, frame_id, time_info = self.sensor.get_next_data_with_time_info()
         if payload is None:
             return None
 
-        device_time = _select_device_time_seconds(payload.get("metadata", {}))
-        frame_time = self.clock.capture_at(
-            host_time_ns=time_info.get("host_capture_time_ns"),
-            monotonic_time_ns=time_info.get("monotonic_capture_time_ns"),
-            device_time=device_time,
-            device_time_ns=int(round(device_time * 1_000_000_000)) if device_time is not None else None,
-            host_arrival_time_ns=time_info.get("host_arrival_time_ns"),
-            host_read_start_time_ns=time_info.get("host_read_start_time_ns"),
-            host_read_end_time_ns=time_info.get("host_read_end_time_ns"),
-        )
-        metadata = payload.get("metadata", {})
-        normalized_payload = {
-            key: _clone_value(value)
-            for key, value in payload.items()
-            if key != "metadata"
-        }
-        return SensorFrame(
-            sensor_name=self.name,
-            sensor_type=self.sensor_type,
-            modality=self.modality,
-            frame_id=frame_id,
-            time=frame_time,
-            payload=normalized_payload,
-            metadata=_clone_value(metadata),
-        )
+        return self._build_sensor_frame(payload, frame_id=frame_id, time_info=time_info)
+
+    def read_available_frames(self) -> list[SensorFrame]:
+        if self.sensor is None:
+            return []
+
+        frames: list[SensorFrame] = []
+        for payload, _timestamp, frame_id, time_info in self.sensor.get_all_data_with_time_info():
+            if payload is None:
+                continue
+            frames.append(self._build_sensor_frame(payload, frame_id=frame_id, time_info=time_info))
+        return frames
 
     def get_metadata(self) -> dict[str, object]:
         runtime_metadata = {}
@@ -231,6 +221,7 @@ class RealSenseRGBDAdapter(SensorAdapter):
             "width": self.config.width,
             "height": self.config.height,
             "fps": self.config.fps,
+            "frame_queue_size": self.config.frame_queue_size,
             "stream_config": {
                 "color": {
                     "width": self.config.color.width,
@@ -264,17 +255,46 @@ class RealSenseRGBDAdapter(SensorAdapter):
     def get_status(self) -> dict[str, object]:
         if self.sensor is None:
             return {"running": False, "frame_count": 0, "latest_timestamp": 0.0}
-        return {
-            "running": self.sensor.running,
-            "frame_count": self.sensor.frame_count,
-            "latest_timestamp": self.sensor.latest_timestamp,
-        }
+        return self.sensor.get_runtime_status()
 
     def is_ready(self) -> bool:
         return self.sensor.is_calibrated() if self.sensor is not None else False
 
     def wait_until_ready(self, timeout: float | None = None) -> bool:
         return self.sensor.wait_until_calibrated(timeout=timeout) if self.sensor is not None else False
+
+    def _build_sensor_frame(
+        self,
+        payload: dict[str, Any],
+        *,
+        frame_id: int,
+        time_info: dict[str, Any],
+    ) -> SensorFrame:
+        device_time = _select_device_time_seconds(payload.get("metadata", {}))
+        frame_time = self.clock.capture_at(
+            host_time_ns=time_info.get("host_capture_time_ns"),
+            monotonic_time_ns=time_info.get("monotonic_capture_time_ns"),
+            device_time=device_time,
+            device_time_ns=int(round(device_time * 1_000_000_000)) if device_time is not None else None,
+            host_arrival_time_ns=time_info.get("host_arrival_time_ns"),
+            host_read_start_time_ns=time_info.get("host_read_start_time_ns"),
+            host_read_end_time_ns=time_info.get("host_read_end_time_ns"),
+        )
+        metadata = payload.get("metadata", {})
+        normalized_payload = {
+            key: _clone_value(value)
+            for key, value in payload.items()
+            if key != "metadata"
+        }
+        return SensorFrame(
+            sensor_name=self.name,
+            sensor_type=self.sensor_type,
+            modality=self.modality,
+            frame_id=frame_id,
+            time=frame_time,
+            payload=normalized_payload,
+            metadata=_clone_value(metadata),
+        )
 
 
 def _clone_value(value: Any) -> Any:

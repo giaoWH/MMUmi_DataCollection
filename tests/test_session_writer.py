@@ -210,6 +210,50 @@ class SessionWriterTest(unittest.TestCase):
             self.assertEqual(len(trajectory), 1)
             self.assertEqual(trajectory[0].source, "orbslam3")
 
+    def test_async_writer_flushes_records_and_persists_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session = create_session_info(
+                tmp_dir,
+                sensors={"camera": {"modality": "rgb"}},
+                config={"align_rate_hz": 30},
+            )
+            writer = SessionWriter(session, async_writes=True, write_queue_size=8)
+            writer.write_sensor_frame(
+                SensorFrame(
+                    sensor_name="camera",
+                    sensor_type="camera_sensor",
+                    modality="rgb",
+                    frame_id=1,
+                    time=FrameTime(host_time=1.0, monotonic_time=2.0),
+                    payload={"color": np.full((2, 2, 3), 16, dtype=np.uint8)},
+                    metadata={"device_index": 0},
+                )
+            )
+            writer.write_aligned_frame(
+                AlignedFrame(
+                    sequence_id=0,
+                    aligned_time=1.0,
+                    frames={},
+                    missing_sensors=[],
+                    age_by_sensor={},
+                )
+            )
+            writer.close()
+
+            sensor_log = session.output_dir / "streams" / "camera" / "frames.jsonl"
+            aligned_log = session.output_dir / "aligned" / "frames.jsonl"
+            self.assertTrue(sensor_log.exists())
+            self.assertTrue(aligned_log.exists())
+            self.assertEqual(len(sensor_log.read_text(encoding="utf-8").strip().splitlines()), 1)
+            self.assertEqual(len(aligned_log.read_text(encoding="utf-8").strip().splitlines()), 1)
+
+            meta_payload = json.loads((session.output_dir / "meta.json").read_text(encoding="utf-8"))
+            diagnostics = meta_payload["notes"]["writer_diagnostics"]
+            self.assertTrue(diagnostics["async_writes"])
+            self.assertEqual(diagnostics["written_counts"]["sensor"], 1)
+            self.assertEqual(diagnostics["written_counts"]["aligned"], 1)
+            self.assertGreaterEqual(diagnostics["write_latency"]["samples"], 2)
+
     def test_orbslam3_command_runner_parse_stdout_jsonl(self) -> None:
         payload = {
             "timestamp": 12.5,

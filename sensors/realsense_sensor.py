@@ -41,6 +41,7 @@ class RealsenseConfig:
     enable_imu: bool = True
     enable_aligned_depth_to_color: bool = True
     enable_pointcloud: bool = True
+    frame_queue_size: int = 128
     color: RealsenseImageStreamConfig = field(default_factory=RealsenseImageStreamConfig)
     depth: RealsenseImageStreamConfig = field(default_factory=RealsenseImageStreamConfig)
     infrared: RealsenseImageStreamConfig = field(default_factory=RealsenseImageStreamConfig)
@@ -91,6 +92,10 @@ class RealsenseSensor(BaseSensor):
         self._imu_samples = deque(maxlen=self.config.imu.max_samples_per_frame)
         self._runtime_metadata: dict[str, object] = {}
         self._ready = False
+        self._frame_queue = deque()
+        self._dropped_frame_count = 0
+        self._delivered_frame_count = 0
+        self._max_queue_depth = 0
 
     def start(self):
         self.latest_data = None
@@ -100,6 +105,10 @@ class RealsenseSensor(BaseSensor):
         self._imu_samples.clear()
         self._runtime_metadata = {}
         self._ready = False
+        self._frame_queue.clear()
+        self._dropped_frame_count = 0
+        self._delivered_frame_count = 0
+        self._max_queue_depth = 0
         super().start()
 
     def get_data(self):
@@ -111,6 +120,40 @@ class RealsenseSensor(BaseSensor):
         with self.lock:
             data = clone_realsense_payload(self.latest_data)
             return data, self.latest_timestamp, self.frame_count, dict(self.latest_time_info)
+
+    def get_next_data_with_time_info(self):
+        with self.lock:
+            if not self._frame_queue:
+                return None, 0.0, 0, {}
+            packet = self._frame_queue.popleft()
+            self._delivered_frame_count += 1
+            data = clone_realsense_payload(packet["data"])
+            return data, packet["timestamp"], packet["frame_id"], dict(packet["time_info"])
+
+    def get_all_data_with_time_info(self):
+        packets = []
+        with self.lock:
+            while self._frame_queue:
+                packet = self._frame_queue.popleft()
+                self._delivered_frame_count += 1
+                data = clone_realsense_payload(packet["data"])
+                packets.append((data, packet["timestamp"], packet["frame_id"], dict(packet["time_info"])))
+        return packets
+
+    def get_runtime_status(self):
+        with self.lock:
+            return {
+                "running": self.running,
+                "frame_count": self.frame_count,
+                "produced_frame_count": self.frame_count,
+                "delivered_frame_count": self._delivered_frame_count,
+                "dropped_frame_count": self._dropped_frame_count,
+                "latest_timestamp": self.latest_timestamp,
+                "queue_depth": len(self._frame_queue),
+                "max_queue_depth": self._max_queue_depth,
+                "queue_capacity": max(1, int(self.config.frame_queue_size)),
+                "ready": self._ready,
+            }
 
     def is_calibrated(self):
         return self._ready
@@ -149,17 +192,13 @@ class RealsenseSensor(BaseSensor):
 
                 capture_wall_ns = (read_start_wall_ns + read_end_wall_ns) // 2
                 capture_mono_ns = (read_start_mono_ns + read_end_mono_ns) // 2
-                with self.lock:
-                    self.latest_data = payload
-                    self.latest_timestamp = capture_wall_ns / 1_000_000_000.0
-                    self.frame_count += 1
-                    self.latest_time_info = {
-                        "host_capture_time_ns": capture_wall_ns,
-                        "monotonic_capture_time_ns": capture_mono_ns,
-                        "host_arrival_time_ns": read_start_wall_ns,
-                        "host_read_start_time_ns": read_start_wall_ns,
-                        "host_read_end_time_ns": read_end_wall_ns,
-                    }
+                self._publish_frame_packet(
+                    payload,
+                    capture_wall_ns=capture_wall_ns,
+                    capture_mono_ns=capture_mono_ns,
+                    read_start_wall_ns=read_start_wall_ns,
+                    read_end_wall_ns=read_end_wall_ns,
+                )
             except Exception as exc:
                 print(f"[{self.name}] 运行时错误: {exc}")
                 time.sleep(0.05)
@@ -284,6 +323,40 @@ class RealsenseSensor(BaseSensor):
 
         payload["metadata"] = self._build_frame_metadata(frames, payload)
         return payload if has_any else None
+
+    def _publish_frame_packet(
+        self,
+        payload: dict[str, Any],
+        *,
+        capture_wall_ns: int,
+        capture_mono_ns: int,
+        read_start_wall_ns: int,
+        read_end_wall_ns: int,
+    ) -> None:
+        time_info = {
+            "host_capture_time_ns": capture_wall_ns,
+            "monotonic_capture_time_ns": capture_mono_ns,
+            "host_arrival_time_ns": read_start_wall_ns,
+            "host_read_start_time_ns": read_start_wall_ns,
+            "host_read_end_time_ns": read_end_wall_ns,
+        }
+        with self.lock:
+            self.frame_count += 1
+            packet = {
+                "data": payload,
+                "timestamp": capture_wall_ns / 1_000_000_000.0,
+                "frame_id": self.frame_count,
+                "time_info": time_info,
+            }
+            queue_capacity = max(1, int(self.config.frame_queue_size))
+            if len(self._frame_queue) >= queue_capacity:
+                self._frame_queue.popleft()
+                self._dropped_frame_count += 1
+            self._frame_queue.append(packet)
+            self._max_queue_depth = max(self._max_queue_depth, len(self._frame_queue))
+            self.latest_data = payload
+            self.latest_timestamp = packet["timestamp"]
+            self.latest_time_info = dict(time_info)
 
     def _collect_imu_samples(self, frames):
         samples = []

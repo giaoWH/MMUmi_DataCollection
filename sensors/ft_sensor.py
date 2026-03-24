@@ -43,7 +43,7 @@ class FTSensor(SerialBaseSensor):
             time.sleep(0.05)
 
     def _parse_protocol(self, buffer):
-        last_valid_frame = None
+        valid_frames = []
         
         # 只要 buffer 够长，就一直解析，确保拿到最新的那一帧
         while len(buffer) >= self.FRAME_LEN:
@@ -93,12 +93,13 @@ class FTSensor(SerialBaseSensor):
                         f"F={self._baseline[:3].round(3).tolist()} "
                         f"T={self._baseline[3:].round(4).tolist()}"
                     )
+                    continue
 
-                last_valid_frame = frame - self._baseline
+                valid_frames.append(frame - self._baseline)
             except struct.error:
                 pass
             
-        return last_valid_frame, buffer
+        return valid_frames, buffer
 
     def is_calibrated(self):
         return bool(self._calibration_finished.value)

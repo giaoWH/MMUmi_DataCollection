@@ -552,6 +552,7 @@ python scripts/sdk_record.py
 
 - FT：`--ft-port`
 - IMU：`--imu-port`
+- 通用录制行为：`--duration` / `--startup-discard-sec` / `--align-rate`
 - RealSense：更推荐通过 `record.yaml` 的 `realsense` 段配置多流参数
 - Motors：`--motors-port`
 - Microphone：`--microphone-device-index` / `--microphone-channels` / `--microphone-rate` / `--microphone-chunk`
@@ -564,6 +565,10 @@ python scripts/sdk_record.py
 - `motors.enable_motor_1`
 - `motors.enable_motor_2`
 - `microphone.device_index`
+- `startup_discard_sec`
+- `realsense.frame_queue_size`
+- `camera.frame_queue_size`
+- `gelsight.frame_queue_size`
 
 当前还支持：
 
@@ -586,6 +591,8 @@ python scripts/sdk_record.py
 - 无需校准的传感器默认立即 ready
 - FT / Motors 在零点校准完成前不会进入正式录制
 - 串口打开失败时不会一直维持假 running 状态，避免主流程死等
+- 若 `startup_discard_sec > 0`，ready / 校准完成后还会额外丢弃一小段启动阶段数据
+- 这段启动阶段数据不会进入 session，也不计入 `duration_sec`
 
 对应代码：
 
@@ -595,6 +602,25 @@ python scripts/sdk_record.py
 - `sensors/ft_sensor.py`
 - `sensors/motors_sensor.py`
 - `sensors/common/serial_base.py`
+- `scripts/sdk_record.py`
+
+### 7.2.1 启动阶段数据丢弃
+
+当前推荐默认开启：
+
+- `startup_discard_sec: 0.5`
+
+对应行为：
+
+- 传感器 ready 后，主循环先持续 drain 各路缓存
+- 这一阶段不会创建正式时间轴上的 session 数据
+- 正式录制时长会从丢弃窗口结束后才开始计时
+
+这个能力主要用于避免：
+
+- RealSense / Camera 刚启动时首几帧不稳定
+- FT / IMU / Motors 在 ready 后的极短时间内仍存在同步瞬态
+- 这些启动瞬态污染正式数据集开头
 
 ### 7.3 FT 重力补偿
 
@@ -615,6 +641,46 @@ python scripts/sdk_record.py
 - RealSense 真机采集需要 `pyrealsense2`；图像 artifact 读取与 ORB-SLAM3 bundle 导出需要 `opencv-python`；麦克风真机采集需要 `pyaudio`；HDF5 导出需要 `h5py`
 - `sdk_export.py` / `sdk_validate_export.py` 当前会经由导出模块导入链加载 LeRobot exporter，因此运行这两个入口时通常也建议安装 `pyarrow`
 - 当前真实传感器路径会通过 `sensors` 包根入口导入多种传感器模块，依赖隔离尚未完全按模态拆开；这里按当前实现行为描述运行环境准备要求
+
+### 7.5 采集队列与异步写盘
+
+当前录制链路已经针对“多模态 30Hz 下主循环偶发抖动”做了两层优化：
+
+- 视觉链路：
+  - `camera` / `realsense` / `gelsight` 使用本地队列缓存
+  - 主循环通过 `read_available_frames()` 一次性 drain 多帧
+- 串口链路：
+  - `ft` / `imu` / `motors` 使用跨进程队列缓存
+  - burst 到达时不会只保留 latest packet
+- 存储链路：
+  - session writer 默认启用异步写盘
+  - 图像与数组 artifact 会并行写入
+  - JSONL 句柄会复用，降低频繁 open / close 的额外开销
+
+录制结束后，session 会在 `meta.json` 与 `logs/sdk_record.log` 中写入以下诊断信息：
+
+- `sensor_runtime_status`
+- `writer_diagnostics`
+- `startup_discard`
+
+这些字段可用于区分：
+
+- 设备源头没有产出数据
+- 主循环未及时消费缓存
+- writer 吞吐不足导致排队
+
+### 7.6 终端操作员摘要
+
+当前 `scripts/sdk_record.py` 在终端收尾阶段会输出结构化摘要，而不是直接打印大段 JSON：
+
+- `Session / 输出目录 / 日志文件`
+- `目标录制时长 / 启动阶段丢弃时长`
+- `传感器状态` 表格：
+  - `产出 / 写入 / 丢弃 / 队列 / 队列峰值`
+- `写盘状态` 摘要：
+  - `pending / peak / artifact_pending / artifact_peak / mean latency / max latency / error`
+
+完整机器可读信息仍会保留在 `logs/sdk_record.log` 中，便于后续离线排查。
 
 ---
 
