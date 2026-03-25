@@ -5,6 +5,7 @@
 numpy==2.4.2
 h5py==3.15.1
 opencv-python==4.13.0
+av==17.0.0
 pyarrow==23.0.1
 PyAudio==0.2.14
 pyrealsense2==2.57.6

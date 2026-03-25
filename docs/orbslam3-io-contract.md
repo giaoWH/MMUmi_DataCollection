@@ -34,6 +34,12 @@
 
 `scripts/sdk_process_trajectory.py` 会先把 session 导出为 ORB-SLAM3 可消费的 bundle。
 
+无论 session 内部采用逐帧 artifact，还是实验版的媒体化存储格式，bundle 的对外目录契约都保持不变。也就是说：
+
+- ORB-SLAM3 仍然只看到标准的 `rgb/`、`depth/`、`imu.csv`
+- session 内部若使用 MP4，解码工作由 SDK 的 `SessionReader` 与 bundle exporter 完成
+- ORB-SLAM3 wrapper 不需要理解 `mp4_frame` 或 `mp4_audio`
+
 `rgbd_inertial` 典型目录结构如下：
 
 ```text
@@ -58,6 +64,12 @@ orbslam3_rgbd_inertial/
 - `rgbd_associations.txt`：RGB-D 对齐表
 - `imu.csv`：IMU 时间序列
 - `bundle_manifest.json`：bundle 摘要
+
+在媒体化存储实验格式下还需注意：
+
+- `rgb/` 内的彩色图像可能来自 `streams/realsense/color.mp4`
+- `depth/` 内的深度图仍来自无损数组 artifact
+- 因此 `rgbd_inertial` 仍坚持“彩色可压缩、深度不压缩”的策略
 
 `stereo` / `stereo_inertial` 典型目录结构如下：
 

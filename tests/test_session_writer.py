@@ -255,7 +255,7 @@ class SessionWriterTest(unittest.TestCase):
             self.assertGreaterEqual(diagnostics["write_latency"]["samples"], 2)
 
     @unittest.skipIf(cv2 is None, "未安装 opencv-python")
-    def test_camera_png_round_trip_preserves_rgb_payload_and_writes_correct_display_colors(self) -> None:
+    def test_camera_media_round_trip_preserves_rgb_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             session = create_session_info(
                 tmp_dir,
@@ -279,16 +279,65 @@ class SessionWriterTest(unittest.TestCase):
             sensor_log = session.output_dir / "streams" / "camera" / "frames.jsonl"
             record = json.loads(sensor_log.read_text(encoding="utf-8").strip())
             reference = record["payload"]["color"]
+            self.assertEqual(reference["storage"], "mp4_frame")
             self.assertEqual(reference["channel_order"], "rgb")
-
-            artifact_path = session.output_dir / reference["path"]
-            stored = cv2.imread(str(artifact_path), cv2.IMREAD_COLOR)
-            self.assertIsNotNone(stored)
-            np.testing.assert_array_equal(stored[0, 0], np.array([0, 0, 255], dtype=np.uint8))
+            media_path = session.output_dir / reference["path"]
+            self.assertTrue(media_path.exists())
+            self.assertEqual(media_path.name, "media.mp4")
 
             reader = SessionReader(session.output_dir)
             loaded_frame = next(reader.iter_sensor_frames("camera", load_payload=True))
             np.testing.assert_array_equal(loaded_frame.payload["color"], rgb_frame)
+
+    def test_microphone_audio_round_trip_uses_camera_media_track(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session = create_session_info(
+                tmp_dir,
+                sensors={
+                    "camera": {"sensor_type": "camera_sensor", "modality": "rgb", "fps": 30},
+                    "microphone": {
+                        "sensor_type": "microphone_sensor",
+                        "modality": "audio",
+                        "channels": 1,
+                        "sample_rate": 48000,
+                    },
+                },
+                config={"align_rate_hz": 30},
+            )
+            writer = SessionWriter(session)
+            audio_frame = SensorFrame(
+                sensor_name="microphone",
+                sensor_type="microphone_sensor",
+                modality="audio",
+                frame_id=1,
+                time=FrameTime(host_time=1.0, monotonic_time=2.0),
+                payload={"audio": np.array([0, 1000, -1000, 500], dtype=np.int16)},
+            )
+            camera_frame = SensorFrame(
+                sensor_name="camera",
+                sensor_type="camera_sensor",
+                modality="rgb",
+                frame_id=1,
+                time=FrameTime(host_time=1.0, monotonic_time=2.0),
+                payload={"color": np.full((2, 2, 3), 16, dtype=np.uint8)},
+            )
+
+            writer.write_sensor_frame(audio_frame)
+            writer.write_sensor_frame(camera_frame)
+            writer.close()
+
+            sensor_log = session.output_dir / "streams" / "microphone" / "frames.jsonl"
+            record = json.loads(sensor_log.read_text(encoding="utf-8").strip())
+            reference = record["payload"]["audio"]
+            self.assertEqual(reference["storage"], "mp4_audio")
+            self.assertEqual(reference["path"], "streams/camera/media.mp4")
+
+            reader = SessionReader(session.output_dir)
+            loaded_frame = next(reader.iter_sensor_frames("microphone", load_payload=True))
+            np.testing.assert_array_equal(
+                loaded_frame.payload["audio"],
+                np.array([0, 1000, -1000, 500], dtype=np.int16),
+            )
 
     def test_orbslam3_command_runner_parse_stdout_jsonl(self) -> None:
         payload = {
@@ -942,6 +991,7 @@ class SessionWriterTest(unittest.TestCase):
                     "ft": {"sensor_type": "ft_sensor", "modality": "force_torque"},
                     "imu": {"sensor_type": "imu_sensor", "modality": "imu"},
                     "realsense": {"sensor_type": "realsense", "modality": "rgbd"},
+                    "camera": {"sensor_type": "camera_sensor", "modality": "rgb"},
                 },
                 config={"align_rate_hz": 30},
             )
@@ -1012,6 +1062,7 @@ class SessionWriterTest(unittest.TestCase):
                     },
                 )
             )
+            writer.close()
 
             result = CSVSnapshotExporter().export(session.output_dir)
 

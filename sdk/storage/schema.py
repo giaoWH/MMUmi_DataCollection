@@ -14,6 +14,9 @@ class StreamManifest:
     modality: str
     frames_path: str
     artifacts_dir: str
+    storage_mode: str = "artifact_stream"
+    media_path: str | None = None
+    media_role: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -23,6 +26,9 @@ class StreamManifest:
             "modality": self.modality,
             "frames_path": self.frames_path,
             "artifacts_dir": self.artifacts_dir,
+            "storage_mode": self.storage_mode,
+            "media_path": self.media_path,
+            "media_role": self.media_role,
             "metadata": self.metadata,
         }
 
@@ -34,6 +40,9 @@ class StreamManifest:
             modality=payload["modality"],
             frames_path=payload["frames_path"],
             artifacts_dir=payload["artifacts_dir"],
+            storage_mode=payload.get("storage_mode", "artifact_stream"),
+            media_path=payload.get("media_path"),
+            media_role=payload.get("media_role"),
             metadata=payload.get("metadata", {}),
         )
 

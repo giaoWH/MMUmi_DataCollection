@@ -109,6 +109,14 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - 首次安装时通过 `sdk_discover_ports.py` 统一发现 FT / IMU / Motors 串口，以及 RealSense / Camera / GelSight 视觉设备配置
 - 可按配置决定是否在录制结束后自动执行 ORB-SLAM3 轨迹解算
 
+当前实验分支还增加了一条新的存储约定：
+
+- 普通 `camera`、`gelsight`、`realsense.color` 不再默认写逐帧 PNG
+- 这三路视觉数据改为写入 MP4 媒体文件
+- `microphone` 音频并入 `camera` 主视频音轨
+- `realsense.depth` 继续保持逐帧无损 artifact
+- `frames.jsonl` 继续存在，但主要承担 frame 索引与时间索引职责
+
 ### `inspect`
 
 当前负责输出 session 基础摘要；若 session 已带标注，也会输出 annotation summary。面向人工查看的时间字段默认按墙上时间展示。
@@ -138,6 +146,12 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - 带有 `other` 选项的枚举字段会要求输入自定义标签，最终写入手动输入内容
 - `Save` / `New` / `Delete` 按钮具备处理中与成功/失败反馈
 
+在 session v2 实验格式下，标注工具还有一个重要兼容点：
+
+- 图像预览优先通过 `SessionReader` 解码 `mp4_frame`
+- 音频播放与音频摘要优先通过 `SessionReader` 解码 `mp4_audio`
+- 标注页面不再假设视觉帧一定对应某个磁盘 PNG 文件
+
 标注结果当前直接写回 session 的 `annotations/` 目录。
 
 ### `process_trajectory`
@@ -147,6 +161,12 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - 从 session 导出 ORB-SLAM3 所需 bundle
 - 调用外部 ORB-SLAM3 命令
 - 将轨迹结果回写到 session
+
+在媒体化存储实验里，这一层继续维持既有输入输出契约：
+
+- ORB-SLAM3 bundle 仍导出为磁盘上的 RGB / depth / IMU 文件集合
+- `realsense.color` 在 bundle 生成阶段由 Reader 从 MP4 解码
+- `realsense.depth` 继续直接读取无损数组
 
 这个环节既可以独立手动执行，也可以通过 `record.yaml` 中的轨迹配置在录制结束后自动执行。
 
@@ -185,6 +205,7 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - 多格式导出
 - session 内置标注与 LeRobot 标注映射
 - fake 模式下的闭环验证
+- session v2 媒体化存储实验：视觉流 MP4 化、主视频音轨合并、Reader 兼容解码
 
 仍然属于下一阶段联调任务，而不是“SDK 框架未完成”的事项包括：
 
@@ -205,6 +226,21 @@ sensor adapters
     -> SensorRegistry
     -> BufferedFrameAligner
     -> SessionWriter
+    -> inspect / annotate / process_trajectory / export / validate
+```
+
+在 session v2 实验格式下，可进一步细化为：
+
+```text
+sensor adapters
+    -> SensorRegistry
+    -> BufferedFrameAligner
+    -> SessionWriter
+        -> media.mp4 / color.mp4
+        -> frames.jsonl (frame/audio 索引)
+        -> depth npy artifacts
+    -> SessionReader
+        -> decode media-backed payloads
     -> inspect / annotate / process_trajectory / export / validate
 ```
 

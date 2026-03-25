@@ -1554,9 +1554,9 @@ class AnnotationWebApp:
         reference = frame.payload.get(payload_key)
         if not isinstance(reference, dict) or "path" not in reference:
             raise ValueError(f"payload {payload_key} 不是 artifact 引用")
-        artifact_path = self.session_dir / reference["path"]
         storage = reference.get("storage")
         if storage == "png":
+            artifact_path = self.session_dir / reference["path"]
             if self._should_reencode_legacy_rgb_png(frame, payload_key, reference):
                 if cv2 is None:
                     raise RuntimeError("未安装 opencv-python，无法修正 legacy PNG 颜色通道")
@@ -1582,13 +1582,9 @@ class AnnotationWebApp:
             handler.end_headers()
             handler.wfile.write(data)
             return
-        if storage == "npy" and cv2 is not None:
-            array = np.load(artifact_path, allow_pickle=False)
-            normalized = cv2.normalize(array, None, 0, 255, cv2.NORM_MINMAX)
-            success, encoded = cv2.imencode(".png", normalized.astype(np.uint8))
-            if not success:
-                raise RuntimeError("无法将 npy artifact 转换为 PNG")
-            data = encoded.tobytes()
+        if storage in {"npy", "mp4_frame"} and cv2 is not None:
+            array = self.reader.load_artifact(reference)
+            data = self._encode_visual_preview(reference, array)
             handler.send_response(HTTPStatus.OK)
             handler.send_header("Content-Type", "image/png")
             handler.send_header("Content-Length", str(len(data)))
@@ -1596,6 +1592,17 @@ class AnnotationWebApp:
             handler.wfile.write(data)
             return
         raise ValueError(f"暂不支持该 artifact 预览: {storage}")
+
+    def _encode_visual_preview(self, reference: dict[str, Any], array: np.ndarray) -> bytes:
+        preview = np.asarray(array)
+        if preview.ndim == 3 and preview.shape[2] == 3 and reference.get("channel_order") == "rgb":
+            preview = cv2.cvtColor(preview, cv2.COLOR_RGB2BGR)
+        elif preview.dtype != np.uint8:
+            preview = cv2.normalize(preview, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        success, encoded = cv2.imencode(".png", preview)
+        if not success:
+            raise RuntimeError("无法将当前帧编码为 PNG 预览")
+        return encoded.tobytes()
 
     def _should_reencode_legacy_rgb_png(
         self,
@@ -1771,9 +1778,15 @@ class AnnotationWebApp:
         for item in self.audio_summary:
             metadata = item.get("metadata", {}) or {}
             sample_rate = metadata.get("sample_rate")
+            channels = metadata.get("channels")
             total_samples = 0
             for frame in self.reader.iter_sensor_frames(item["sensor_name"], load_payload=False):
-                total_samples += self._audio_payload_length(frame.payload.get("audio"))
+                audio_payload = frame.payload.get("audio")
+                if sample_rate in (None, 0) and isinstance(audio_payload, dict):
+                    sample_rate = audio_payload.get("sample_rate", sample_rate)
+                if channels is None and isinstance(audio_payload, dict):
+                    channels = audio_payload.get("channels", channels)
+                total_samples += self._audio_payload_length(audio_payload)
             duration_sec = (
                 float(total_samples) / float(sample_rate)
                 if sample_rate not in (None, 0) and total_samples > 0
@@ -1783,7 +1796,7 @@ class AnnotationWebApp:
                 {
                     "sensor_name": item["sensor_name"],
                     "label": item["sensor_name"],
-                    "channels": metadata.get("channels"),
+                    "channels": channels,
                     "sample_rate": sample_rate,
                     "chunk": metadata.get("chunk"),
                     "duration_sec": duration_sec,
@@ -2081,6 +2094,8 @@ class AnnotationWebApp:
         storage = value.get("storage")
         if storage == "png":
             return True
+        if storage == "mp4_frame":
+            return cv2 is not None
         return storage == "npy" and cv2 is not None
 
     def schedule_shutdown(self) -> None:

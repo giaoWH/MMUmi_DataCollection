@@ -647,7 +647,7 @@ class AnnotationIntegrationTest(unittest.TestCase):
                 running.close()
 
     @unittest.skipIf(cv2 is None, "未安装 opencv-python")
-    def test_annotation_web_server_fixes_legacy_rgb_png_preview(self) -> None:
+    def test_annotation_web_server_previews_media_backed_rgb_frame(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             session = create_session_info(
                 tmp_dir,
@@ -675,15 +675,6 @@ class AnnotationIntegrationTest(unittest.TestCase):
                 )
             )
             writer.close()
-
-            sensor_log = session.output_dir / "streams" / "camera" / "frames.jsonl"
-            record = json.loads(sensor_log.read_text(encoding="utf-8").strip())
-            color_ref = record["payload"]["color"]
-            color_ref.pop("channel_order", None)
-            sensor_log.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
-
-            artifact_path = session.output_dir / color_ref["path"]
-            self.assertTrue(cv2.imwrite(str(artifact_path), rgb_frame))
 
             running = start_annotation_server(session.output_dir, port=0)
             try:

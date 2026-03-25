@@ -35,6 +35,42 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 6. 在 PC 上运行 `python scripts/sdk_annotate.py <session_dir>`
 7. 在 PC 上运行 `python scripts/sdk_export.py <session_dir> --format lerobot`
 
+## Session 存储格式（实验版 v2）
+
+当前实验分支已经引入一版新的 session 存储格式，用于减少视觉帧碎文件数量，并保持上层标注、导出、轨迹处理接口基本不变。
+
+当前约定如下：
+
+- `camera` 的彩色图像写入 `streams/camera/media.mp4`
+- `gelsight` 的图像写入 `streams/gelsight/media.mp4`
+- `realsense.color` 写入 `streams/realsense/color.mp4`
+- `microphone` 的音频写入 `streams/camera/media.mp4` 的主音轨
+- `realsense.depth` 继续按逐帧 `npy` artifact 保存
+- `aligned/frames.jsonl` 与 `trajectory/frames.jsonl` 结构保持不变
+- 每个 sensor 仍保留 `streams/<sensor>/frames.jsonl`，但其 payload 已从“原始数组 / PNG 路径”改成“媒体帧 / 音频片段索引引用”
+
+新的 payload 引用类型包括：
+
+- `mp4_frame`
+  - 表示某一路 MP4 中的一帧图像
+- `mp4_audio`
+  - 表示主视频音轨中的一段 PCM 音频
+- `npy`
+  - 继续用于 `realsense.depth` 这类无损数组
+
+当前实验版的明确边界：
+
+- 不兼容旧版逐帧 session
+- 不把 `realsense.depth` 编进 MP4
+- 不给 `gelsight` 或 `realsense color` 复制音轨
+- `camera` 是唯一主视频与主音轨容器
+
+上层兼容策略是：
+
+- `SessionReader` 继续返回和旧版一致的 `SensorFrame` 视图
+- 标注工具、导出器、ORB-SLAM3 bundle 仍通过 Reader 读取 payload，而不直接操作 MP4
+- 因此上层业务代码仍然按 `frame_id` / `aligned sequence_id` 工作
+
 录制配置当前还支持一部分“模态内细粒度开关”：
 
 - `ft.enable_torque`
@@ -258,6 +294,13 @@ RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接�
 
 - 上述 `trajectory.mode` / `trajectory.command` / `trajectory.output_mode` 当前属于 `record.yaml` 配置字段，而不是 `scripts/sdk_record.py` 的独立 CLI 参数
 - `scripts/sdk_record.py` 的 CLI 当前主要直接覆盖传感器启停、端口、分辨率、帧率等常用录制参数
+
+在 session v2 实验格式下，ORB-SLAM3 相关链路仍保持以下行为：
+
+- `realsense.color` 会先由 `SessionReader` 从 `streams/realsense/color.mp4` 解码
+- `realsense.depth` 继续直接从 `npy` artifact 读取
+- bundle 导出结果依然是 `rgb/*.png + depth/*.png + imu.csv`
+- ORB-SLAM3 wrapper 不需要知道 session 内部是否使用了 MP4
 - `enable_trajectory` 可通过 CLI 开关控制，但启用后仍需要由配置文件提供 `trajectory.command`
 
 当前仓库已经内置一条本地可用的 `stereo_inertial` 接入链：

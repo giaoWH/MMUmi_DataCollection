@@ -13,6 +13,12 @@ import numpy as np
 from sdk.core.frame import AlignedFrame, SensorFrame
 from sdk.core.frame import TrajectoryFrame
 from sdk.core.session import SessionInfo
+from sdk.storage.media_io import (
+    MediaStreamWriter,
+    PlannedAudioStream,
+    media_path_for_sensor,
+    media_role_for_sensor,
+)
 from sdk.storage.schema import SessionManifest, StreamManifest, manifest_path_for
 
 try:
@@ -58,7 +64,9 @@ class SessionWriter:
         self._write_latency_total_sec = 0.0
         self._write_latency_samples = 0
         self._max_write_latency_sec = 0.0
+        self._media_writers: dict[Path, MediaStreamWriter] = {}
         self.manifest = self._build_manifest()
+        self._initialize_media_writers()
         self._prepare_layout()
         self._write_meta()
         self._write_manifest()
@@ -104,6 +112,7 @@ class SessionWriter:
         writer._write_latency_total_sec = 0.0
         writer._write_latency_samples = 0
         writer._max_write_latency_sec = 0.0
+        writer._media_writers = {}
         writer.manifest = manifest
         writer._prepare_existing_layout()
         return writer
@@ -122,6 +131,7 @@ class SessionWriter:
             return
         self._closed = True
         self._finish_async_writes()
+        self._close_media_writers()
         if self.session_info is not None:
             self.session_info.notes["writer_diagnostics"] = self.get_diagnostics()
             self._write_meta()
@@ -160,6 +170,7 @@ class SessionWriter:
         }
 
     def _write_sensor_frame_sync(self, frame: SensorFrame) -> None:
+        self._sync_stream_metadata_from_frame(frame)
         sensor_dir = self._ensure_sensor_dir(frame.sensor_name)
         record = {
             "sensor_name": frame.sensor_name,
@@ -189,6 +200,40 @@ class SessionWriter:
             "metadata": self._to_jsonable(frame.metadata),
         }
         self._append_jsonl(sensor_dir / "frames.jsonl", record)
+
+    def _sync_stream_metadata_from_frame(self, frame: SensorFrame) -> None:
+        stream = self.manifest.sensors.get(frame.sensor_name)
+        if stream is None:
+            return
+        merged_metadata = dict(stream.metadata)
+        merged_metadata.update(self._to_jsonable(frame.metadata))
+        if merged_metadata != stream.metadata:
+            sensors = dict(self.manifest.sensors)
+            sensors[frame.sensor_name] = StreamManifest(
+                sensor_name=stream.sensor_name,
+                sensor_type=stream.sensor_type,
+                modality=stream.modality,
+                frames_path=stream.frames_path,
+                artifacts_dir=stream.artifacts_dir,
+                storage_mode=stream.storage_mode,
+                media_path=stream.media_path,
+                media_role=stream.media_role,
+                metadata=merged_metadata,
+            )
+            self.manifest = SessionManifest(
+                schema_version=self.manifest.schema_version,
+                session_id=self.manifest.session_id,
+                started_at=self.manifest.started_at,
+                session_dir=self.manifest.session_dir,
+                config=self.manifest.config,
+                sensors=sensors,
+                notes=self.manifest.notes,
+                aligned_path=self.manifest.aligned_path,
+                trajectory_path=self.manifest.trajectory_path,
+                exports_dir=self.manifest.exports_dir,
+            )
+        if self.session_info is not None and frame.sensor_name in self.session_info.sensors:
+            self.session_info.sensors[frame.sensor_name].update(self._to_jsonable(frame.metadata))
 
     def _write_aligned_frame_sync(self, aligned: AlignedFrame) -> None:
         record = {
@@ -247,6 +292,9 @@ class SessionWriter:
         self.exports_dir.mkdir(parents=True, exist_ok=True)
         for sensor_dir in self.sensor_dirs.values():
             (sensor_dir / "artifacts").mkdir(parents=True, exist_ok=True)
+        for stream in self.manifest.sensors.values():
+            if stream.media_path:
+                (self.base_dir / stream.media_path).parent.mkdir(parents=True, exist_ok=True)
 
     def _prepare_layout(self) -> None:
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -294,6 +342,18 @@ class SessionWriter:
                 modality=str(sensor_meta.get("modality", "unknown")),
                 frames_path=f"streams/{sensor_name}/frames.jsonl",
                 artifacts_dir=f"streams/{sensor_name}/artifacts",
+                storage_mode=self._storage_mode_for_sensor(
+                    sensor_name,
+                    str(sensor_meta.get("modality", "unknown")),
+                ),
+                media_path=media_path_for_sensor(
+                    sensor_name,
+                    str(sensor_meta.get("modality", "unknown")),
+                ),
+                media_role=media_role_for_sensor(
+                    sensor_name,
+                    str(sensor_meta.get("modality", "unknown")),
+                ),
                 metadata=self._to_jsonable(sensor_meta),
             )
             for sensor_name, sensor_meta in self.session_info.sensors.items()
@@ -311,6 +371,39 @@ class SessionWriter:
             exports_dir="exports",
         )
 
+    def _initialize_media_writers(self) -> None:
+        if self.session_info is None:
+            return
+        planned_audio: PlannedAudioStream | None = None
+        microphone_meta = self.session_info.sensors.get("microphone") or {}
+        if "microphone" in self.session_info.sensors:
+            if "camera" not in self.session_info.sensors:
+                raise RuntimeError("启用 microphone 时必须同时启用 camera 作为主视频")
+            planned_audio = PlannedAudioStream(
+                channels=int(microphone_meta.get("channels", 1) or 1),
+                sample_rate=int(
+                    microphone_meta.get("sample_rate")
+                    or microphone_meta.get("rate")
+                    or 48000
+                ),
+                dtype=str(microphone_meta.get("dtype", "int16")),
+            )
+
+        for stream in self.manifest.sensors.values():
+            if not stream.media_path:
+                continue
+            media_path = self.base_dir / stream.media_path
+            self._media_writers[media_path] = MediaStreamWriter(
+                media_path,
+                fps=float(stream.metadata.get("fps", self.session_info.config.get("align_rate_hz", 30.0) or 30.0)),
+                expected_audio=(planned_audio if stream.media_role == "primary_av" else None),
+            )
+
+    def _storage_mode_for_sensor(self, sensor_name: str, modality: str) -> str:
+        if media_path_for_sensor(sensor_name, modality):
+            return "indexed_media"
+        return "artifact_stream"
+
     def _append_jsonl(self, path: Path, record: dict[str, Any]) -> None:
         handle = self._jsonl_handles.get(path)
         if handle is None:
@@ -318,6 +411,7 @@ class SessionWriter:
             self._jsonl_handles[path] = handle
         handle.write(json.dumps(record, ensure_ascii=False))
         handle.write("\n")
+        handle.flush()
 
     def _submit_write(self, kind: str, payload: SensorFrame | AlignedFrame | TrajectoryFrame) -> None:
         self._raise_if_writer_failed()
@@ -391,6 +485,7 @@ class SessionWriter:
         return {
             key: self._serialize_value(
                 sensor_dir,
+                frame.sensor_name,
                 frame.sensor_type,
                 frame.modality,
                 frame_id,
@@ -403,6 +498,7 @@ class SessionWriter:
     def _serialize_value(
         self,
         sensor_dir: Path,
+        sensor_name: str,
         sensor_type: str,
         modality: str,
         frame_id: int,
@@ -411,7 +507,17 @@ class SessionWriter:
     ) -> Any:
         if isinstance(value, np.ndarray):
             if value.ndim <= 1:
+                if self._should_store_audio_in_media(sensor_name, modality, key):
+                    return self._store_audio_in_media(value)
                 return value.tolist()
+            if self._should_store_visual_in_media(sensor_name, modality, key, value):
+                return self._store_visual_in_media(
+                    sensor_name,
+                    sensor_type,
+                    modality,
+                    key,
+                    value,
+                )
             return self._store_array(
                 sensor_dir,
                 sensor_type,
@@ -426,6 +532,7 @@ class SessionWriter:
             return {
                 child_key: self._serialize_value(
                     sensor_dir,
+                    sensor_name,
                     sensor_type,
                     modality,
                     frame_id,
@@ -436,10 +543,71 @@ class SessionWriter:
             }
         if isinstance(value, (list, tuple)):
             return [
-                self._serialize_value(sensor_dir, sensor_type, modality, frame_id, key, item)
+                self._serialize_value(sensor_dir, sensor_name, sensor_type, modality, frame_id, key, item)
                 for item in value
             ]
         return value
+
+    def _should_store_visual_in_media(
+        self,
+        sensor_name: str,
+        modality: str,
+        key: str,
+        value: np.ndarray,
+    ) -> bool:
+        stream = self.manifest.sensors.get(sensor_name)
+        if stream is None or not stream.media_path:
+            return False
+        if value.dtype != np.uint8 or value.ndim not in {2, 3}:
+            return False
+        if modality in {"rgb", "visuotactile"} and key in {"color", "image"}:
+            return True
+        return modality == "rgbd" and key == "color"
+
+    def _should_store_audio_in_media(self, sensor_name: str, modality: str, key: str) -> bool:
+        camera_stream = self.manifest.sensors.get("camera")
+        return (
+            sensor_name == "microphone"
+            and modality == "audio"
+            and key == "audio"
+            and camera_stream is not None
+            and bool(camera_stream.media_path)
+        )
+
+    def _store_visual_in_media(
+        self,
+        sensor_name: str,
+        sensor_type: str,
+        modality: str,
+        key: str,
+        value: np.ndarray,
+    ) -> dict[str, Any]:
+        stream = self.manifest.sensors.get(sensor_name)
+        if stream is None or not stream.media_path:
+            raise RuntimeError(f"{sensor_name} 未配置媒体路径")
+        media_path = self.base_dir / stream.media_path
+        media_writer = self._media_writers[media_path]
+        reference = media_writer.write_video_frame(
+            value,
+            channel_order=self._infer_channel_order(
+                sensor_type=sensor_type,
+                modality=modality,
+                key=key,
+                value=value,
+            ),
+        )
+        reference["path"] = str(media_path.relative_to(self.base_dir))
+        return reference
+
+    def _store_audio_in_media(self, value: np.ndarray) -> dict[str, Any]:
+        camera_stream = self.manifest.sensors.get("camera")
+        if camera_stream is None or not camera_stream.media_path:
+            raise RuntimeError("camera 主视频不存在，无法写入音轨")
+        media_path = self.base_dir / camera_stream.media_path
+        media_writer = self._media_writers[media_path]
+        reference = media_writer.write_audio_samples(value)
+        reference["path"] = str(media_path.relative_to(self.base_dir))
+        return reference
 
     def _store_array(
         self,
@@ -561,6 +729,10 @@ class SessionWriter:
         if modality in {"rgb", "visuotactile"} and sensor_type not in {"realsense", "fake_realsense"}:
             return "rgb"
         return None
+
+    def _close_media_writers(self) -> None:
+        for media_writer in self._media_writers.values():
+            media_writer.close()
 
     def _close_jsonl_handles(self) -> None:
         for handle in self._jsonl_handles.values():

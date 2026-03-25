@@ -7,6 +7,7 @@ from typing import Any, Iterator
 import numpy as np
 
 from sdk.core.frame import FrameTime, SensorFrame, TrajectoryFrame
+from sdk.storage.media_io import MediaArtifactReader, media_path_for_sensor, media_role_for_sensor
 from sdk.storage.schema import SessionManifest, manifest_path_for
 from sdk.time_utils import format_wall_time
 
@@ -20,6 +21,7 @@ class SessionReader:
     def __init__(self, session_dir: str | Path) -> None:
         self.session_dir = Path(session_dir)
         self.manifest = self._load_manifest()
+        self._media_reader = MediaArtifactReader()
 
     def sensor_names(self) -> list[str]:
         return list(self.manifest.sensors.keys())
@@ -155,6 +157,8 @@ class SessionReader:
             ):
                 return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             return image
+        if storage in {"mp4_frame", "mp4_audio"}:
+            return self._media_reader.load_reference({**reference, "path": str(path)})
         raise ValueError(f"不支持的 artifact 存储格式: {storage}")
 
     def _load_manifest(self) -> SessionManifest:
@@ -174,6 +178,13 @@ class SessionReader:
                 "modality": metadata.get("modality", "unknown"),
                 "frames_path": f"streams/{sensor_name}/frames.jsonl",
                 "artifacts_dir": f"streams/{sensor_name}/artifacts",
+                "storage_mode": (
+                    "indexed_media"
+                    if media_path_for_sensor(sensor_name, metadata.get("modality", "unknown"))
+                    else "artifact_stream"
+                ),
+                "media_path": media_path_for_sensor(sensor_name, metadata.get("modality", "unknown")),
+                "media_role": media_role_for_sensor(sensor_name, metadata.get("modality", "unknown")),
                 "metadata": metadata,
             }
         payload = {
