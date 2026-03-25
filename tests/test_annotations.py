@@ -646,6 +646,57 @@ class AnnotationIntegrationTest(unittest.TestCase):
             finally:
                 running.close()
 
+    @unittest.skipIf(cv2 is None, "未安装 opencv-python")
+    def test_annotation_web_server_fixes_legacy_rgb_png_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session = create_session_info(
+                tmp_dir,
+                sensors={"camera": {"sensor_type": "camera_sensor", "modality": "rgb"}},
+                config={"align_rate_hz": 30},
+            )
+            writer = SessionWriter(session)
+            rgb_frame = np.array([[[255, 0, 0]]], dtype=np.uint8)
+            camera_frame = SensorFrame(
+                sensor_name="camera",
+                sensor_type="camera_sensor",
+                modality="rgb",
+                frame_id=0,
+                time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+                payload={"color": rgb_frame},
+            )
+            writer.write_sensor_frame(camera_frame)
+            writer.write_aligned_frame(
+                AlignedFrame(
+                    sequence_id=0,
+                    aligned_time=1.0,
+                    frames={"camera": camera_frame},
+                    missing_sensors=[],
+                    age_by_sensor={"camera": 0.0},
+                )
+            )
+            writer.close()
+
+            sensor_log = session.output_dir / "streams" / "camera" / "frames.jsonl"
+            record = json.loads(sensor_log.read_text(encoding="utf-8").strip())
+            color_ref = record["payload"]["color"]
+            color_ref.pop("channel_order", None)
+            sensor_log.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            artifact_path = session.output_dir / color_ref["path"]
+            self.assertTrue(cv2.imwrite(str(artifact_path), rgb_frame))
+
+            running = start_annotation_server(session.output_dir, port=0)
+            try:
+                response = urlopen(
+                    f"{running.url}api/frame?sensor_name=camera&frame_id=0&payload_key=color"
+                )
+                payload = np.frombuffer(response.read(), dtype=np.uint8)
+                decoded = cv2.imdecode(payload, cv2.IMREAD_COLOR)
+                self.assertIsNotNone(decoded)
+                np.testing.assert_array_equal(decoded[0, 0], np.array([0, 0, 255], dtype=np.uint8))
+            finally:
+                running.close()
+
     def test_annotation_web_server_shows_only_six_ft_signals(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             session_dir = self._create_session(tmp_dir)

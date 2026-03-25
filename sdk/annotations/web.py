@@ -1557,6 +1557,24 @@ class AnnotationWebApp:
         artifact_path = self.session_dir / reference["path"]
         storage = reference.get("storage")
         if storage == "png":
+            if self._should_reencode_legacy_rgb_png(frame, payload_key, reference):
+                if cv2 is None:
+                    raise RuntimeError("未安装 opencv-python，无法修正 legacy PNG 颜色通道")
+                image = cv2.imread(str(artifact_path), cv2.IMREAD_UNCHANGED)
+                if image is None:
+                    raise FileNotFoundError(f"无法读取 PNG artifact: {artifact_path}")
+                if image.ndim == 3 and image.shape[2] == 3:
+                    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                success, encoded = cv2.imencode(".png", image)
+                if not success:
+                    raise RuntimeError("无法重新编码 legacy PNG artifact")
+                data = encoded.tobytes()
+                handler.send_response(HTTPStatus.OK)
+                handler.send_header("Content-Type", "image/png")
+                handler.send_header("Content-Length", str(len(data)))
+                handler.end_headers()
+                handler.wfile.write(data)
+                return
             data = artifact_path.read_bytes()
             handler.send_response(HTTPStatus.OK)
             handler.send_header("Content-Type", "image/png")
@@ -1578,6 +1596,30 @@ class AnnotationWebApp:
             handler.wfile.write(data)
             return
         raise ValueError(f"暂不支持该 artifact 预览: {storage}")
+
+    def _should_reencode_legacy_rgb_png(
+        self,
+        frame,
+        payload_key: str,
+        reference: dict[str, Any],
+    ) -> bool:
+        if reference.get("storage") != "png":
+            return False
+        if reference.get("channel_order") is not None:
+            return False
+        if payload_key not in {"color", "image"}:
+            return False
+        if frame.sensor_type in {
+            "camera_sensor",
+            "gelsight_sensor",
+            "fake_camera_sensor",
+            "fake_gelsight_sensor",
+        }:
+            return True
+        return frame.modality in {"rgb", "visuotactile"} and frame.sensor_type not in {
+            "realsense",
+            "fake_realsense",
+        }
 
     def write_audio_response(
         self,

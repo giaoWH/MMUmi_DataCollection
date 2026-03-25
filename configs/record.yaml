@@ -7,15 +7,15 @@ output_root: /mnt/m2ssd/umi-data/sessions
 sensor_source: real
 align_rate_hz: 30.0
 duration_sec: 10.0
-startup_discard_sec: 0.5
+startup_discard_sec: 0.6
 max_frame_age: 0.2
 enable_ft: true
-enable_imu: true
+enable_imu: false
 enable_realsense: true
 enable_motors: true
 enable_microphone: true
 enable_camera: true
-enable_gelsight: false
+enable_gelsight: true
 enable_trajectory: false
 ft:
   name: ft
@@ -74,7 +74,7 @@ microphone:
   device_index: 0
 camera:
   name: camera
-  device_index: 0
+  device_index: 2
   width: 640
   height: 480
   fps: 30
@@ -82,7 +82,7 @@ camera:
   frame_queue_size: 128
 gelsight:
   name: gelsight
-  device_index: 8
+  device_index: 0
   width: 320
   height: 240
   fps: 25

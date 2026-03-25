@@ -182,6 +182,7 @@ class SessionWriter:
             },
             "payload": self._serialize_payload(
                 sensor_dir=sensor_dir,
+                frame=frame,
                 frame_id=frame.frame_id,
                 payload=frame.payload,
             ),
@@ -383,17 +384,27 @@ class SessionWriter:
         self,
         *,
         sensor_dir: Path,
+        frame: SensorFrame,
         frame_id: int,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         return {
-            key: self._serialize_value(sensor_dir, frame_id, key, value)
+            key: self._serialize_value(
+                sensor_dir,
+                frame.sensor_type,
+                frame.modality,
+                frame_id,
+                key,
+                value,
+            )
             for key, value in payload.items()
         }
 
     def _serialize_value(
         self,
         sensor_dir: Path,
+        sensor_type: str,
+        modality: str,
         frame_id: int,
         key: str,
         value: Any,
@@ -401,39 +412,67 @@ class SessionWriter:
         if isinstance(value, np.ndarray):
             if value.ndim <= 1:
                 return value.tolist()
-            return self._store_array(sensor_dir, frame_id, key, value)
+            return self._store_array(
+                sensor_dir,
+                sensor_type,
+                modality,
+                frame_id,
+                key,
+                value,
+            )
         if isinstance(value, np.generic):
             return value.item()
         if isinstance(value, dict):
             return {
-                child_key: self._serialize_value(sensor_dir, frame_id, child_key, child_value)
+                child_key: self._serialize_value(
+                    sensor_dir,
+                    sensor_type,
+                    modality,
+                    frame_id,
+                    child_key,
+                    child_value,
+                )
                 for child_key, child_value in value.items()
             }
         if isinstance(value, (list, tuple)):
-            return [self._serialize_value(sensor_dir, frame_id, key, item) for item in value]
+            return [
+                self._serialize_value(sensor_dir, sensor_type, modality, frame_id, key, item)
+                for item in value
+            ]
         return value
 
     def _store_array(
         self,
         sensor_dir: Path,
+        sensor_type: str,
+        modality: str,
         frame_id: int,
         key: str,
         value: np.ndarray,
     ) -> dict[str, Any]:
         artifacts_dir = sensor_dir / "artifacts"
         base_name = f"{frame_id:06d}_{key}"
+        channel_order = self._infer_channel_order(
+            sensor_type=sensor_type,
+            modality=modality,
+            key=key,
+            value=value,
+        )
         if cv2 is not None and value.dtype == np.uint8 and value.ndim in {2, 3}:
             target = artifacts_dir / f"{base_name}.png"
-            self._store_artifact(target, value)
-            return {
+            self._store_artifact(target, value, channel_order=channel_order)
+            reference = {
                 "path": str(target.relative_to(self.base_dir)),
                 "storage": "png",
                 "shape": list(value.shape),
                 "dtype": str(value.dtype),
             }
+            if channel_order is not None:
+                reference["channel_order"] = channel_order
+            return reference
 
         target = artifacts_dir / f"{base_name}.npy"
-        self._store_artifact(target, value)
+        self._store_artifact(target, value, channel_order=channel_order)
         return {
             "path": str(target.relative_to(self.base_dir)),
             "storage": "npy",
@@ -441,13 +480,24 @@ class SessionWriter:
             "dtype": str(value.dtype),
         }
 
-    def _store_artifact(self, target: Path, value: np.ndarray) -> None:
+    def _store_artifact(
+        self,
+        target: Path,
+        value: np.ndarray,
+        *,
+        channel_order: str | None = None,
+    ) -> None:
         if self._artifact_executor is None:
             self._artifact_submitted_count += 1
-            self._write_artifact(target, value)
+            self._write_artifact(target, value, channel_order=channel_order)
             self._artifact_completed_count += 1
             return
-        future = self._artifact_executor.submit(self._write_artifact, target, value)
+        future = self._artifact_executor.submit(
+            self._write_artifact,
+            target,
+            value,
+            channel_order,
+        )
         self._artifact_futures.append(future)
         self._artifact_submitted_count += 1
         self._artifact_max_pending = max(self._artifact_max_pending, len(self._artifact_futures))
@@ -469,13 +519,48 @@ class SessionWriter:
         self._artifact_futures = remaining
         self._raise_if_writer_failed()
 
-    def _write_artifact(self, target: Path, value: np.ndarray) -> None:
+    def _write_artifact(
+        self,
+        target: Path,
+        value: np.ndarray,
+        channel_order: str | None = None,
+    ) -> None:
         if cv2 is not None and value.dtype == np.uint8 and value.ndim in {2, 3}:
-            ok = cv2.imwrite(str(target), value)
+            encoded_value = value
+            if (
+                channel_order == "rgb"
+                and value.ndim == 3
+                and value.shape[2] == 3
+            ):
+                encoded_value = cv2.cvtColor(value, cv2.COLOR_RGB2BGR)
+            ok = cv2.imwrite(str(target), encoded_value)
             if not ok:
                 raise RuntimeError(f"写入 PNG 失败: {target}")
             return
         np.save(target, value)
+
+    def _infer_channel_order(
+        self,
+        *,
+        sensor_type: str,
+        modality: str,
+        key: str,
+        value: np.ndarray,
+    ) -> str | None:
+        if value.dtype != np.uint8 or value.ndim != 3 or value.shape[2] != 3:
+            return None
+        if key not in {"color", "image"}:
+            return None
+        if sensor_type in {
+            "camera_sensor",
+            "gelsight_sensor",
+            "fake_camera_sensor",
+            "fake_gelsight_sensor",
+        }:
+            return "rgb"
+        if modality in {"rgb", "visuotactile"} and sensor_type not in {"realsense", "fake_realsense"}:
+            return "rgb"
+        return None
 
     def _close_jsonl_handles(self) -> None:
         for handle in self._jsonl_handles.values():
