@@ -254,6 +254,42 @@ class SessionWriterTest(unittest.TestCase):
             self.assertEqual(diagnostics["written_counts"]["aligned"], 1)
             self.assertGreaterEqual(diagnostics["write_latency"]["samples"], 2)
 
+    @unittest.skipIf(cv2 is None, "未安装 opencv-python")
+    def test_camera_png_round_trip_preserves_rgb_payload_and_writes_correct_display_colors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session = create_session_info(
+                tmp_dir,
+                sensors={"camera": {"sensor_type": "camera_sensor", "modality": "rgb"}},
+                config={"align_rate_hz": 30},
+            )
+            writer = SessionWriter(session)
+            rgb_frame = np.array([[[255, 0, 0]]], dtype=np.uint8)
+            writer.write_sensor_frame(
+                SensorFrame(
+                    sensor_name="camera",
+                    sensor_type="camera_sensor",
+                    modality="rgb",
+                    frame_id=1,
+                    time=FrameTime(host_time=1.0, monotonic_time=2.0),
+                    payload={"color": rgb_frame},
+                )
+            )
+            writer.close()
+
+            sensor_log = session.output_dir / "streams" / "camera" / "frames.jsonl"
+            record = json.loads(sensor_log.read_text(encoding="utf-8").strip())
+            reference = record["payload"]["color"]
+            self.assertEqual(reference["channel_order"], "rgb")
+
+            artifact_path = session.output_dir / reference["path"]
+            stored = cv2.imread(str(artifact_path), cv2.IMREAD_COLOR)
+            self.assertIsNotNone(stored)
+            np.testing.assert_array_equal(stored[0, 0], np.array([0, 0, 255], dtype=np.uint8))
+
+            reader = SessionReader(session.output_dir)
+            loaded_frame = next(reader.iter_sensor_frames("camera", load_payload=True))
+            np.testing.assert_array_equal(loaded_frame.payload["color"], rgb_frame)
+
     def test_orbslam3_command_runner_parse_stdout_jsonl(self) -> None:
         payload = {
             "timestamp": 12.5,

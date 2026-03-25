@@ -145,7 +145,16 @@ class SessionReader:
         if storage == "png":
             if cv2 is None:
                 raise RuntimeError("未安装 opencv-python，无法读取 PNG artifact")
-            return cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+            image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+            if image is None:
+                raise FileNotFoundError(f"无法读取 PNG artifact: {path}")
+            if (
+                reference.get("channel_order") == "rgb"
+                and image.ndim == 3
+                and image.shape[2] == 3
+            ):
+                return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            return image
         raise ValueError(f"不支持的 artifact 存储格式: {storage}")
 
     def _load_manifest(self) -> SessionManifest:
