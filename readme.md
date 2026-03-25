@@ -45,6 +45,10 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
   - 关闭后不保存 `motor_2` 的 `position / velocity / torque`
 - `microphone.device_index`
   - 设为 `null` 时会自动选择第一个可录音输入设备；显式指定索引时会强制绑定该设备
+- `camera.flip_horizontal` / `camera.flip_vertical`
+  - 控制普通 RGB 相机在进入 session 前是否做水平 / 垂直翻转
+- `realsense.serial_number` / `camera.device_index` / `gelsight.device_index`
+  - 可通过 `python scripts/sdk_discover_ports.py` 自动发现并写回配置
 - `startup_discard_sec`
   - 传感器 ready 后继续丢弃开头一小段采集数据；默认 `0.5s`
   - 这段数据不会进入 session，也不计入 `duration_sec`
@@ -379,6 +383,7 @@ UMI_DataCollection/
 ├── plan.md
 ├── scripts/
 │   ├── sdk_annotate.py
+│   ├── sdk_discover_cameras.py
 │   ├── sdk_discover_ports.py
 │   ├── sdk_record.py
 │   ├── sdk_inspect.py
@@ -416,6 +421,11 @@ UMI_DataCollection/
 │   └── gelsight/
 └── tests/
 ```
+
+其中：
+
+- `scripts/sdk_discover_ports.py` 是统一设备发现入口，支持 `--scope all|serial|visual`
+- `scripts/sdk_discover_cameras.py` 是兼容入口，内部等价于 `scripts/sdk_discover_ports.py --scope visual`
 
 目录职责简述：
 

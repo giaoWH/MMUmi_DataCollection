@@ -24,6 +24,7 @@ class CameraBaseSensor(BaseSensor):
         width=640,
         height=480,
         fps=30,
+        flip_horizontal=False,
         flip_vertical=False,
         frame_queue_size=128,
     ):
@@ -32,6 +33,7 @@ class CameraBaseSensor(BaseSensor):
         self.width = width
         self.height = height
         self.fps = fps
+        self.flip_horizontal = flip_horizontal
         self.flip_vertical = flip_vertical
         self.frame_queue_size = max(1, int(frame_queue_size))
         self.data_length = width * height * 3
@@ -164,6 +166,8 @@ class CameraBaseSensor(BaseSensor):
             self.latest_time_info = dict(time_info)
 
     def _process_frame(self, frame_bgr):
+        if self.flip_horizontal:
+            frame_bgr = cv2.flip(frame_bgr, 1)
         if self.flip_vertical:
             frame_bgr = cv2.flip(frame_bgr, 0)
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)

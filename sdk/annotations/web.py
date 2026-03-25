@@ -1857,7 +1857,7 @@ class AnnotationWebApp:
             key,
             {
                 "id": key,
-                "label": key,
+                "label": self._format_scalar_label(key),
                 "points": [],
             },
         )
@@ -1868,6 +1868,13 @@ class AnnotationWebApp:
                 "value": value,
             }
         )
+
+    def _format_scalar_label(self, key: str) -> str:
+        parts = key.split(".")
+        if len(parts) == 3 and parts[1] in {"force", "torque"} and parts[2] in {"0", "1", "2"}:
+            axis = {"0": "x", "1": "y", "2": "z"}[parts[2]]
+            return ".".join([parts[0], parts[1], axis])
+        return key
 
     def _collect_scalar_values(self, value: Any, *, prefix: str, output: dict[str, float]) -> None:
         if isinstance(value, dict):

@@ -87,6 +87,26 @@ class RecorderConfigLoadingTest(unittest.TestCase):
         self.assertTrue(config.enable_camera)
         self.assertTrue(config.camera.flip_vertical)
 
+    def test_parse_args_loads_camera_flip_horizontal_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "record.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "enable_camera: true",
+                        "camera:",
+                        "  flip_horizontal: true",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config, loaded_path = sdk_record.parse_args(["--config", str(config_path)])
+
+        self.assertEqual(loaded_path, config_path.resolve())
+        self.assertTrue(config.enable_camera)
+        self.assertTrue(config.camera.flip_horizontal)
+
     def test_parse_args_ignores_gelsight_flip_vertical_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "record.yaml"
@@ -108,6 +128,28 @@ class RecorderConfigLoadingTest(unittest.TestCase):
         self.assertTrue(config.enable_gelsight)
         self.assertEqual(config.gelsight.width, 320)
         self.assertFalse(hasattr(config.gelsight, "flip_vertical"))
+
+    def test_parse_args_ignores_gelsight_flip_horizontal_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "record.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "enable_gelsight: true",
+                        "gelsight:",
+                        "  flip_horizontal: true",
+                        "  width: 320",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config, loaded_path = sdk_record.parse_args(["--config", str(config_path)])
+
+        self.assertEqual(loaded_path, config_path.resolve())
+        self.assertTrue(config.enable_gelsight)
+        self.assertEqual(config.gelsight.width, 320)
+        self.assertFalse(hasattr(config.gelsight, "flip_horizontal"))
 
     def test_parse_args_loads_gelsight_dimensions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

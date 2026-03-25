@@ -719,6 +719,22 @@ class AnnotationIntegrationTest(unittest.TestCase):
                         "ft.torque.2",
                     ],
                 )
+                ft_labels = {
+                    item["id"]: item["label"]
+                    for item in state_payload["scalar_streams"]
+                    if item["id"].startswith("ft.")
+                }
+                self.assertEqual(
+                    ft_labels,
+                    {
+                        "ft.force.0": "ft.force.x",
+                        "ft.force.1": "ft.force.y",
+                        "ft.force.2": "ft.force.z",
+                        "ft.torque.0": "ft.torque.x",
+                        "ft.torque.1": "ft.torque.y",
+                        "ft.torque.2": "ft.torque.z",
+                    },
+                )
             finally:
                 running.close()
 

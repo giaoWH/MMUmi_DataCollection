@@ -521,6 +521,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
     payload = deep_merge(payload, _build_cli_overrides(args))
     gelsight_payload = dict(payload.get("gelsight", {}))
     gelsight_payload.pop("flip_vertical", None)
+    gelsight_payload.pop("flip_horizontal", None)
 
     config = RecorderConfig(
         output_root=payload["output_root"],
