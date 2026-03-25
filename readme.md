@@ -446,12 +446,24 @@ UMI_DataCollection/
 
 推荐使用 Conda / Miniforge 管理环境。
 
-示例：
+仓库根目录现在提供两份环境文件：
+
+- `environment.yml`
+  - 推荐给使用 Conda / Miniforge 的场景
+- `requirements.txt`
+  - 适合已经有 Python 3.11 环境时直接 `pip install -r requirements.txt`
+
+推荐方式：
 
 ```bash
-conda create -n umi_sdk python=3.11
+conda env create -f environment.yml
 conda activate umi_sdk
-pip install numpy pyyaml pyserial
+```
+
+如果你只想在已有环境里补 Python 依赖，也可以：
+
+```bash
+python -m pip install -r requirements.txt
 ```
 
 本文档默认后续命令都在 `conda activate umi_sdk` 之后执行。
@@ -466,6 +478,12 @@ pip install numpy pyyaml pyserial
 - HDF5 导出：`pip install h5py`
 - ROS Bag 2 导出：需要真实 ROS 2 环境
 - PC 端本地 Web 标注器不依赖额外前端技术栈，默认使用 Python 标准库启动本地 HTTP 服务并调用浏览器
+
+环境文件说明：
+
+- `environment.yml` 基于当前 `conda umi_sdk` 环境整理，适合完整复现
+- `requirements.txt` 保留主要 Python 包版本，适合快速安装
+- 若目标机器安装 `pyrealsense2` 或 `PyAudio` 失败，通常需要先补系统级依赖或优先使用 `conda`
 
 当前导出入口还有一个实现边界：
 
