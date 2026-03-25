@@ -1,13 +1,13 @@
 # Edit this file and run:
 #   python scripts/sdk_record.py
-# Optional first-time serial port setup:
+# Optional first-time device discovery:
 #   python scripts/sdk_discover_ports.py
 
 output_root: /mnt/m2ssd/umi-data/sessions
 sensor_source: real
 align_rate_hz: 30.0
 duration_sec: 10.0
-startup_discard_sec: 0.6
+startup_discard_sec: 1
 max_frame_age: 0.2
 enable_ft: true
 enable_imu: false
@@ -29,7 +29,7 @@ imu:
   baudrate: 115200
 realsense:
   name: realsense
-  serial_number: null
+  serial_number: '420122071588'
   enable_color: true
   enable_depth: true
   enable_ir1: false
@@ -78,6 +78,7 @@ camera:
   width: 640
   height: 480
   fps: 30
+  flip_horizontal: true
   flip_vertical: true
   frame_queue_size: 128
 gelsight:

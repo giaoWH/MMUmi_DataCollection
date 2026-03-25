@@ -29,6 +29,10 @@
   - 关闭后不保存 `motor_2` 的 `position / velocity / torque`
 - `microphone.device_index`
   - 设为 `null` 时会自动选择第一个可录音输入设备；显式指定索引时会强制绑定该设备
+- `camera.flip_horizontal` / `camera.flip_vertical`
+  - 控制普通 RGB 相机在进入 session 前是否做水平 / 垂直翻转
+- `realsense.serial_number` / `camera.device_index` / `gelsight.device_index`
+  - 可通过 `scripts/sdk_discover_ports.py` 自动发现并写回配置
 
 对于具身学习数据整理，当前推荐的跨设备工作流是：
 
@@ -102,7 +106,7 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - 录制前 ready 等待
 - FT / Motors 零点校准
 - FT 静态校准与重力补偿
-- 首次安装时通过 `sdk_discover_ports.py` 自动发现 FT / IMU / Motors 串口
+- 首次安装时通过 `sdk_discover_ports.py` 统一发现 FT / IMU / Motors 串口，以及 RealSense / Camera / GelSight 视觉设备配置
 - 可按配置决定是否在录制结束后自动执行 ORB-SLAM3 轨迹解算
 
 ### `inspect`
@@ -176,7 +180,7 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - ready / 校准等待
 - FT 重力补偿
 - ORB-SLAM3 软件接入
-- 首次安装时的串口自动发现与配置写回
+- 首次安装时的设备自动发现与配置写回
 - 录制结束后按配置自动执行轨迹解算
 - 多格式导出
 - session 内置标注与 LeRobot 标注映射
@@ -218,6 +222,7 @@ UMI_DataCollection/
 ├── plan.md
 ├── scripts/
 │   ├── sdk_annotate.py
+│   ├── sdk_discover_cameras.py
 │   ├── sdk_discover_ports.py
 │   ├── sdk_record.py
 │   ├── sdk_inspect.py
@@ -535,6 +540,8 @@ python scripts/sdk_record.py
 首次安装可选辅助脚本：
 
 - `python scripts/sdk_discover_ports.py`
+- `python scripts/sdk_discover_ports.py --scope visual`
+- `python scripts/sdk_discover_cameras.py`（兼容入口）
 
 支持的数据源：
 
@@ -826,7 +833,7 @@ session_xxx/
 - `scripts/sdk_record.py` 能按配置启用 FT / IMU / RealSense / Motors / Microphone / Camera / GelSight
 - `scripts/sdk_record.py --sensor-source fake` 能在无真机条件下生成多模态 session
 - Motors / Microphone / Camera / GelSight 已进入 SDK 主录制入口
-- `scripts/sdk_discover_ports.py` 能在首次安装时按启用顺序引导识别 FT / IMU / Motors 串口并写回配置
+- `scripts/sdk_discover_ports.py` 能在首次安装时按启用范围引导识别串口与视觉设备并写回配置
 - 需要校准的传感器会在 ready / 零点校准后再进入正式录制
 - `scripts/sdk_inspect.py` 能读取 session 摘要
 - `scripts/sdk_annotate.py` 能在 PC 上启动本地 Web 标注器，并把结果写入 `session/annotations/`

@@ -18,6 +18,7 @@ class CameraSensor(CameraBaseSensor):
         width=640,
         height=480,
         fps=30,
+        flip_horizontal=False,
         flip_vertical=False,
         frame_queue_size=128,
     ):
@@ -27,6 +28,7 @@ class CameraSensor(CameraBaseSensor):
             width=width,
             height=height,
             fps=fps,
+            flip_horizontal=flip_horizontal,
             flip_vertical=flip_vertical,
             frame_queue_size=frame_queue_size,
         )

@@ -51,6 +51,7 @@ class CameraSensorConfig:
     width: int = 640
     height: int = 480
     fps: int = 30
+    flip_horizontal: bool = False
     flip_vertical: bool = False
     frame_queue_size: int = 128
 
@@ -454,6 +455,7 @@ class LegacyCameraAdapter(SensorAdapter):
             width=config.width,
             height=config.height,
             fps=config.fps,
+            flip_horizontal=config.flip_horizontal,
             flip_vertical=config.flip_vertical,
             frame_queue_size=config.frame_queue_size,
         )
@@ -482,6 +484,7 @@ class LegacyCameraAdapter(SensorAdapter):
                 "height": self.config.height,
                 "fps": self.config.fps,
                 "device_index": self.config.device_index,
+                "flip_horizontal": self.config.flip_horizontal,
                 "flip_vertical": self.config.flip_vertical,
                 "frame_queue_size": self.config.frame_queue_size,
             },
@@ -506,6 +509,7 @@ class LegacyCameraAdapter(SensorAdapter):
                         "height": self.config.height,
                         "fps": self.config.fps,
                         "device_index": self.config.device_index,
+                        "flip_horizontal": self.config.flip_horizontal,
                         "flip_vertical": self.config.flip_vertical,
                         "frame_queue_size": self.config.frame_queue_size,
                     },
@@ -521,6 +525,7 @@ class LegacyCameraAdapter(SensorAdapter):
             "height": self.config.height,
             "fps": self.config.fps,
             "device_index": self.config.device_index,
+            "flip_horizontal": self.config.flip_horizontal,
             "flip_vertical": self.config.flip_vertical,
             "frame_queue_size": self.config.frame_queue_size,
         }

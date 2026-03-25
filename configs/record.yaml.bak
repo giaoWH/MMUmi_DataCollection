@@ -1,17 +1,17 @@
 # Edit this file and run:
 #   python scripts/sdk_record.py
-# Optional first-time serial port setup:
+# Optional first-time device discovery:
 #   python scripts/sdk_discover_ports.py
 
 output_root: /mnt/m2ssd/umi-data/sessions
 sensor_source: real
 align_rate_hz: 30.0
 duration_sec: 10.0
-startup_discard_sec: 0.6
+startup_discard_sec: 1
 max_frame_age: 0.2
 enable_ft: true
 enable_imu: false
-enable_realsense: false
+enable_realsense: true
 enable_motors: true
 enable_microphone: true
 enable_camera: true
@@ -74,20 +74,21 @@ microphone:
   device_index: 0
 camera:
   name: camera
-  device_index: 0
+  device_index: 2
   width: 640
   height: 480
   fps: 30
+  flip_horizontal: false
   flip_vertical: true
   frame_queue_size: 128
 gelsight:
   name: gelsight
-  device_index: 2
+  device_index: 0
   width: 320
   height: 240
   fps: 25
   frame_queue_size: 128
-gravity_compensation:
+gravity_compensation: #暂时不可用
   enabled: false
   mass: 0.25
   com:
