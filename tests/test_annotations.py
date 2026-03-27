@@ -655,7 +655,7 @@ class AnnotationIntegrationTest(unittest.TestCase):
                 config={"align_rate_hz": 30},
             )
             writer = SessionWriter(session)
-            rgb_frame = np.array([[[255, 0, 0]]], dtype=np.uint8)
+            rgb_frame = np.full((2, 2, 3), [255, 0, 0], dtype=np.uint8)
             camera_frame = SensorFrame(
                 sensor_name="camera",
                 sensor_type="camera_sensor",
@@ -684,7 +684,11 @@ class AnnotationIntegrationTest(unittest.TestCase):
                 payload = np.frombuffer(response.read(), dtype=np.uint8)
                 decoded = cv2.imdecode(payload, cv2.IMREAD_COLOR)
                 self.assertIsNotNone(decoded)
-                np.testing.assert_array_equal(decoded[0, 0], np.array([0, 0, 255], dtype=np.uint8))
+                np.testing.assert_allclose(
+                    decoded[0, 0],
+                    np.array([0, 0, 255], dtype=np.uint8),
+                    atol=5,
+                )
             finally:
                 running.close()
 

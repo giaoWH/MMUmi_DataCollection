@@ -29,6 +29,34 @@ class PlannedAudioStream:
     dtype: str = "int16"
 
 
+@dataclass(frozen=True)
+class MediaEncodingConfig:
+    video_codec: str = "libx264"
+    video_pixel_format: str = "yuv420p"
+    video_profile: str = "high"
+    video_preset: str = "veryfast"
+    video_crf: str = "5"
+    audio_codec: str = "alac"
+    movflags: str = "+faststart"
+
+    def container_options(self) -> dict[str, str]:
+        return {"movflags": self.movflags} if self.movflags else {}
+
+    def to_metadata(self, *, has_audio: bool) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "container": "mp4",
+            "video_codec": self.video_codec,
+            "video_pixel_format": self.video_pixel_format,
+            "video_profile": self.video_profile,
+            "video_preset": self.video_preset,
+            "video_crf": self.video_crf,
+            "movflags": self.movflags,
+        }
+        if has_audio:
+            payload["audio_codec"] = self.audio_codec
+        return payload
+
+
 def media_path_for_sensor(sensor_name: str, modality: str) -> str | None:
     if modality in {"rgb", "visuotactile"}:
         return f"streams/{sensor_name}/media.mp4"
@@ -52,11 +80,13 @@ class MediaStreamWriter:
         *,
         fps: float,
         expected_audio: PlannedAudioStream | None = None,
+        encoding_config: MediaEncodingConfig | None = None,
     ) -> None:
         ensure_av_available()
         self.output_path = output_path
         self.fps = max(1, int(round(fps or 30.0)))
         self.expected_audio = expected_audio
+        self.encoding_config = encoding_config or MediaEncodingConfig()
         self._container: Any | None = None
         self._video_stream: Any | None = None
         self._audio_stream: Any | None = None
@@ -75,6 +105,14 @@ class MediaStreamWriter:
         array = np.asarray(value)
         if array.dtype != np.uint8 or array.ndim not in {2, 3}:
             raise ValueError("仅支持将 uint8 的 2D/3D 图像写入 MP4")
+        if (
+            array.ndim == 3
+            and self.encoding_config.video_pixel_format == "yuv420p"
+            and ((array.shape[0] % 2) or (array.shape[1] % 2))
+        ):
+            raise ValueError(
+                f"yuv420p 编码要求偶数宽高，收到帧形状 {array.shape}"
+            )
 
         self._ensure_container_for_video(array)
         index = self._video_frame_count
@@ -146,10 +184,23 @@ class MediaStreamWriter:
         if self._container is not None:
             return
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        self._container = av.open(str(self.output_path), mode="w")
-        self._video_stream = _add_video_stream(self._container, array=array, fps=self.fps)
+        self._container = av.open(
+            str(self.output_path),
+            mode="w",
+            container_options=self.encoding_config.container_options(),
+        )
+        self._video_stream = _add_video_stream(
+            self._container,
+            array=array,
+            fps=self.fps,
+            encoding_config=self.encoding_config,
+        )
         if self.expected_audio is not None:
-            self._audio_stream = _add_audio_stream(self._container, planned=self.expected_audio)
+            self._audio_stream = _add_audio_stream(
+                self._container,
+                planned=self.expected_audio,
+                encoding_config=self.encoding_config,
+            )
             pending_chunks = list(self._pending_audio_chunks)
             self._pending_audio_chunks = []
             for index, chunk in enumerate(pending_chunks):
@@ -159,7 +210,11 @@ class MediaStreamWriter:
     def _ensure_audio_stream(self) -> None:
         if self._audio_stream is None:
             planned = self.expected_audio or PlannedAudioStream()
-            self._audio_stream = _add_audio_stream(self._container, planned=planned)
+            self._audio_stream = _add_audio_stream(
+                self._container,
+                planned=planned,
+                encoding_config=self.encoding_config,
+            )
 
     def _mux_audio_chunk(self, array: np.ndarray, sample_start: int) -> None:
         layout = _audio_layout(array.shape[1])
@@ -274,26 +329,48 @@ class _VideoDecodeState:
             self._cache.popitem(last=False)
 
 
-def _add_video_stream(container: Any, *, array: np.ndarray, fps: int) -> Any:
+def _add_video_stream(
+    container: Any,
+    *,
+    array: np.ndarray,
+    fps: int,
+    encoding_config: MediaEncodingConfig,
+) -> Any:
     height, width = array.shape[:2]
     last_error: Exception | None = None
-    for codec_name, pix_fmt in (("libx264rgb", "rgb24"), ("mpeg4", "yuv420p")):
+    pixel_format = "gray" if array.ndim == 2 else encoding_config.video_pixel_format
+    codec_candidates = [encoding_config.video_codec]
+    if encoding_config.video_codec != "mpeg4":
+        codec_candidates.append("mpeg4")
+    for codec_name in codec_candidates:
         try:
             stream = container.add_stream(codec_name, rate=fps)
             stream.width = width
             stream.height = height
-            stream.pix_fmt = pix_fmt if array.ndim == 3 else "gray"
-            if codec_name == "libx264rgb" and hasattr(stream, "options"):
-                stream.options = {"crf": "0", "preset": "veryslow"}
+            stream.pix_fmt = pixel_format
+            if codec_name == encoding_config.video_codec and hasattr(stream, "options"):
+                stream.options = {
+                    "crf": encoding_config.video_crf,
+                    "preset": encoding_config.video_preset,
+                    "profile": encoding_config.video_profile,
+                }
             return stream
         except Exception as exc:  # pragma: no cover
             last_error = exc
     raise RuntimeError(f"无法创建视频编码器: {last_error}") from last_error
 
 
-def _add_audio_stream(container: Any, *, planned: PlannedAudioStream) -> Any:
+def _add_audio_stream(
+    container: Any,
+    *,
+    planned: PlannedAudioStream,
+    encoding_config: MediaEncodingConfig,
+) -> Any:
     last_error: Exception | None = None
-    for codec_name in ("alac", "aac"):
+    codec_candidates = [encoding_config.audio_codec]
+    if encoding_config.audio_codec != "aac":
+        codec_candidates.append("aac")
+    for codec_name in codec_candidates:
         try:
             stream = container.add_stream(codec_name, rate=planned.sample_rate)
             stream.layout = _audio_layout(planned.channels)

@@ -14,6 +14,7 @@ from sdk.core.frame import AlignedFrame, SensorFrame
 from sdk.core.frame import TrajectoryFrame
 from sdk.core.session import SessionInfo
 from sdk.storage.media_io import (
+    MediaEncodingConfig,
     MediaStreamWriter,
     PlannedAudioStream,
     media_path_for_sensor,
@@ -65,6 +66,7 @@ class SessionWriter:
         self._write_latency_samples = 0
         self._max_write_latency_sec = 0.0
         self._media_writers: dict[Path, MediaStreamWriter] = {}
+        self._media_encoding_config = self._build_media_encoding_config()
         self.manifest = self._build_manifest()
         self._initialize_media_writers()
         self._prepare_layout()
@@ -113,6 +115,7 @@ class SessionWriter:
         writer._write_latency_samples = 0
         writer._max_write_latency_sec = 0.0
         writer._media_writers = {}
+        writer._media_encoding_config = MediaEncodingConfig()
         writer.manifest = manifest
         writer._prepare_existing_layout()
         return writer
@@ -202,14 +205,18 @@ class SessionWriter:
         self._append_jsonl(sensor_dir / "frames.jsonl", record)
 
     def _sync_stream_metadata_from_frame(self, frame: SensorFrame) -> None:
-        stream = self.manifest.sensors.get(frame.sensor_name)
+        self._merge_stream_metadata(frame.sensor_name, frame.metadata)
+
+    def _merge_stream_metadata(self, sensor_name: str, metadata: dict[str, Any] | None) -> None:
+        stream = self.manifest.sensors.get(sensor_name)
         if stream is None:
             return
+        metadata = metadata or {}
         merged_metadata = dict(stream.metadata)
-        merged_metadata.update(self._to_jsonable(frame.metadata))
+        merged_metadata.update(self._to_jsonable(metadata))
         if merged_metadata != stream.metadata:
             sensors = dict(self.manifest.sensors)
-            sensors[frame.sensor_name] = StreamManifest(
+            sensors[sensor_name] = StreamManifest(
                 sensor_name=stream.sensor_name,
                 sensor_type=stream.sensor_type,
                 modality=stream.modality,
@@ -232,8 +239,22 @@ class SessionWriter:
                 trajectory_path=self.manifest.trajectory_path,
                 exports_dir=self.manifest.exports_dir,
             )
-        if self.session_info is not None and frame.sensor_name in self.session_info.sensors:
-            self.session_info.sensors[frame.sensor_name].update(self._to_jsonable(frame.metadata))
+        if self.session_info is not None and sensor_name in self.session_info.sensors:
+            self.session_info.sensors[sensor_name].update(self._to_jsonable(metadata))
+
+    def _build_media_encoding_config(self) -> MediaEncodingConfig:
+        media_config = {}
+        if self.session_info is not None:
+            media_config = dict(self.session_info.config.get("media_encoding", {}) or {})
+        return MediaEncodingConfig(
+            video_codec=str(media_config.get("video_codec", "libx264")),
+            video_pixel_format=str(media_config.get("video_pixel_format", "yuv420p")),
+            video_profile=str(media_config.get("video_profile", "high")),
+            video_preset=str(media_config.get("video_preset", "veryfast")),
+            video_crf=str(media_config.get("video_crf", "20")),
+            audio_codec=str(media_config.get("audio_codec", "alac")),
+            movflags=str(media_config.get("movflags", "+faststart")),
+        )
 
     def _write_aligned_frame_sync(self, aligned: AlignedFrame) -> None:
         record = {
@@ -397,6 +418,15 @@ class SessionWriter:
                 media_path,
                 fps=float(stream.metadata.get("fps", self.session_info.config.get("align_rate_hz", 30.0) or 30.0)),
                 expected_audio=(planned_audio if stream.media_role == "primary_av" else None),
+                encoding_config=self._media_encoding_config,
+            )
+            self._merge_stream_metadata(
+                stream.sensor_name,
+                {
+                    "media_encoding": self._media_encoding_config.to_metadata(
+                        has_audio=stream.media_role == "primary_av"
+                    )
+                },
             )
 
     def _storage_mode_for_sensor(self, sensor_name: str, modality: str) -> str:

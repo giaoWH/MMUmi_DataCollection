@@ -1,12 +1,16 @@
-# Edit this file and run:
+# Activate environment and record:
+#   conda activate umi_sdk
 #   python scripts/sdk_record.py
 # Optional first-time device discovery:
 #   python scripts/sdk_discover_ports.py
+# Offline trajectory processing on PC:
+#   python scripts/sdk_process_trajectory.py <session_dir> --config configs/record.yaml
 
 output_root: /mnt/m2ssd/umi-data/sessions
 sensor_source: real
 align_rate_hz: 30.0
 duration_sec: 10.0
+interactive: True
 startup_discard_sec: 1
 max_frame_age: 0.2
 enable_ft: true
@@ -16,7 +20,6 @@ enable_motors: true
 enable_microphone: true
 enable_camera: true
 enable_gelsight: true
-enable_trajectory: false
 ft:
   name: ft
   port: /dev/ttyACM0
@@ -29,12 +32,12 @@ imu:
   baudrate: 115200
 realsense:
   name: realsense
-  serial_number: null
+  serial_number: '405622073811'
   enable_color: true
   enable_depth: true
-  enable_ir1: false
-  enable_ir2: false
-  enable_imu: false
+  enable_ir1: true
+  enable_ir2: true
+  enable_imu: true
   frame_queue_size: 128
   width: 640
   height: 480
@@ -56,7 +59,7 @@ realsense:
     gyro_fps: 200
     max_samples_per_frame: 512
   derived:
-    enable_aligned_depth_to_color: false
+    enable_aligned_depth_to_color: true
     enable_pointcloud: false
     pointcloud_colored: false
 motors:
@@ -74,21 +77,21 @@ microphone:
   device_index: 0
 camera:
   name: camera
-  device_index: 2
+  device_index: 8
   width: 640
   height: 480
   fps: 30
-  flip_horizontal: false
+  flip_horizontal: true
   flip_vertical: true
   frame_queue_size: 128
 gelsight:
   name: gelsight
-  device_index: 0
+  device_index: 6
   width: 320
   height: 240
   fps: 25
   frame_queue_size: 128
-gravity_compensation: #暂时不可用
+gravity_compensation:
   enabled: false
   mass: 0.25
   com:
@@ -99,9 +102,10 @@ gravity_compensation: #暂时不可用
   calibration_duration_sec: 3.0
   minimum_samples: 10
 trajectory:
+  # PC-side offline ORB-SLAM3 processing configuration.
+  # Leave command null to use the built-in stereo_inertial wrapper.
   command: null
-  mode: rgbd_inertial
-  output_mode: stdout_jsonl
+  mode: stereo_inertial
   source_name: orbslam3
   bundle_dir: null
   env: {}

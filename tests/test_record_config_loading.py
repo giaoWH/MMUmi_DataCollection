@@ -259,3 +259,22 @@ class RecorderConfigLoadingTest(unittest.TestCase):
         self.assertEqual(loaded_path, config_path.resolve())
         self.assertEqual(config.duration_sec, 10.0)
         self.assertEqual(config.startup_discard_sec, 0.5)
+
+    def test_parse_args_loads_interactive_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "record.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "interactive: true",
+                        "duration_sec: 10.0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config, loaded_path = sdk_record.parse_args(["--config", str(config_path)])
+
+        self.assertEqual(loaded_path, config_path.resolve())
+        self.assertTrue(config.interactive)
+        self.assertEqual(config.duration_sec, 10.0)

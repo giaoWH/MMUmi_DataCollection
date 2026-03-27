@@ -26,7 +26,7 @@ def create_session_info(
     notes: dict[str, object] | None = None,
 ) -> SessionInfo:
     started_at = datetime.now().timestamp()
-    session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     output_dir = Path(output_root) / f"session_{session_id}"
     return SessionInfo(
         schema_version=SDK_SCHEMA_VERSION,

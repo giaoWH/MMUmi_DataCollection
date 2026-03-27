@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import logging
+import os
+import select
+import shutil
 import signal
 import sys
+import termios
 import time
+import tty
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -16,7 +23,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from sdk.config import deep_merge, load_config_file
-from sdk.core import BufferedFrameAligner, SensorRegistry, SystemClock, create_session_info
+from sdk.core import BufferedFrameAligner, SensorRegistry, SessionInfo, SystemClock, create_session_info
 from sdk.logging import build_logger
 from sdk.perception import OrbSlam3SessionProcessConfig
 from sdk.processors import GravityCompensationConfig, GravityCompensator
@@ -59,6 +66,18 @@ DEFAULT_RECORD_CONFIG_CANDIDATES = (
     REPO_ROOT / "configs" / "record.json",
 )
 
+KEY_SPACE = "space"
+KEY_ENTER = "enter"
+KEY_QUIT_SESSION = "quit_session"
+KEY_CTRL_C = "ctrl_c"
+
+STATE_BOOTING = "booting"
+STATE_IDLE_READY = "idle_ready"
+STATE_RECORDING = "recording"
+STATE_STOPPING = "stopping"
+STATE_REVIEW_STOPPED = "review_stopped"
+STATE_EXITING = "exiting"
+
 
 @dataclass(frozen=True)
 class RecorderConfig:
@@ -66,6 +85,7 @@ class RecorderConfig:
     sensor_source: str = "real"
     align_rate_hz: float = 30.0
     duration_sec: float = 0.0
+    interactive: bool = False
     startup_discard_sec: float = 0.5
     max_frame_age: float = 0.2
     enable_ft: bool = True
@@ -87,6 +107,113 @@ class RecorderConfig:
     trajectory: OrbSlam3SessionProcessConfig = OrbSlam3SessionProcessConfig()
 
 
+@dataclass
+class RecordingSession:
+    session_index: int
+    session_info: SessionInfo
+    writer: SessionWriter
+    logger: logging.Logger
+    aligner: BufferedFrameAligner
+    last_written_frame_ids: dict[str, int]
+    next_aligned_time_ns: int
+    next_aligned_monotonic_time_ns: int
+    sensor_status_baseline: dict[str, dict[str, object]]
+    session_queue_peak: dict[str, int]
+
+
+@dataclass
+class StoppedSession:
+    session_index: int
+    session_info: SessionInfo
+    sensor_runtime_status_snapshot: dict[str, dict[str, object]]
+    session_sensor_stats: dict[str, dict[str, object]]
+    writer_diagnostics: dict[str, object]
+
+
+@dataclass
+class StoppingSession:
+    session: RecordingSession
+    stop_reason: str
+    stop_requested_monotonic_time_ns: int
+    finalize_future: Future[StoppedSession]
+
+
+class KeySource:
+    def poll_key(self, timeout_sec: float = 0.0) -> str | None:
+        raise NotImplementedError
+
+    def drain_pending_input(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+class TerminalKeySource(KeySource):
+    def __init__(self, stream=None) -> None:
+        self._stream = stream or sys.stdin
+        if not self._stream.isatty():
+            raise RuntimeError("交互模式需要在 TTY 终端中运行")
+        self._fd = self._stream.fileno()
+        self._original_mode = termios.tcgetattr(self._fd)
+        # cbreak 保留终端输出的换行处理，只关闭规范模式与回显，
+        # 更适合一边单键交互、一边持续打印状态。
+        tty.setcbreak(self._fd)
+        self._closed = False
+
+    def poll_key(self, timeout_sec: float = 0.0) -> str | None:
+        if self._closed:
+            return None
+        ready, _, _ = select.select([self._fd], [], [], max(0.0, timeout_sec))
+        if not ready:
+            return None
+        data = os.read(self._fd, 1)
+        if not data:
+            return None
+        return data.decode("utf-8", errors="ignore")
+
+    def drain_pending_input(self) -> None:
+        while True:
+            ready, _, _ = select.select([self._fd], [], [], 0.0)
+            if not ready:
+                return
+            data = os.read(self._fd, 1)
+            if not data:
+                return
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        termios.tcsetattr(self._fd, termios.TCSADRAIN, self._original_mode)
+        self._closed = True
+
+
+class TimedKeySource(KeySource):
+    def __init__(self, timed_keys: list[tuple[float, str]], *, time_fn=time.perf_counter) -> None:
+        self._timed_keys = list(timed_keys)
+        self._time_fn = time_fn
+        self._started_at = self._time_fn()
+        self._index = 0
+
+    def poll_key(self, timeout_sec: float = 0.0) -> str | None:
+        del timeout_sec
+        if self._index >= len(self._timed_keys):
+            return None
+        scheduled_at_sec, key = self._timed_keys[self._index]
+        if (self._time_fn() - self._started_at) < scheduled_at_sec:
+            return None
+        self._index += 1
+        return key
+
+    def drain_pending_input(self) -> None:
+        elapsed = self._time_fn() - self._started_at
+        while self._index < len(self._timed_keys):
+            scheduled_at_sec, _key = self._timed_keys[self._index]
+            if scheduled_at_sec > elapsed:
+                break
+            self._index += 1
+
+
 is_running = True
 
 
@@ -100,6 +227,10 @@ def _to_jsonable(value: object) -> object:
     if isinstance(value, (list, tuple)):
         return [_to_jsonable(item) for item in value]
     return value
+
+
+def _json_clone(value: object) -> object:
+    return json.loads(json.dumps(_to_jsonable(value), ensure_ascii=False))
 
 
 def _handle_signal(_sig: int, _frame: object) -> None:
@@ -297,6 +428,98 @@ def discard_startup_frames(
     return discarded_counts
 
 
+def _drain_sensor_queues(registry: SensorRegistry) -> dict[str, int]:
+    drained_counts = {sensor_name: 0 for sensor_name in registry.sensors}
+    for sensor_name, sensor in registry.sensors.items():
+        frames = sensor.read_available_frames()
+        if not frames:
+            continue
+        drained_counts[sensor_name] += len(frames)
+    return drained_counts
+
+
+def _find_failed_sensors(registry: SensorRegistry) -> list[str]:
+    failed: list[str] = []
+    for sensor_name, status in registry.get_status().items():
+        if status.get("running") is False:
+            failed.append(sensor_name)
+    return failed
+
+
+def _status_counter(status: dict[str, object], key: str) -> int:
+    fallback_keys = {
+        "produced_frame_count": ("frame_count",),
+        "delivered_frame_count": ("frame_count",),
+    }
+    value = status.get(key)
+    if value is None:
+        for fallback_key in fallback_keys.get(key, ()):
+            value = status.get(fallback_key)
+            if value is not None:
+                break
+    if value is None:
+        value = 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _capture_sensor_status_snapshot(registry: SensorRegistry) -> dict[str, dict[str, object]]:
+    return {
+        sensor_name: dict(status)
+        for sensor_name, status in registry.get_status().items()
+    }
+
+
+def _update_session_queue_peaks(
+    session: RecordingSession,
+    sensor_status_snapshot: dict[str, dict[str, object]],
+) -> None:
+    for sensor_name, status in sensor_status_snapshot.items():
+        queue_depth = _status_counter(status, "queue_depth")
+        session.session_queue_peak[sensor_name] = max(
+            session.session_queue_peak.get(sensor_name, 0),
+            queue_depth,
+        )
+
+
+def _build_session_sensor_stats(
+    session: RecordingSession,
+    sensor_status_snapshot: dict[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    payload: dict[str, dict[str, object]] = {}
+    for sensor_name, status in sensor_status_snapshot.items():
+        baseline = session.sensor_status_baseline.get(sensor_name, {})
+        payload[sensor_name] = {
+            "running": status.get("running"),
+            "frame_count": max(
+                0,
+                _status_counter(status, "frame_count") - _status_counter(baseline, "frame_count"),
+            ),
+            "produced_frame_count": max(
+                0,
+                _status_counter(status, "produced_frame_count") - _status_counter(baseline, "produced_frame_count"),
+            ),
+            "delivered_frame_count": max(
+                0,
+                _status_counter(status, "delivered_frame_count") - _status_counter(baseline, "delivered_frame_count"),
+            ),
+            "dropped_frame_count": max(
+                0,
+                _status_counter(status, "dropped_frame_count") - _status_counter(baseline, "dropped_frame_count"),
+            ),
+            "latest_timestamp": status.get("latest_timestamp"),
+            "queue_depth": _status_counter(status, "queue_depth"),
+            "max_queue_depth": max(
+                session.session_queue_peak.get(sensor_name, 0),
+                _status_counter(status, "queue_depth"),
+            ),
+            "queue_capacity": status.get("queue_capacity"),
+        }
+    return payload
+
+
 def _format_int(value: object) -> str:
     if value is None:
         return "-"
@@ -328,7 +551,7 @@ def _print_operator_summary(
     print(f"Session: {session_info.session_id}")
     print(f"输出目录: {session_info.output_dir}")
     print(f"日志文件: {session_info.output_dir / 'logs' / 'sdk_record.log'}")
-    if config.duration_sec > 0:
+    if config.duration_sec > 0 and not config.interactive:
         summary = f"目标录制时长: {config.duration_sec:.1f} 秒"
         if config.startup_discard_sec > 0:
             summary += f" | 开头丢弃: {config.startup_discard_sec:.1f} 秒"
@@ -528,6 +751,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
         sensor_source=payload.get("sensor_source", "real"),
         align_rate_hz=payload["align_rate_hz"],
         duration_sec=payload["duration_sec"],
+        interactive=payload.get("interactive", False),
         startup_discard_sec=payload["startup_discard_sec"],
         max_frame_age=payload["max_frame_age"],
         enable_ft=payload["enable_ft"],
@@ -551,12 +775,303 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
     return config, config_path
 
 
-def main() -> None:
-    global is_running
-    signal.signal(signal.SIGINT, _handle_signal)
-    signal.signal(signal.SIGTERM, _handle_signal)
+def _normalize_key(raw_key: str | None) -> str | None:
+    if raw_key is None:
+        return None
+    if raw_key == " ":
+        return KEY_SPACE
+    if raw_key in {"\r", "\n"}:
+        return KEY_ENTER
+    if raw_key.lower() == "q":
+        return KEY_QUIT_SESSION
+    if raw_key == "\x03":
+        return KEY_CTRL_C
+    return None
 
-    config, config_path = parse_args()
+
+def _warn_deprecated_trajectory(config: RecorderConfig, logger: logging.Logger | None = None) -> None:
+    if not config.enable_trajectory:
+        return
+    warning_message = (
+        "检测到已废弃的 enable_trajectory=true 配置；"
+        "sdk_record.py 不再在录制结束后自动解算轨迹，请将 session 拷贝到 PC 后运行 scripts/sdk_process_trajectory.py"
+    )
+    print(warning_message)
+    if logger is not None:
+        logger.warning(warning_message)
+
+
+def _build_shared_calibration_notes(
+    calibration_notes: dict[str, object],
+    startup_discard_notes: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "gravity_compensation": _json_clone(calibration_notes),
+        "startup_discard": _json_clone(startup_discard_notes),
+    }
+
+
+def _create_session_info(
+    *,
+    config: RecorderConfig,
+    config_path: Path | None,
+    registry: SensorRegistry,
+    record_run_id: str | None = None,
+    shared_calibration: dict[str, object] | None = None,
+    session_index: int | None = None,
+) -> SessionInfo:
+    notes = {
+        "entrypoint": "scripts/sdk_record.py",
+        "config_file": str(config_path) if config_path is not None else None,
+    }
+    if record_run_id is not None:
+        notes.update(
+            {
+                "record_mode": "interactive",
+                "record_run_id": record_run_id,
+                "shared_calibration": _json_clone(shared_calibration or {}),
+                "session_index": session_index,
+                "discarded": False,
+            }
+        )
+    return create_session_info(
+        config.output_root,
+        sensors=registry.get_metadata(),
+        config=asdict(config),
+        notes=notes,
+    )
+
+
+def _create_session_logger(session_info: SessionInfo) -> logging.Logger:
+    return build_logger(
+        f"sdk.record.session.{session_info.session_id}",
+        log_file=session_info.output_dir / "logs" / "sdk_record.log",
+        include_stream=False,
+    )
+
+
+def _record_iteration(
+    *,
+    session: RecordingSession,
+    registry: SensorRegistry,
+    compensator: GravityCompensator | None,
+    ft_sensor_name: str | None,
+    imu_sensor_name: str | None,
+    align_interval_ns: int,
+    cutoff_monotonic_time_ns: int | None = None,
+) -> object | None:
+    def _frame_time_ns(frame) -> int | None:
+        if frame.time.monotonic_time_ns is not None:
+            return int(frame.time.monotonic_time_ns)
+        if frame.time.host_time_ns is not None:
+            return int(frame.time.host_time_ns)
+        return None
+
+    for sensor_name, sensor in registry.sensors.items():
+        frames = sensor.read_available_frames()
+        if not frames:
+            continue
+        for frame in frames:
+            if cutoff_monotonic_time_ns is not None:
+                frame_time_ns = _frame_time_ns(frame)
+                if frame_time_ns is None or frame_time_ns > cutoff_monotonic_time_ns:
+                    continue
+            if frame.frame_id == session.last_written_frame_ids[sensor_name]:
+                continue
+            session.aligner.add_frame(frame)
+            session.writer.write_sensor_frame(frame)
+            session.last_written_frame_ids[sensor_name] = frame.frame_id
+
+    current_monotonic_time_ns = time.perf_counter_ns()
+    if cutoff_monotonic_time_ns is not None:
+        current_monotonic_time_ns = min(current_monotonic_time_ns, cutoff_monotonic_time_ns)
+    last_aligned = None
+    while session.next_aligned_monotonic_time_ns <= current_monotonic_time_ns:
+        aligned = session.aligner.align(
+            session.next_aligned_time_ns / 1_000_000_000.0,
+            aligned_time_ns=session.next_aligned_time_ns,
+            aligned_monotonic_time_ns=session.next_aligned_monotonic_time_ns,
+        )
+        if (
+            compensator is not None
+            and ft_sensor_name is not None
+            and imu_sensor_name is not None
+            and ft_sensor_name in aligned.frames
+            and imu_sensor_name in aligned.frames
+        ):
+            ft_force = np.asarray(aligned.frames[ft_sensor_name].payload["force"], dtype=np.float64)
+            imu_quaternion = np.asarray(aligned.frames[imu_sensor_name].payload["quaternion"], dtype=np.float64)
+            pure_force, gravity_force = compensator.process(ft_force, imu_quaternion)
+            aligned.metadata["gravity_compensation"] = {
+                "applied": True,
+                "pure_force": pure_force.tolist(),
+                "gravity_force": gravity_force.tolist(),
+                "bias": compensator.bias.tolist(),
+            }
+            session.logger.debug("重力补偿已应用: seq=%d", aligned.sequence_id)
+        session.writer.write_aligned_frame(aligned)
+        last_aligned = aligned
+        session.next_aligned_time_ns += align_interval_ns
+        session.next_aligned_monotonic_time_ns += align_interval_ns
+    return last_aligned
+
+
+def _print_align_progress(last_aligned: object | None) -> None:
+    if last_aligned is None:
+        return
+    missing = ",".join(last_aligned.missing_sensors) if last_aligned.missing_sensors else "-"
+    print(
+        f"\r[Align] seq={last_aligned.sequence_id:06d} "
+        f"missing={missing:<20} "
+        f"frames={len(last_aligned.frames)}",
+        end="",
+    )
+
+
+def _complete_stopped_session(
+    *,
+    session: RecordingSession,
+    sensor_runtime_status_snapshot: dict[str, dict[str, object]],
+    session_sensor_stats: dict[str, dict[str, object]],
+    stop_reason: str,
+) -> StoppedSession:
+    session.session_info.notes["stop_reason"] = stop_reason
+    session.session_info.notes["sensor_runtime_status_snapshot"] = _to_jsonable(sensor_runtime_status_snapshot)
+    session.session_info.notes["session_sensor_stats"] = _to_jsonable(session_sensor_stats)
+    pre_close_writer_diagnostics = session.writer.get_diagnostics()
+    session.session_info.notes["writer_diagnostics_snapshot"] = _to_jsonable(pre_close_writer_diagnostics)
+    session.writer.manifest = session.writer._build_manifest()
+    session.logger.info("session 结束，原因=%s", stop_reason)
+    session.logger.info(
+        "传感器运行状态快照: %s",
+        json.dumps(_to_jsonable(sensor_runtime_status_snapshot), ensure_ascii=False),
+    )
+    session.logger.info(
+        "session 级统计: %s",
+        json.dumps(_to_jsonable(session_sensor_stats), ensure_ascii=False),
+    )
+    session.logger.info(
+        "写盘诊断(关闭前): %s",
+        json.dumps(_to_jsonable(pre_close_writer_diagnostics), ensure_ascii=False),
+    )
+    session.writer.close()
+    session.writer.manifest = session.writer._build_manifest()
+    session.writer._write_manifest()
+    final_writer_diagnostics = session.writer.get_diagnostics()
+    session.logger.info(
+        "最终写盘诊断: %s",
+        json.dumps(_to_jsonable(final_writer_diagnostics), ensure_ascii=False),
+    )
+    return StoppedSession(
+        session_index=session.session_index,
+        session_info=session.session_info,
+        sensor_runtime_status_snapshot=sensor_runtime_status_snapshot,
+        session_sensor_stats=session_sensor_stats,
+        writer_diagnostics=final_writer_diagnostics,
+    )
+
+
+def _discard_stopped_session(stopped_session: StoppedSession, *, reason: str) -> None:
+    output_dir = stopped_session.session_info.output_dir
+    print(f"放弃 session {stopped_session.session_info.session_id}，原因: {reason}")
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+
+
+def _start_interactive_session(
+    *,
+    config: RecorderConfig,
+    config_path: Path | None,
+    registry: SensorRegistry,
+    record_run_id: str,
+    shared_calibration: dict[str, object],
+    session_index: int,
+) -> RecordingSession:
+    _drain_sensor_queues(registry)
+    baseline_status = _capture_sensor_status_snapshot(registry)
+    session_info = _create_session_info(
+        config=config,
+        config_path=config_path,
+        registry=registry,
+        record_run_id=record_run_id,
+        shared_calibration=shared_calibration,
+        session_index=session_index,
+    )
+    logger = _create_session_logger(session_info)
+    logger.info("交互式 session 创建完成: index=%d, dir=%s", session_index, session_info.output_dir)
+    writer = SessionWriter(session_info, async_writes=True)
+    start_wall_time_ns = time.time_ns()
+    start_monotonic_time_ns = time.perf_counter_ns()
+    print("")
+    print(f"开始录制 session #{session_index}: {session_info.session_id}")
+    print(f"输出目录: {session_info.output_dir}")
+    print("再次按空格停止录制")
+    return RecordingSession(
+        session_index=session_index,
+        session_info=session_info,
+        writer=writer,
+        logger=logger,
+        aligner=BufferedFrameAligner(
+            required_sensors=list(registry.sensors.keys()),
+            max_frame_age=config.max_frame_age,
+        ),
+        last_written_frame_ids={name: -1 for name in registry.sensors},
+        next_aligned_time_ns=start_wall_time_ns,
+        next_aligned_monotonic_time_ns=start_monotonic_time_ns,
+        sensor_status_baseline=baseline_status,
+        session_queue_peak={
+            sensor_name: _status_counter(status, "queue_depth")
+            for sensor_name, status in baseline_status.items()
+        },
+    )
+
+
+def _begin_stopping_session(
+    *,
+    session: RecordingSession,
+    registry: SensorRegistry,
+    finalize_executor: ThreadPoolExecutor,
+    stop_reason: str,
+    stop_requested_monotonic_time_ns: int,
+    compensator: GravityCompensator | None,
+    ft_sensor_name: str | None,
+    imu_sensor_name: str | None,
+    align_interval_ns: int,
+) -> StoppingSession:
+    pre_stop_status = _capture_sensor_status_snapshot(registry)
+    _update_session_queue_peaks(session, pre_stop_status)
+    _record_iteration(
+        session=session,
+        registry=registry,
+        compensator=compensator,
+        ft_sensor_name=ft_sensor_name,
+        imu_sensor_name=imu_sensor_name,
+        align_interval_ns=align_interval_ns,
+        cutoff_monotonic_time_ns=stop_requested_monotonic_time_ns,
+    )
+    stop_status = _capture_sensor_status_snapshot(registry)
+    _update_session_queue_peaks(session, stop_status)
+    session_sensor_stats = _build_session_sensor_stats(session, stop_status)
+    finalize_future = finalize_executor.submit(
+        _complete_stopped_session,
+        session=session,
+        sensor_runtime_status_snapshot=_json_clone(stop_status),
+        session_sensor_stats=_json_clone(session_sensor_stats),
+        stop_reason=stop_reason,
+    )
+    return StoppingSession(
+        session=session,
+        stop_reason=stop_reason,
+        stop_requested_monotonic_time_ns=stop_requested_monotonic_time_ns,
+        finalize_future=finalize_future,
+    )
+
+
+def _run_noninteractive(
+    *,
+    config: RecorderConfig,
+    config_path: Path | None,
+) -> int:
     clock = SystemClock()
     registry = build_registry(config, clock)
 
@@ -572,32 +1087,18 @@ def main() -> None:
     if not is_running:
         print("录制在传感器就绪前被中断")
         registry.stop_all()
-        return
+        return 1
 
-    session_info = create_session_info(
-        config.output_root,
-        sensors=registry.get_metadata(),
-        config=asdict(config),
-        notes={
-            "entrypoint": "scripts/sdk_record.py",
-            "config_file": str(config_path) if config_path is not None else None,
-        },
+    session_info = _create_session_info(
+        config=config,
+        config_path=config_path,
+        registry=registry,
     )
-    logger = build_logger(
-        "sdk.record",
-        log_file=session_info.output_dir / "logs" / "sdk_record.log",
-        include_stream=False,
-    )
+    logger = _create_session_logger(session_info)
     logger.info("SDK 录制启动，数据源=%s", config.sensor_source)
     if config_path is not None:
         logger.info("加载配置文件: %s", config_path)
-    if config.enable_trajectory:
-        warning_message = (
-            "检测到已废弃的 enable_trajectory=true 配置；"
-            "sdk_record.py 不再在录制结束后自动解算轨迹，请将 session 拷贝到 PC 后运行 scripts/sdk_process_trajectory.py"
-        )
-        print(warning_message)
-        logger.warning(warning_message)
+    _warn_deprecated_trajectory(config, logger)
     compensator, calibration_notes = run_static_calibration(registry, config.gravity_compensation, logger)
     session_info.notes["gravity_compensation"] = calibration_notes
 
@@ -616,7 +1117,7 @@ def main() -> None:
         if not is_running:
             print("录制在启动阶段数据丢弃期间被中断")
             registry.stop_all()
-            return
+            return 1
     session_info.notes["startup_discard"] = startup_discard_notes
 
     writer = SessionWriter(session_info, async_writes=True)
@@ -639,12 +1140,12 @@ def main() -> None:
     else:
         print("录制时长: 持续运行，按 Ctrl+C 停止")
 
-    loop_interval = 1.0 / config.align_rate_hz
+    loop_interval = 1.0 / config.align_rate_hz if config.align_rate_hz > 0 else 0.05
     start_wall_time_ns = time.time_ns()
     start_monotonic_time_ns = time.perf_counter_ns()
     next_aligned_time_ns = start_wall_time_ns
     next_aligned_monotonic_time_ns = start_monotonic_time_ns
-    align_interval_ns = max(1, int(round(1_000_000_000.0 / config.align_rate_hz)))
+    align_interval_ns = max(1, int(round(1_000_000_000.0 / max(config.align_rate_hz, 1e-6))))
     end_monotonic_time_ns = (
         start_monotonic_time_ns + int(round(config.duration_sec * 1_000_000_000.0))
         if config.duration_sec > 0
@@ -700,15 +1201,7 @@ def main() -> None:
                 next_aligned_time_ns += align_interval_ns
                 next_aligned_monotonic_time_ns += align_interval_ns
 
-            if last_aligned is not None:
-                missing = ",".join(last_aligned.missing_sensors) if last_aligned.missing_sensors else "-"
-                print(
-                    f"\r[Align] seq={last_aligned.sequence_id:06d} "
-                    f"missing={missing:<20} "
-                    f"frames={len(last_aligned.frames)}",
-                    end="",
-                )
-
+            _print_align_progress(last_aligned)
             if end_monotonic_time_ns is not None and next_aligned_monotonic_time_ns > end_monotonic_time_ns:
                 break
 
@@ -737,7 +1230,316 @@ def main() -> None:
         )
 
     print("完成。")
+    return 0
+
+
+def _run_interactive(
+    *,
+    config: RecorderConfig,
+    config_path: Path | None,
+    key_source: KeySource | None = None,
+) -> int:
+    global is_running
+    owned_key_source = False
+    if key_source is None:
+        key_source = TerminalKeySource()
+        owned_key_source = True
+
+    clock = SystemClock()
+    registry = build_registry(config, clock)
+    run_logger = build_logger("sdk.record.run", include_stream=False)
+    finalize_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdk-record-finalize")
+    state = STATE_BOOTING
+    active_session: RecordingSession | None = None
+    stopping_session: StoppingSession | None = None
+    stopped_session: StoppedSession | None = None
+    registry_started = False
+    exit_code = 0
+    exit_after_stopping = False
+    exit_after_stopping_reason = "ctrl_c"
+    exit_after_stopping_code = 0
+
+    try:
+        print("=== SDK 交互式录制启动中 ===")
+        if config_path is not None:
+            print(f"配置文件: {config_path}")
+        print(f"数据源: {config.sensor_source}")
+        if config.duration_sec > 0:
+            message = f"interactive=true 时将忽略 duration_sec={config.duration_sec}"
+            print(message)
+            run_logger.warning(message)
+        _warn_deprecated_trajectory(config, run_logger)
+
+        registry.start_all()
+        registry_started = True
+        print("等待传感器就绪...")
+        while is_running:
+            if registry.wait_until_ready(timeout=0.2):
+                break
+        if not is_running:
+            print("录制在传感器就绪前被中断")
+            return 1
+
+        compensator, calibration_notes = run_static_calibration(registry, config.gravity_compensation, run_logger)
+        startup_discard_notes = {
+            "enabled": bool(config.startup_discard_sec > 0),
+            "discard_sec": float(max(0.0, config.startup_discard_sec)),
+            "discarded_frames": {sensor_name: 0 for sensor_name in registry.sensors},
+        }
+        if config.startup_discard_sec > 0:
+            discard_sec = max(0.0, config.startup_discard_sec)
+            print(f"丢弃启动阶段数据: {discard_sec:.1f} 秒")
+            run_logger.info("开始丢弃启动阶段数据 %.2f 秒", discard_sec)
+            discarded_counts = discard_startup_frames(registry, discard_sec=discard_sec)
+            startup_discard_notes["discarded_frames"] = discarded_counts
+            run_logger.info("启动阶段数据丢弃完成: %s", json.dumps(discarded_counts, ensure_ascii=False))
+            if not is_running:
+                print("录制在启动阶段数据丢弃期间被中断")
+                return 1
+
+        shared_calibration = _build_shared_calibration_notes(calibration_notes, startup_discard_notes)
+        record_run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        session_index = 0
+        ft_sensor_name = _find_sensor_name_by_modality(registry, "force_torque")
+        imu_sensor_name = _find_sensor_name_by_modality(registry, "imu")
+        align_interval_ns = max(1, int(round(1_000_000_000.0 / max(config.align_rate_hz, 1e-6))))
+        loop_interval = 1.0 / config.align_rate_hz if config.align_rate_hz > 0 else 0.05
+
+        print("")
+        print("所有传感器已就绪，校准完成。")
+        print("操作说明: 空格开始/停止，Enter 保存当前 session，q 放弃当前 session，Ctrl+C 退出")
+        state = STATE_IDLE_READY
+
+        while True:
+            loop_start = time.perf_counter()
+
+            if not is_running:
+                is_running = True
+                exit_after_stopping = True
+                exit_after_stopping_reason = "signal_interrupt"
+                exit_after_stopping_code = 0
+                if active_session is not None and stopping_session is None:
+                    stop_requested_monotonic_time_ns = time.perf_counter_ns()
+                    print("\n停止中，正在收尾写盘，请稍候...")
+                    key_source.drain_pending_input()
+                    stopping_session = _begin_stopping_session(
+                        session=active_session,
+                        registry=registry,
+                        finalize_executor=finalize_executor,
+                        stop_reason="signal_interrupt",
+                        stop_requested_monotonic_time_ns=stop_requested_monotonic_time_ns,
+                        compensator=compensator,
+                        ft_sensor_name=ft_sensor_name,
+                        imu_sensor_name=imu_sensor_name,
+                        align_interval_ns=align_interval_ns,
+                    )
+                    active_session = None
+                    state = STATE_STOPPING
+                elif stopped_session is not None:
+                    _discard_stopped_session(stopped_session, reason="signal_interrupt")
+                    stopped_session = None
+                    state = STATE_EXITING
+                    exit_code = exit_after_stopping_code
+                    print("\n结束本轮采集。")
+                    break
+                elif stopping_session is None:
+                    state = STATE_EXITING
+                    exit_code = exit_after_stopping_code
+                    print("\n结束本轮采集。")
+                    break
+
+            failed_sensors = _find_failed_sensors(registry) if state != STATE_STOPPING else []
+            if failed_sensors:
+                message = f"检测到传感器停止工作: {', '.join(failed_sensors)}"
+                print(message)
+                run_logger.error(message)
+                if active_session is not None and stopping_session is None:
+                    stop_requested_monotonic_time_ns = time.perf_counter_ns()
+                    print("\n停止中，正在收尾写盘，请稍候...")
+                    key_source.drain_pending_input()
+                    stopping_session = _begin_stopping_session(
+                        session=active_session,
+                        registry=registry,
+                        finalize_executor=finalize_executor,
+                        stop_reason="sensor_failure",
+                        stop_requested_monotonic_time_ns=stop_requested_monotonic_time_ns,
+                        compensator=compensator,
+                        ft_sensor_name=ft_sensor_name,
+                        imu_sensor_name=imu_sensor_name,
+                        align_interval_ns=align_interval_ns,
+                    )
+                    active_session = None
+                    state = STATE_STOPPING
+                    exit_after_stopping = True
+                    exit_after_stopping_reason = "sensor_failure"
+                    exit_after_stopping_code = 1
+                elif stopped_session is not None:
+                    _discard_stopped_session(stopped_session, reason="sensor_failure")
+                    stopped_session = None
+                    exit_code = 1
+                    break
+                elif stopping_session is not None:
+                    exit_after_stopping = True
+                    exit_after_stopping_reason = "sensor_failure"
+                    exit_after_stopping_code = 1
+                else:
+                    exit_code = 1
+                    break
+
+            if state == STATE_RECORDING and active_session is not None:
+                current_status = _capture_sensor_status_snapshot(registry)
+                _update_session_queue_peaks(active_session, current_status)
+                last_aligned = _record_iteration(
+                    session=active_session,
+                    registry=registry,
+                    compensator=compensator,
+                    ft_sensor_name=ft_sensor_name,
+                    imu_sensor_name=imu_sensor_name,
+                    align_interval_ns=align_interval_ns,
+                )
+                _print_align_progress(last_aligned)
+            elif state == STATE_STOPPING and stopping_session is not None:
+                _drain_sensor_queues(registry)
+                if stopping_session.finalize_future.done():
+                    stopped_session = stopping_session.finalize_future.result()
+                    stopping_session = None
+                    state = STATE_REVIEW_STOPPED
+                    print("")
+                    _print_operator_summary(
+                        session_info=stopped_session.session_info,
+                        config=config,
+                        sensor_status=stopped_session.session_sensor_stats,
+                        writer_diagnostics=stopped_session.writer_diagnostics,
+                        startup_discard_notes=shared_calibration["startup_discard"],
+                    )
+                    if exit_after_stopping:
+                        _discard_stopped_session(stopped_session, reason=exit_after_stopping_reason)
+                        stopped_session = None
+                        exit_code = exit_after_stopping_code
+                        print("\n结束本轮采集。")
+                        break
+                    print("session 已停止。按 Enter 保存，按 q 放弃，按 Ctrl+C 退出。")
+            else:
+                _drain_sensor_queues(registry)
+
+            action = _normalize_key(key_source.poll_key(timeout_sec=0.0))
+            if action == KEY_CTRL_C:
+                exit_after_stopping = True
+                exit_after_stopping_reason = "ctrl_c"
+                exit_after_stopping_code = 0
+                if active_session is not None and stopping_session is None:
+                    stop_requested_monotonic_time_ns = time.perf_counter_ns()
+                    print("\n停止中，正在收尾写盘，请稍候...")
+                    key_source.drain_pending_input()
+                    stopping_session = _begin_stopping_session(
+                        session=active_session,
+                        registry=registry,
+                        finalize_executor=finalize_executor,
+                        stop_reason="ctrl_c",
+                        stop_requested_monotonic_time_ns=stop_requested_monotonic_time_ns,
+                        compensator=compensator,
+                        ft_sensor_name=ft_sensor_name,
+                        imu_sensor_name=imu_sensor_name,
+                        align_interval_ns=align_interval_ns,
+                    )
+                    active_session = None
+                    state = STATE_STOPPING
+                elif stopped_session is not None:
+                    _discard_stopped_session(stopped_session, reason="ctrl_c")
+                    stopped_session = None
+                    print("\n结束本轮采集。")
+                    exit_code = 0
+                    break
+                elif stopping_session is None:
+                    print("\n结束本轮采集。")
+                    exit_code = 0
+                    break
+
+            if state == STATE_IDLE_READY:
+                if action == KEY_SPACE:
+                    session_index += 1
+                    active_session = _start_interactive_session(
+                        config=config,
+                        config_path=config_path,
+                        registry=registry,
+                        record_run_id=record_run_id,
+                        shared_calibration=shared_calibration,
+                        session_index=session_index,
+                    )
+                    state = STATE_RECORDING
+                elif action == KEY_ENTER:
+                    print("\n当前没有已停止待确认的 session。按空格开始录制。")
+                elif action == KEY_QUIT_SESSION:
+                    print("\n当前没有可放弃的 session。使用 Ctrl+C 退出。")
+            elif state == STATE_RECORDING and active_session is not None:
+                if action == KEY_SPACE:
+                    stop_requested_monotonic_time_ns = time.perf_counter_ns()
+                    print("\n停止中，正在收尾写盘，请稍候...")
+                    key_source.drain_pending_input()
+                    stopping_session = _begin_stopping_session(
+                        session=active_session,
+                        registry=registry,
+                        finalize_executor=finalize_executor,
+                        stop_reason="operator_stop",
+                        stop_requested_monotonic_time_ns=stop_requested_monotonic_time_ns,
+                        compensator=compensator,
+                        ft_sensor_name=ft_sensor_name,
+                        imu_sensor_name=imu_sensor_name,
+                        align_interval_ns=align_interval_ns,
+                    )
+                    active_session = None
+                    state = STATE_STOPPING
+                elif action == KEY_ENTER:
+                    print("\n录制尚未停止，请先按空格停止当前 session。")
+                elif action == KEY_QUIT_SESSION:
+                    print("\n录制尚未停止，请先按空格停止当前 session。")
+            elif state == STATE_STOPPING and stopping_session is not None:
+                if action in {KEY_SPACE, KEY_ENTER, KEY_QUIT_SESSION}:
+                    continue
+            elif state == STATE_REVIEW_STOPPED and stopped_session is not None:
+                if action == KEY_ENTER:
+                    print(f"已保存 session #{stopped_session.session_index}: {stopped_session.session_info.output_dir}")
+                    stopped_session = None
+                    state = STATE_IDLE_READY
+                    print("按空格开始下一个 session，按 Ctrl+C 结束。")
+                elif action == KEY_QUIT_SESSION:
+                    _discard_stopped_session(stopped_session, reason="operator_discard")
+                    stopped_session = None
+                    state = STATE_IDLE_READY
+                    print("已回到待机状态。按空格开始下一个 session，按 Ctrl+C 结束。")
+                elif action == KEY_SPACE:
+                    print("\n当前 session 已停止，请先按 Enter 保存或按 q 放弃。")
+
+            elapsed = time.perf_counter() - loop_start
+            time.sleep(max(0.0, loop_interval - elapsed))
+    finally:
+        if stopping_session is not None:
+            stopping_session.finalize_future.result()
+        finalize_executor.shutdown(wait=True)
+        if owned_key_source:
+            key_source.close()
+        if registry_started:
+            print("\n正在停止传感器...")
+            registry.stop_all()
+    print("完成。")
+    return exit_code
+
+
+def main(argv: list[str] | None = None, *, key_source: KeySource | None = None) -> int:
+    global is_running
+    is_running = True
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+
+    config, config_path = parse_args(argv)
+    if config.interactive:
+        try:
+            return _run_interactive(config=config, config_path=config_path, key_source=key_source)
+        except RuntimeError as exc:
+            print(f"交互式录制启动失败: {exc}")
+            return 1
+    return _run_noninteractive(config=config, config_path=config_path)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -10,6 +10,7 @@ output_root: /mnt/m2ssd/umi-data/sessions
 sensor_source: real
 align_rate_hz: 30.0
 duration_sec: 10.0
+interactive: true
 startup_discard_sec: 1
 max_frame_age: 0.2
 enable_ft: true
@@ -85,7 +86,7 @@ camera:
   frame_queue_size: 128
 gelsight:
   name: gelsight
-  device_index: 6
+  device_index: 7
   width: 320
   height: 240
   fps: 25
@@ -101,8 +102,6 @@ gravity_compensation:
   calibration_duration_sec: 3.0
   minimum_samples: 10
 trajectory:
-  # PC-side offline ORB-SLAM3 processing configuration.
-  # Leave command null to use the built-in stereo_inertial wrapper.
   command: null
   mode: stereo_inertial
   source_name: orbslam3
