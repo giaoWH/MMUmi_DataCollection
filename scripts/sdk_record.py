@@ -18,7 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 from sdk.config import deep_merge, load_config_file
 from sdk.core import BufferedFrameAligner, SensorRegistry, SystemClock, create_session_info
 from sdk.logging import build_logger
-from sdk.perception import OrbSlam3SessionProcessConfig, process_orbslam3_session
+from sdk.perception import OrbSlam3SessionProcessConfig
 from sdk.processors import GravityCompensationConfig, GravityCompensator
 from sdk.sensors.fake import (
     FakeCameraAdapter,
@@ -557,8 +557,6 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _handle_signal)
 
     config, config_path = parse_args()
-    if config.enable_trajectory and not config.trajectory.command:
-        raise ValueError("enable_trajectory=true 时必须在 trajectory.command 中提供 ORB-SLAM3 命令")
     clock = SystemClock()
     registry = build_registry(config, clock)
 
@@ -593,6 +591,13 @@ def main() -> None:
     logger.info("SDK 录制启动，数据源=%s", config.sensor_source)
     if config_path is not None:
         logger.info("加载配置文件: %s", config_path)
+    if config.enable_trajectory:
+        warning_message = (
+            "检测到已废弃的 enable_trajectory=true 配置；"
+            "sdk_record.py 不再在录制结束后自动解算轨迹，请将 session 拷贝到 PC 后运行 scripts/sdk_process_trajectory.py"
+        )
+        print(warning_message)
+        logger.warning(warning_message)
     compensator, calibration_notes = run_static_calibration(registry, config.gravity_compensation, logger)
     session_info.notes["gravity_compensation"] = calibration_notes
 
@@ -730,22 +735,6 @@ def main() -> None:
             writer_diagnostics=final_writer_diagnostics,
             startup_discard_notes=session_info.notes.get("startup_discard"),
         )
-
-    if config.enable_trajectory:
-        print("开始轨迹解算...")
-        logger.info("开始录制后轨迹解算，mode=%s", config.trajectory.mode)
-        try:
-            result = process_orbslam3_session(session_info.output_dir, config.trajectory)
-        except Exception:
-            logger.exception("录制后轨迹解算失败")
-            print(f"轨迹解算失败，session 已保存在: {session_info.output_dir}")
-            raise
-        logger.info(
-            "录制后轨迹解算完成，bundle=%s, frames=%d",
-            result.bundle_dir,
-            result.trajectory_frames,
-        )
-        print(f"轨迹写入完成: {session_info.output_dir / 'trajectory' / 'frames.jsonl'}")
 
     print("完成。")
 

@@ -29,11 +29,13 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 
 1. 编辑 `configs/record.yaml`
 2. 首次安装时按需运行 `python scripts/sdk_discover_ports.py`
-3. 运行 `python scripts/sdk_record.py`
-4. 按配置决定是否在录制结束后自动解算轨迹
-5. 将 `sessions/session_xxx` 拷贝到 Linux / Windows PC
-6. 在 PC 上运行 `python scripts/sdk_annotate.py <session_dir>`
-7. 在 PC 上运行 `python scripts/sdk_export.py <session_dir> --format lerobot`
+3. 在采集端运行 `conda activate umi_sdk`
+4. 运行 `python scripts/sdk_record.py`
+5. 将 `sessions/session_xxx` 拷贝到 PC
+6. 在 PC 上运行 `conda activate umi_sdk`
+7. 运行 `python scripts/sdk_process_trajectory.py <session_dir> --config configs/record.yaml`
+8. 在 PC 上运行 `python scripts/sdk_annotate.py <session_dir>`
+9. 在 PC 上运行 `python scripts/sdk_export.py <session_dir> --format lerobot`
 
 ## Session 存储格式（实验版 v2）
 
@@ -64,6 +66,29 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - 不把 `realsense.depth` 编进 MP4
 - 不给 `gelsight` 或 `realsense color` 复制音轨
 - `camera` 是唯一主视频与主音轨容器
+
+当前实验分支的默认媒体编码策略是：
+
+- 视频编码使用标准 `H.264`
+- 视频像素格式默认使用 `yuv420p`
+- 视频编码参数默认是 `profile=high`、`preset=veryfast`、`crf=20`
+- 主视频容器默认启用 `+faststart`
+- 音频当前仍优先使用 `ALAC`
+
+这样做的原因是：
+
+- 让树莓派和常见播放器更容易直接打开录制出来的 MP4
+- 同时尽量保留音频 chunk 的精确回读语义，避免因为有损音频编码引入额外延迟或切片偏差
+
+如果需要覆盖默认值，可以在 `record.yaml` 的 `media_encoding` 下配置：
+
+- `video_codec`
+- `video_pixel_format`
+- `video_profile`
+- `video_preset`
+- `video_crf`
+- `audio_codec`
+- `movflags`
 
 上层兼容策略是：
 
@@ -272,36 +297,34 @@ RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接�
 - 接收 JSONL 轨迹结果
 - 将轨迹写回 session
 
-当前支持的模式：
+当前官方支持的模式：
 
-- `rgbd_inertial`
-- `stereo`
 - `stereo_inertial`
 
 其中：
 
-- `rgbd_inertial` 使用 `color + depth/aligned_depth_to_color + imu_samples`
-- `stereo` 使用 `ir1 + ir2`
 - `stereo_inertial` 使用 `ir1 + ir2 + imu_samples`
 
 当前 `trajectory` 配置的职责边界也已经明确：
 
 - `realsense` 负责选择录哪些流
-- `trajectory.mode` 负责选择离线 SLAM 消费哪一组已录好的流
-- `trajectory.output_mode` 取决于所用 wrapper；当前仓库内置的 `stereo_inertial` wrapper 推荐使用 `jsonl_file`
+- `trajectory.mode` 当前固定为 `stereo_inertial`
+- `trajectory.command` 为空时默认使用仓库内置 wrapper
+- `trajectory.env` 负责提供 `ORB_SLAM3_VOCAB`、`ORB_SLAM3_SETTINGS`，可选 `ORB_SLAM3_RUNNER`
 
 这里还需要补充一个使用边界：
 
-- 上述 `trajectory.mode` / `trajectory.command` / `trajectory.output_mode` 当前属于 `record.yaml` 配置字段，而不是 `scripts/sdk_record.py` 的独立 CLI 参数
+- 上述 `trajectory` 配置当前属于 PC 端离线处理使用的 `record.yaml` 字段，而不是 `scripts/sdk_record.py` 的独立 CLI 参数
 - `scripts/sdk_record.py` 的 CLI 当前主要直接覆盖传感器启停、端口、分辨率、帧率等常用录制参数
+- `enable_trajectory` 已废弃，录制结束后不会自动解算轨迹
 
 在 session v2 实验格式下，ORB-SLAM3 相关链路仍保持以下行为：
 
 - `realsense.color` 会先由 `SessionReader` 从 `streams/realsense/color.mp4` 解码
 - `realsense.depth` 继续直接从 `npy` artifact 读取
-- bundle 导出结果依然是 `rgb/*.png + depth/*.png + imu.csv`
+- bundle 导出结果依然是离线 ORB-SLAM3 可消费的图像文件与 `imu.csv`
 - ORB-SLAM3 wrapper 不需要知道 session 内部是否使用了 MP4
-- `enable_trajectory` 可通过 CLI 开关控制，但启用后仍需要由配置文件提供 `trajectory.command`
+- 当前官方链路只导出并处理 `stereo_inertial`
 
 当前仓库已经内置一条本地可用的 `stereo_inertial` 接入链：
 
@@ -316,7 +339,7 @@ RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接�
 - wrapper 从 `bundle_manifest.json` 推导 `stereo_associations.txt` 与 `imu.csv`
 - wrapper 调用本地 ORB-SLAM3 runner，并把 `SaveTrajectoryEuRoC()` 的输出转换成 SDK JSONL
 - JSONL 中的 `tracking_state` 当前固定写为 `OK`
-- `rgbd_inertial` 与 `stereo` 仍可继续通过外部命令模板接入
+- 同一 session 重跑轨迹时会覆盖旧的 `trajectory/frames.jsonl`
 
 ### 7. 多格式导出
 

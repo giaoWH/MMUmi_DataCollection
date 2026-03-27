@@ -1,6 +1,5 @@
 {
   "mode": "stereo_inertial",
-  "output_mode": "jsonl_file",
   "source_name": "orbslam3",
   "working_dir": null,
   "bundle_dir": null,
@@ -8,5 +7,5 @@
     "ORB_SLAM3_VOCAB": "/abs/path/to/UMI_DataCollection/ThirdParty/ORB_SLAM3/Vocabulary/ORBvoc.txt",
     "ORB_SLAM3_SETTINGS": "/abs/path/to/UMI_DataCollection/ThirdParty/ORB_SLAM3/Examples/Stereo-Inertial/RealSense_D435i.yaml"
   },
-  "command": "python /abs/path/to/UMI_DataCollection/scripts/orbslam3_wrapper.py --mode stereo_inertial --bundle-manifest {bundle_manifest} --output {output_jsonl}"
+  "command": null
 }

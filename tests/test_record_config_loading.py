@@ -194,7 +194,7 @@ class RecorderConfigLoadingTest(unittest.TestCase):
                         "    enable_pointcloud: true",
                         "trajectory:",
                         "  mode: stereo_inertial",
-                        "  output_mode: stdout_jsonl",
+                        "  source_name: orbslam3_pc",
                     ]
                 ),
                 encoding="utf-8",
@@ -212,7 +212,7 @@ class RecorderConfigLoadingTest(unittest.TestCase):
         self.assertEqual(config.realsense.color.fps, 60)
         self.assertTrue(config.realsense.derived.enable_pointcloud)
         self.assertEqual(config.trajectory.mode, "stereo_inertial")
-        self.assertEqual(config.trajectory.output_mode, "stdout_jsonl")
+        self.assertEqual(config.trajectory.source_name, "orbslam3_pc")
 
     def test_parse_args_loads_ft_and_motor_channel_switches(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

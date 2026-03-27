@@ -25,6 +25,11 @@ from sdk.storage.session_reader import SessionReader
 from sdk.storage.session_writer import SessionWriter
 
 try:
+    import av
+except ImportError:  # pragma: no cover
+    av = None
+
+try:
     import cv2
 except ImportError:  # pragma: no cover
     cv2 = None
@@ -51,7 +56,7 @@ class SessionWriterTest(unittest.TestCase):
                 sensor_type="realsense_rgbd",
                 modality="rgbd",
                 frame_id=1,
-                time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+                time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0, device_time=1.0),
                 payload={
                     "color": np.full((4, 6, 3), 32, dtype=np.uint8),
                     "depth": np.full((4, 6), 1200, dtype=np.uint16),
@@ -77,7 +82,7 @@ class SessionWriterTest(unittest.TestCase):
                 sensor_type="realsense_rgbd",
                 modality="rgbd",
                 frame_id=2,
-                time=FrameTime(host_time=1.1, monotonic_time=1.1, aligned_time=1.1),
+                time=FrameTime(host_time=1.1, monotonic_time=1.1, aligned_time=1.1, device_time=1.1),
                 payload={
                     "color": np.full((4, 6, 3), 64, dtype=np.uint8),
                     "depth": np.full((4, 6), 1250, dtype=np.uint16),
@@ -254,8 +259,8 @@ class SessionWriterTest(unittest.TestCase):
             self.assertEqual(diagnostics["written_counts"]["aligned"], 1)
             self.assertGreaterEqual(diagnostics["write_latency"]["samples"], 2)
 
-    @unittest.skipIf(cv2 is None, "未安装 opencv-python")
-    def test_camera_media_round_trip_preserves_rgb_payload(self) -> None:
+    @unittest.skipIf(av is None, "未安装 PyAV")
+    def test_camera_media_round_trip_uses_standard_h264_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             session = create_session_info(
                 tmp_dir,
@@ -263,7 +268,11 @@ class SessionWriterTest(unittest.TestCase):
                 config={"align_rate_hz": 30},
             )
             writer = SessionWriter(session)
-            rgb_frame = np.array([[[255, 0, 0]]], dtype=np.uint8)
+            rgb_frame = np.zeros((16, 16, 3), dtype=np.uint8)
+            rgb_frame[:8, :8] = [255, 0, 0]
+            rgb_frame[:8, 8:] = [0, 255, 0]
+            rgb_frame[8:, :8] = [0, 0, 255]
+            rgb_frame[8:, 8:] = [200, 200, 200]
             writer.write_sensor_frame(
                 SensorFrame(
                     sensor_name="camera",
@@ -284,10 +293,40 @@ class SessionWriterTest(unittest.TestCase):
             media_path = session.output_dir / reference["path"]
             self.assertTrue(media_path.exists())
             self.assertEqual(media_path.name, "media.mp4")
+            self.assertEqual(
+                writer.manifest.sensors["camera"].metadata["media_encoding"]["video_codec"],
+                "libx264",
+            )
+            self.assertEqual(
+                writer.manifest.sensors["camera"].metadata["media_encoding"]["video_pixel_format"],
+                "yuv420p",
+            )
+
+            container = av.open(str(media_path))
+            try:
+                video_stream = next(stream for stream in container.streams if stream.type == "video")
+                self.assertEqual(video_stream.codec_context.name, "h264")
+                self.assertEqual(video_stream.codec_context.pix_fmt, "yuv420p")
+            finally:
+                container.close()
 
             reader = SessionReader(session.output_dir)
             loaded_frame = next(reader.iter_sensor_frames("camera", load_payload=True))
-            np.testing.assert_array_equal(loaded_frame.payload["color"], rgb_frame)
+            loaded = loaded_frame.payload["color"]
+            self.assertEqual(loaded.shape, rgb_frame.shape)
+            self.assertEqual(loaded.dtype, np.uint8)
+            self.assertLess(np.mean(np.abs(loaded.astype(np.int16) - rgb_frame.astype(np.int16))), 25.0)
+            quadrant_means = {
+                "red": loaded[:8, :8].mean(axis=(0, 1)),
+                "green": loaded[:8, 8:].mean(axis=(0, 1)),
+                "blue": loaded[8:, :8].mean(axis=(0, 1)),
+            }
+            self.assertGreater(quadrant_means["red"][0], quadrant_means["red"][1])
+            self.assertGreater(quadrant_means["red"][0], quadrant_means["red"][2])
+            self.assertGreater(quadrant_means["green"][1], quadrant_means["green"][0])
+            self.assertGreater(quadrant_means["green"][1], quadrant_means["green"][2])
+            self.assertGreater(quadrant_means["blue"][2], quadrant_means["blue"][0])
+            self.assertGreater(quadrant_means["blue"][2], quadrant_means["blue"][1])
 
     def test_microphone_audio_round_trip_uses_camera_media_track(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -637,7 +676,7 @@ class SessionWriterTest(unittest.TestCase):
                 "'tracking_state': 'OK', "
                 "'metadata': {'imu_rows': manifest['imu_rows']}"
                 "}; "
-                "print(json.dumps(payload, ensure_ascii=False))"
+                "pathlib.Path(r'{output_jsonl}').write_text(json.dumps(payload, ensure_ascii=False) + '\\n', encoding='utf-8')"
             )
             command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
             result = __import__("subprocess").run(
@@ -648,9 +687,7 @@ class SessionWriterTest(unittest.TestCase):
                     "--command",
                     command,
                     "--mode",
-                    "rgbd_inertial",
-                    "--output-mode",
-                    "stdout_jsonl",
+                    "stereo_inertial",
                     "--bundle-dir",
                     str(bundle_dir),
                 ],
@@ -668,7 +705,7 @@ class SessionWriterTest(unittest.TestCase):
             self.assertEqual(trajectory_frames[0].metadata["imu_rows"], 2)
 
             manifest_payload = json.loads((Path(session_dir) / "manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest_payload["notes"]["orbslam3_mode"], "rgbd_inertial")
+            self.assertEqual(manifest_payload["notes"]["orbslam3_mode"], "stereo_inertial")
             self.assertEqual(manifest_payload["notes"]["trajectory_source"], "orbslam3")
             self.assertEqual(manifest_payload["notes"]["orbslam3_bundle"], str(bundle_dir))
 
@@ -679,21 +716,21 @@ class SessionWriterTest(unittest.TestCase):
             bundle_dir = Path(tmp_dir) / "orb_bundle_config"
             config_path = Path(tmp_dir) / "orbslam3.json"
             script = (
-                "import json, os; "
+                "import json, os, pathlib; "
                 "payload = {"
                 "'timestamp': 4.5, "
                 "'position': [4.0, 5.0, 6.0], "
                 "'quaternion': [1.0, 0.0, 0.0, 0.0], "
                 "'tracking_state': os.environ['ORB_TEST_FLAG']"
                 "}; "
-                "print(json.dumps(payload, ensure_ascii=False))"
+                "pathlib.Path(r'{output_jsonl}').write_text(json.dumps(payload, ensure_ascii=False) + '\\n', encoding='utf-8')"
             )
             config_path.write_text(
                 json.dumps(
                     {
                         "command": f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}",
-                        "mode": "rgbd_inertial",
-                        "output_mode": "stdout_jsonl",
+                        "mode": "stereo_inertial",
+                        "output_mode": "jsonl_file",
                         "source_name": "orbslam3_config",
                         "bundle_dir": str(bundle_dir),
                         "env": {"ORB_TEST_FLAG": "CONFIG_OK"},
@@ -742,19 +779,10 @@ class SessionWriterTest(unittest.TestCase):
             vocab_path.write_text("fake vocab", encoding="utf-8")
             settings_path.write_text("%YAML:1.0\n", encoding="utf-8")
 
-            wrapper_path = Path(__file__).resolve().parents[1] / "scripts" / "orbslam3_wrapper.py"
             config_path.write_text(
                 json.dumps(
                     {
-                        "command": (
-                            f"{shlex.quote(sys.executable)} "
-                            f"{shlex.quote(str(wrapper_path))} "
-                            "--mode stereo_inertial "
-                            "--bundle-manifest {bundle_manifest} "
-                            "--output {output_jsonl}"
-                        ),
                         "mode": "stereo_inertial",
-                        "output_mode": "jsonl_file",
                         "source_name": "orbslam3_stereo_wrapper",
                         "bundle_dir": str(bundle_dir),
                         "env": {
@@ -804,24 +832,23 @@ class SessionWriterTest(unittest.TestCase):
             bundle_dir = Path(tmp_dir) / "orb_bundle_record_cfg"
             config_path = Path(tmp_dir) / "record.yaml"
             script = (
-                "import json; "
+                "import json, pathlib; "
                 "payload = {"
                 "'timestamp': 6.5, "
                 "'position': [6.0, 5.0, 4.0], "
                 "'quaternion': [1.0, 0.0, 0.0, 0.0], "
                 "'tracking_state': 'FROM_RECORD_CONFIG'"
                 "}; "
-                "print(json.dumps(payload, ensure_ascii=False))"
+                "pathlib.Path(r'{output_jsonl}').write_text(json.dumps(payload, ensure_ascii=False) + '\\n', encoding='utf-8')"
             )
             command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
             config_path.write_text(
                 "\n".join(
                     [
-                        "enable_trajectory: true",
                         "trajectory:",
                         f"  command: {json.dumps(command)}",
-                        "  mode: rgbd_inertial",
-                        "  output_mode: stdout_jsonl",
+                        "  mode: stereo_inertial",
+                        "  output_mode: jsonl_file",
                         "  source_name: orbslam3_record_config",
                         f"  bundle_dir: {bundle_dir}",
                     ]
@@ -850,6 +877,53 @@ class SessionWriterTest(unittest.TestCase):
             self.assertEqual(len(trajectory_frames), 1)
             self.assertEqual(trajectory_frames[0].source, "orbslam3_record_config")
             self.assertEqual(trajectory_frames[0].tracking_state, "FROM_RECORD_CONFIG")
+
+    @unittest.skipIf(cv2 is None, "未安装 opencv-python")
+    def test_sdk_process_trajectory_cli_overwrites_existing_trajectory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_orbslam3_session(tmp_dir)
+            first_script = (
+                "import json, pathlib; "
+                "payload = {"
+                "'timestamp': 1.0, "
+                "'position': [1.0, 1.0, 1.0], "
+                "'quaternion': [1.0, 0.0, 0.0, 0.0], "
+                "'tracking_state': 'FIRST'"
+                "}; "
+                "pathlib.Path(r'{output_jsonl}').write_text(json.dumps(payload, ensure_ascii=False) + '\\n', encoding='utf-8')"
+            )
+            second_script = (
+                "import json, pathlib; "
+                "payload = {"
+                "'timestamp': 2.0, "
+                "'position': [2.0, 2.0, 2.0], "
+                "'quaternion': [1.0, 0.0, 0.0, 0.0], "
+                "'tracking_state': 'SECOND'"
+                "}; "
+                "pathlib.Path(r'{output_jsonl}').write_text(json.dumps(payload, ensure_ascii=False) + '\\n', encoding='utf-8')"
+            )
+            script_path = Path(__file__).resolve().parents[1] / "scripts" / "sdk_process_trajectory.py"
+
+            for script in (first_script, second_script):
+                result = __import__("subprocess").run(
+                    [
+                        sys.executable,
+                        str(script_path),
+                        str(session_dir),
+                        "--command",
+                        f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    cwd=str(Path(__file__).resolve().parents[1]),
+                )
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+            trajectory_frames = list(SessionReader(session_dir).iter_trajectory_frames())
+            self.assertEqual(len(trajectory_frames), 1)
+            self.assertEqual(trajectory_frames[0].tracking_state, "SECOND")
+            self.assertEqual(trajectory_frames[0].position, [2.0, 2.0, 2.0])
 
     @unittest.skipIf(h5py is None, "未安装 h5py")
     def test_export_hdf5(self) -> None:

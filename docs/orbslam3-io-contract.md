@@ -68,6 +68,7 @@ orbslam3_rgbd_inertial/
 在媒体化存储实验格式下还需注意：
 
 - `rgb/` 内的彩色图像可能来自 `streams/realsense/color.mp4`
+- 这些 MP4 当前默认采用 `H.264/yuv420p` 编码，以优先保证设备端可播放性
 - `depth/` 内的深度图仍来自无损数组 artifact
 - 因此 `rgbd_inertial` 仍坚持“彩色可压缩、深度不压缩”的策略
 
@@ -185,7 +186,7 @@ timestamp,sample_type,x,y,z
 1. 读取 SDK 导出的 bundle
 2. 调用真实 ORB-SLAM3
 3. 把 ORB-SLAM3 的原始轨迹格式转换为本文档约定的 JSONL
-4. 输出到 `stdout` 或 `{output_jsonl}`
+4. 输出到 `{output_jsonl}`
 
 这样可以把“算法原始输出格式差异”封装在 wrapper 里，而不是污染 SDK。
 
@@ -198,8 +199,8 @@ timestamp,sample_type,x,y,z
 推荐配置方式：
 
 - `trajectory.mode = stereo_inertial`
-- `trajectory.output_mode = jsonl_file`
-- `trajectory.command = python /abs/path/to/UMI_DataCollection/scripts/orbslam3_wrapper.py --mode stereo_inertial --bundle-manifest {bundle_manifest} --output {output_jsonl}`
+- `trajectory.command = null`，由 `scripts/sdk_process_trajectory.py` 自动使用仓库内置 wrapper
+- 在 PC 端 `conda activate umi_sdk` 后运行 `python scripts/sdk_process_trajectory.py <session_dir> --config configs/record.yaml`
 
 wrapper 运行时依赖以下环境变量：
 
@@ -224,6 +225,7 @@ wrapper 会自动完成以下工作：
 - 只消费 SDK 当前导出的 `left/`、`right/`、`stereo_associations.txt`、`imu.csv`
 - 轨迹来源为 ORB-SLAM3 最终保存结果，不保留逐帧在线 tracking state
 - 输出 `tracking_state` 固定为 `OK`
+- 同一 session 重跑轨迹时会覆盖旧的 `trajectory/frames.jsonl`
 
 ---
 

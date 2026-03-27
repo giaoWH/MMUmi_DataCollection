@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shlex
 import subprocess
@@ -52,11 +53,19 @@ class OrbSlam3CommandRunner(TrajectoryRunner):
                 )
 
             if self.config.output_mode == "stdout_jsonl":
-                return self._parse_jsonl(result.stdout.splitlines())
+                frames = self._parse_jsonl(result.stdout.splitlines())
+                if not frames:
+                    raise RuntimeError("ORB-SLAM3 未生成有效轨迹")
+                return frames
 
+            if self.config.output_mode != "jsonl_file":
+                raise ValueError(f"不支持的 ORB-SLAM3 输出模式: {self.config.output_mode}")
             if not output_jsonl.exists():
                 raise RuntimeError("ORB-SLAM3 命令未生成期望的轨迹文件")
-            return self._parse_jsonl(output_jsonl.read_text(encoding="utf-8").splitlines())
+            frames = self._parse_jsonl(output_jsonl.read_text(encoding="utf-8").splitlines())
+            if not frames:
+                raise RuntimeError("ORB-SLAM3 未生成有效轨迹")
+            return frames
 
     def _build_command(self, session_dir: Path, output_jsonl: Path) -> list[str]:
         template = self.config.command.replace("{session_dir}", str(session_dir))
@@ -67,12 +76,20 @@ class OrbSlam3CommandRunner(TrajectoryRunner):
 
     def _parse_jsonl(self, lines: list[str]) -> list[TrajectoryFrame]:
         frames: list[TrajectoryFrame] = []
+        last_timestamp: float | None = None
         for index, line in enumerate(lines):
             line = line.strip()
             if not line:
                 continue
             payload = json.loads(line)
-            frames.append(self._build_frame(index, payload))
+            frame = self._build_frame(index, payload)
+            timestamp = frame.time.host_time
+            if timestamp is None:
+                raise ValueError("ORB-SLAM3 轨迹记录缺少 timestamp 字段")
+            if last_timestamp is not None and timestamp < last_timestamp:
+                raise ValueError("ORB-SLAM3 轨迹记录的 timestamp 必须单调不减")
+            last_timestamp = timestamp
+            frames.append(frame)
         return frames
 
     def _build_frame(self, frame_id: int, payload: dict[str, Any]) -> TrajectoryFrame:
@@ -80,11 +97,26 @@ class OrbSlam3CommandRunner(TrajectoryRunner):
             raise ValueError("ORB-SLAM3 轨迹记录缺少 timestamp 字段")
         position = payload.get("position")
         quaternion = payload.get("quaternion")
+        metadata = payload.get("metadata", {})
         if not isinstance(position, list) or len(position) != 3:
             raise ValueError("ORB-SLAM3 轨迹记录的 position 字段必须是长度为 3 的列表")
         if not isinstance(quaternion, list) or len(quaternion) != 4:
             raise ValueError("ORB-SLAM3 轨迹记录的 quaternion 字段必须是长度为 4 的列表")
+        if not isinstance(metadata, dict):
+            raise ValueError("ORB-SLAM3 轨迹记录的 metadata 字段必须是对象")
         timestamp = float(payload["timestamp"])
+        if not math.isfinite(timestamp):
+            raise ValueError("ORB-SLAM3 轨迹记录的 timestamp 必须是有限数值")
+        position_values = [float(value) for value in position]
+        quaternion_values = [float(value) for value in quaternion]
+        if not all(math.isfinite(value) for value in position_values):
+            raise ValueError("ORB-SLAM3 轨迹记录的 position 字段必须是有限数值")
+        if not all(math.isfinite(value) for value in quaternion_values):
+            raise ValueError("ORB-SLAM3 轨迹记录的 quaternion 字段必须是有限数值")
+        if math.isclose(sum(value * value for value in quaternion_values), 0.0, abs_tol=1e-12):
+            raise ValueError("ORB-SLAM3 轨迹记录的 quaternion 不能为零向量")
+        normalized_metadata = dict(metadata)
+        normalized_metadata.setdefault("time_semantics", "trajectory_result_timestamp")
         return TrajectoryFrame(
             source=self.config.source_name,
             frame_id=int(payload.get("frame_id", frame_id)),
@@ -92,10 +124,10 @@ class OrbSlam3CommandRunner(TrajectoryRunner):
                 host_time=timestamp,
                 monotonic_time=timestamp,
                 device_time=payload.get("device_time"),
-                aligned_time=payload.get("aligned_time", timestamp),
+                aligned_time=payload.get("aligned_time"),
             ),
-            position=[float(value) for value in position],
-            quaternion=[float(value) for value in quaternion],
+            position=position_values,
+            quaternion=quaternion_values,
             tracking_state=str(payload.get("tracking_state", "OK")),
-            metadata=payload.get("metadata", {}),
+            metadata=normalized_metadata,
         )

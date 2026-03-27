@@ -207,13 +207,10 @@ class OrbSlam3SessionBundleExporter:
         for frame in reader.iter_sensor_frames(sensor_name, load_payload=True):
             color = frame.payload.get("color")
             depth = frame.payload.get("aligned_depth_to_color")
-            if not isinstance(depth, np.ndarray):
-                depth = frame.payload.get("depth")
-
             if not isinstance(color, np.ndarray) or not isinstance(depth, np.ndarray):
                 continue
 
-            timestamp = f"{frame.time.host_time:.9f}"
+            timestamp = self._format_frame_device_timestamp(frame, stream_name="color")
             basename = f"{count:06d}.png"
             rgb_path = rgb_dir / basename
             depth_path = depth_dir / basename
@@ -264,7 +261,7 @@ class OrbSlam3SessionBundleExporter:
             if not isinstance(left, np.ndarray) or not isinstance(right, np.ndarray):
                 continue
 
-            timestamp = f"{frame.time.host_time:.9f}"
+            timestamp = self._format_frame_device_timestamp(frame, stream_name="ir1")
             basename = f"{count:06d}.png"
             left_path = left_dir / basename
             right_path = right_dir / basename
@@ -311,9 +308,8 @@ class OrbSlam3SessionBundleExporter:
                     continue
                 timestamp_ms = sample.get("timestamp_ms")
                 if timestamp_ms is None:
-                    timestamp = f"{frame.time.host_time:.9f}"
-                else:
-                    timestamp = f"{float(timestamp_ms) / 1000.0:.9f}"
+                    raise RuntimeError("RealSense IMU 数据缺少设备时间戳，无法导出 stereo_inertial bundle")
+                timestamp = f"{float(timestamp_ms) / 1000.0:.9f}"
                 lines.append(
                     ",".join(
                         [
@@ -328,3 +324,15 @@ class OrbSlam3SessionBundleExporter:
                 count += 1
         imu_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return count
+
+    def _format_frame_device_timestamp(self, frame: Any, *, stream_name: str) -> str:
+        if frame.time.device_time is not None:
+            return f"{frame.time.device_time:.9f}"
+        frame_info = frame.metadata.get("frame_info", {}) if isinstance(frame.metadata, dict) else {}
+        stream_info = frame_info.get(stream_name, {}) if isinstance(frame_info, dict) else {}
+        raw_timestamp_ms = stream_info.get("timestamp_ms") if isinstance(stream_info, dict) else None
+        if raw_timestamp_ms is not None:
+            return f"{float(raw_timestamp_ms) / 1000.0:.9f}"
+        raise RuntimeError(
+            f"RealSense {stream_name} 帧缺少设备时间戳，无法导出 ORB-SLAM3 bundle"
+        )

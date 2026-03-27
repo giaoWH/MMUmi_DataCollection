@@ -17,7 +17,9 @@
 1. 编辑 `configs/record.yaml`
 2. 首次安装时按需运行 `scripts/sdk_discover_ports.py`
 3. 运行 `scripts/sdk_record.py`
-4. 按配置决定是否在录制结束后自动执行轨迹解算
+4. 将 session 拷贝到 PC
+5. 在 PC 上运行 `conda activate umi_sdk`
+6. 运行 `scripts/sdk_process_trajectory.py <session_dir> --config configs/record.yaml`
 
 录制配置当前还支持一部分模态内的细粒度裁剪：
 
@@ -107,7 +109,7 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - FT / Motors 零点校准
 - FT 静态校准与重力补偿
 - 首次安装时通过 `sdk_discover_ports.py` 统一发现 FT / IMU / Motors 串口，以及 RealSense / Camera / GelSight 视觉设备配置
-- 可按配置决定是否在录制结束后自动执行 ORB-SLAM3 轨迹解算
+- 录制端只负责生成 session；轨迹解算统一改为 PC 端离线执行
 
 当前实验分支还增加了一条新的存储约定：
 
@@ -151,6 +153,7 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - 图像预览优先通过 `SessionReader` 解码 `mp4_frame`
 - 音频播放与音频摘要优先通过 `SessionReader` 解码 `mp4_audio`
 - 标注页面不再假设视觉帧一定对应某个磁盘 PNG 文件
+- 当前默认视频编码已切到标准 `H.264/yuv420p`，以改善树莓派与常见播放器兼容性
 
 标注结果当前直接写回 session 的 `annotations/` 目录。
 
@@ -168,7 +171,7 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - `realsense.color` 在 bundle 生成阶段由 Reader 从 MP4 解码
 - `realsense.depth` 继续直接读取无损数组
 
-这个环节既可以独立手动执行，也可以通过 `record.yaml` 中的轨迹配置在录制结束后自动执行。
+这个环节固定为独立离线执行，不再由录制脚本在结束后自动触发。
 
 ### `export`
 
@@ -201,7 +204,7 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - FT 重力补偿
 - ORB-SLAM3 软件接入
 - 首次安装时的设备自动发现与配置写回
-- 录制结束后按配置自动执行轨迹解算
+- session 拷贝到 PC 后再离线执行轨迹解算
 - 多格式导出
 - session 内置标注与 LeRobot 标注映射
 - fake 模式下的闭环验证
@@ -457,7 +460,7 @@ UMI_DataCollection/
 
 - `aligned_depth_to_color` 与 `pointcloud` 属于可选派生结果，不是必须启用
 - 当前 `stereo_inertial` 已接入仓库内置 wrapper 与本地 C++ runner
-- `rgbd_inertial` / `stereo` 仍主要保留为外部命令模板接入路径
+- 当前官方离线链路只支持 `stereo_inertial`
 
 对应代码：
 
@@ -593,7 +596,7 @@ python scripts/sdk_record.py
 - `--enable-microphone`
 - `--enable-camera`
 - `--enable-gelsight`
-- `--enable-trajectory` / `--disable-trajectory`
+- `--enable-trajectory` / `--disable-trajectory` 已废弃，仅保留兼容解析
 
 当前更推荐把大部分配置放进 `record.yaml`，CLI 只用于临时覆盖。
 
@@ -621,15 +624,14 @@ python scripts/sdk_record.py
 
 当前还支持：
 
-- `enable_trajectory` 可以通过 CLI 开关控制
-- `trajectory.mode` / `trajectory.command` / `trajectory.output_mode` 当前属于 `record.yaml` 配置字段
+- `trajectory.mode` / `trajectory.command` / `trajectory.env` 当前属于 `record.yaml` 中的 PC 端离线解算配置
 
 也就是说：
 
 - `sdk_record.py` 的 CLI 当前主要直接覆盖传感器启停、端口、分辨率、帧率等常用录制参数
-- 轨迹已经被纳入同一份录制配置里，但它是“录制结束后才执行的后处理模态”，不是录制期间实时采集的原始流
-- 启用 `enable_trajectory` 后，仍需要由配置文件提供 `trajectory.command`
-- 当前仓库内置的 `stereo_inertial` wrapper 推荐配合 `trajectory.output_mode=jsonl_file` 使用
+- 轨迹配置仍保留在同一份 `record.yaml` 中，但只用于 PC 端离线解算
+- `enable_trajectory` 已废弃，录制结束后不会自动解算
+- 当前仓库内置的官方离线链路只支持 `stereo_inertial`
 
 ### 7.2 ready / 校准等待
 
@@ -770,7 +772,7 @@ session_xxx/
 - 多维数组 payload 会落为 `png` 或 `npy`
 - 标量和小向量会直接写入 `frames.jsonl`
 - RealSense 的图像、红外、深度和点云会按 payload 类型分别落盘
-- `trajectory/` 中只有在启用自动轨迹后处理，或后续手动执行 `sdk_process_trajectory.py` 时，才会出现实际轨迹帧
+- `trajectory/` 只有在 PC 端执行 `sdk_process_trajectory.py` 后才会出现实际轨迹帧
 
 对应代码：
 
@@ -787,16 +789,15 @@ session_xxx/
 - bundle 导出
 - 外部命令调用
 - JSONL 轨迹写回
-- `rgbd_inertial` / `stereo` / `stereo_inertial` 模式支持
 - 本地 `stereo_inertial` wrapper 与 ORB-SLAM3 C++ 离线 runner 接入
 
 当前边界：
 
 - 默认视觉数据来自 RealSense
-- `rgbd_inertial` 与 `stereo_inertial` 当前都使用 RealSense 板载 IMU
+- `stereo_inertial` 当前使用 RealSense 板载 IMU
 - 普通 camera 与 GelSight 都是独立录制模态，可与 RealSense 同时存在，但当前不作为 ORB-SLAM3 默认输入链路
 - 当前仓库内置 wrapper 第一版仅覆盖 `stereo_inertial`
-- `rgbd_inertial` / `stereo` 仍保留为外部命令模板接入路径
+- 同一 session 重跑轨迹时会覆盖旧结果，而不是追加写入
 
 对应代码与文档：
 
@@ -874,7 +875,7 @@ session_xxx/
 - `scripts/sdk_inspect.py` 能读取 session 摘要
 - `scripts/sdk_annotate.py` 能在 PC 上启动本地 Web 标注器，并把结果写入 `session/annotations/`
 - `scripts/sdk_process_trajectory.py` 能导出 ORB-SLAM3 bundle 并写回轨迹
-- `enable_trajectory=true` 时能在录制结束后自动执行同一套轨迹处理链
+- `scripts/sdk_process_trajectory.py` 在 PC 端使用 `record.yaml` 中的 `trajectory` 配置执行离线轨迹处理
 - `scripts/sdk_export.py` 能导出多种格式
 - `scripts/sdk_export.py --format lerobot` 能自动消费 session 标注
 - `scripts/sdk_validate_export.py` 能执行导出产物的结构级 / 数量级一致性校验

@@ -1,6 +1,5 @@
 {
   "mode": "rgbd_inertial",
-  "output_mode": "stdout_jsonl",
   "source_name": "orbslam3",
   "working_dir": null,
   "bundle_dir": null,

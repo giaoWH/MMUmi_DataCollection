@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover
 
 class SDKEndToEndTest(unittest.TestCase):
     @unittest.skipIf(cv2 is None, "未安装 opencv-python")
-    def test_fake_record_can_auto_process_trajectory_from_record_config(self) -> None:
+    def test_fake_record_does_not_auto_process_trajectory_after_recording(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_root = Path(tmp_dir) / "sessions"
@@ -54,13 +54,15 @@ class SDKEndToEndTest(unittest.TestCase):
                         },
                         "trajectory": {
                             "command": f"{sys.executable} -c \"{orb_script}\"",
-                            "mode": "rgbd_inertial",
-                            "output_mode": "stdout_jsonl",
+                            "mode": "stereo_inertial",
+                            "output_mode": "jsonl_file",
                             "source_name": "orbslam3_auto",
                             "bundle_dir": str(bundle_dir),
                         },
                         "realsense": {
                             "enable_imu": True,
+                            "enable_ir1": True,
+                            "enable_ir2": True,
                         },
                     },
                     ensure_ascii=False,
@@ -89,13 +91,12 @@ class SDKEndToEndTest(unittest.TestCase):
 
             reader = SessionReader(session_dir)
             trajectory_frames = list(reader.iter_trajectory_frames())
-            self.assertEqual(len(trajectory_frames), 1)
-            self.assertEqual(trajectory_frames[0].source, "orbslam3_auto")
-            self.assertEqual(trajectory_frames[0].tracking_state, "AUTO_OK")
+            self.assertEqual(len(trajectory_frames), 0)
+            self.assertIn("已废弃的 enable_trajectory=true", record_result.stdout)
 
             manifest_payload = json.loads((session_dir / "manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest_payload["notes"]["trajectory_source"], "orbslam3_auto")
-            self.assertEqual(manifest_payload["notes"]["orbslam3_bundle"], str(bundle_dir))
+            self.assertNotIn("trajectory_source", manifest_payload["notes"])
+            self.assertNotIn("orbslam3_bundle", manifest_payload["notes"])
 
     @unittest.skipIf(cv2 is None, "未安装 opencv-python")
     @unittest.skipIf(h5py is None, "未安装 h5py")
@@ -123,6 +124,8 @@ class SDKEndToEndTest(unittest.TestCase):
                         },
                         "realsense": {
                             "enable_imu": True,
+                            "enable_ir1": True,
+                            "enable_ir2": True,
                         },
                     },
                     ensure_ascii=False,
@@ -185,7 +188,7 @@ class SDKEndToEndTest(unittest.TestCase):
                 "'quaternion': [1.0, 0.0, 0.0, 0.0], "
                 "'tracking_state': 'OK'"
                 "}; "
-                "print(json.dumps(payload, ensure_ascii=False))"
+                "pathlib.Path(r'{output_jsonl}').write_text(json.dumps(payload, ensure_ascii=False) + '\\n', encoding='utf-8')"
             )
             process_result = subprocess.run(
                 [
@@ -195,9 +198,7 @@ class SDKEndToEndTest(unittest.TestCase):
                     "--command",
                     f"{sys.executable} -c \"{orb_script}\"",
                     "--mode",
-                    "rgbd_inertial",
-                    "--output-mode",
-                    "stdout_jsonl",
+                    "stereo_inertial",
                     "--bundle-dir",
                     str(bundle_dir),
                 ],
