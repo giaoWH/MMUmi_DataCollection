@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from sdk.exporters.lerobot_exporter import count_lerobot_eligible_rows
 from sdk.storage import SessionReader
 
 try:
@@ -67,6 +68,9 @@ class SessionExportValidator:
 
     def _expected_step_count(self) -> int:
         return sum(1 for _ in self.reader.iter_aligned_records())
+
+    def _expected_lerobot_frame_count(self) -> int:
+        return count_lerobot_eligible_rows(self.reader)
 
     def _validate_csv(self, target: Path) -> list[str]:
         issues: list[str] = []
@@ -135,17 +139,18 @@ class SessionExportValidator:
             return issues
 
         info_payload = json.loads(info_path.read_text(encoding="utf-8"))
-        if info_payload.get("total_frames") != self._expected_step_count():
+        expected_frames = self._expected_lerobot_frame_count()
+        if info_payload.get("total_frames") != expected_frames:
             issues.append(
-                f"LeRobot total_frames 与 session 不一致: {info_payload.get('total_frames')} != {self._expected_step_count()}"
+                f"LeRobot total_frames 与 session 不一致: {info_payload.get('total_frames')} != {expected_frames}"
             )
         if pq is None:
             issues.append("未安装 pyarrow，无法进一步校验 LeRobot parquet")
             return issues
 
         data_table = pq.read_table(data_path)
-        if data_table.num_rows != self._expected_step_count():
-            issues.append(f"LeRobot parquet 行数与 session 不一致: {data_table.num_rows} != {self._expected_step_count()}")
+        if data_table.num_rows != expected_frames:
+            issues.append(f"LeRobot parquet 行数与 session 不一致: {data_table.num_rows} != {expected_frames}")
         return issues
 
     def _validate_rosbag2(self, target: Path) -> list[str]:

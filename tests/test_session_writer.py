@@ -960,62 +960,115 @@ class SessionWriterTest(unittest.TestCase):
                 sensors={
                     "ft": {"sensor_type": "ft_sensor", "modality": "force_torque"},
                     "imu": {"sensor_type": "imu_sensor", "modality": "imu"},
+                    "realsense": {"sensor_type": "realsense", "modality": "rgbd"},
+                    "motors": {"sensor_type": "motors_sensor", "modality": "motor_state"},
                 },
                 config={"align_rate_hz": 30},
             )
             writer = SessionWriter(session)
-            writer.write_sensor_frame(
-                SensorFrame(
-                    sensor_name="ft",
-                    sensor_type="ft_sensor",
-                    modality="force_torque",
-                    frame_id=1,
-                    time=FrameTime(host_time=1.0, monotonic_time=2.0),
-                    payload={
-                        "force_torque": [1.0, 2.0, 3.0, 0.1, 0.2, 0.3],
-                        "force": [1.0, 2.0, 3.0],
-                        "torque": [0.1, 0.2, 0.3],
-                    },
-                )
+            ft_frame_0 = SensorFrame(
+                sensor_name="ft",
+                sensor_type="ft_sensor",
+                modality="force_torque",
+                frame_id=1,
+                time=FrameTime(host_time=1.0, monotonic_time=2.0, device_time=1.0),
+                payload={
+                    "force_torque": [1.0, 2.0, 3.0, 0.1, 0.2, 0.3],
+                    "force": [1.0, 2.0, 3.0],
+                    "torque": [0.1, 0.2, 0.3],
+                },
             )
-            writer.write_sensor_frame(
-                SensorFrame(
-                    sensor_name="imu",
-                    sensor_type="imu_sensor",
-                    modality="imu",
-                    frame_id=1,
-                    time=FrameTime(host_time=1.0, monotonic_time=2.0),
-                    payload={"acceleration": [0.1, 0.2, 0.3]},
-                )
+            ft_frame_1 = SensorFrame(
+                sensor_name="ft",
+                sensor_type="ft_sensor",
+                modality="force_torque",
+                frame_id=2,
+                time=FrameTime(host_time=1.1, monotonic_time=2.1, device_time=1.1),
+                payload={
+                    "force_torque": [1.2, 2.2, 3.2, 0.2, 0.3, 0.4],
+                    "force": [1.2, 2.2, 3.2],
+                    "torque": [0.2, 0.3, 0.4],
+                },
             )
+            imu_frame_0 = SensorFrame(
+                sensor_name="imu",
+                sensor_type="imu_sensor",
+                modality="imu",
+                frame_id=1,
+                time=FrameTime(host_time=1.0, monotonic_time=2.0, device_time=1.0),
+                payload={"acceleration": [0.1, 0.2, 0.3]},
+            )
+            imu_frame_1 = SensorFrame(
+                sensor_name="imu",
+                sensor_type="imu_sensor",
+                modality="imu",
+                frame_id=2,
+                time=FrameTime(host_time=1.1, monotonic_time=2.1, device_time=1.1),
+                payload={"acceleration": [0.4, 0.5, 0.6]},
+            )
+            realsense_frame_0 = SensorFrame(
+                sensor_name="realsense",
+                sensor_type="realsense",
+                modality="rgbd",
+                frame_id=10,
+                time=FrameTime(host_time=1.0, monotonic_time=2.0, device_time=1.0),
+                payload={"depth": np.full((2, 2), 1000, dtype=np.uint16)},
+            )
+            realsense_frame_1 = SensorFrame(
+                sensor_name="realsense",
+                sensor_type="realsense",
+                modality="rgbd",
+                frame_id=11,
+                time=FrameTime(host_time=1.1, monotonic_time=2.1, device_time=1.1),
+                payload={"depth": np.full((2, 2), 1010, dtype=np.uint16)},
+            )
+            motors_frame_0 = SensorFrame(
+                sensor_name="motors",
+                sensor_type="motors_sensor",
+                modality="motor_state",
+                frame_id=20,
+                time=FrameTime(host_time=1.0, monotonic_time=2.0, device_time=1.0),
+                payload={
+                    "motor_1": {"position": 1.0, "velocity": 0.0, "torque": 0.0},
+                    "motor_2": {"position": 4.0, "velocity": 5.0, "torque": 6.0},
+                },
+            )
+            motors_frame_1 = SensorFrame(
+                sensor_name="motors",
+                sensor_type="motors_sensor",
+                modality="motor_state",
+                frame_id=21,
+                time=FrameTime(host_time=1.1, monotonic_time=2.1, device_time=1.1),
+                payload={
+                    "motor_1": {"position": 1.2, "velocity": 0.0, "torque": 0.0},
+                    "motor_2": {"position": 4.3, "velocity": 5.1, "torque": 6.1},
+                },
+            )
+
+            for frame in (
+                ft_frame_0,
+                ft_frame_1,
+                imu_frame_0,
+                imu_frame_1,
+                realsense_frame_0,
+                realsense_frame_1,
+                motors_frame_0,
+                motors_frame_1,
+            ):
+                writer.write_sensor_frame(frame)
+
             writer.write_aligned_frame(
                 AlignedFrame(
                     sequence_id=0,
                     aligned_time=1.0,
                     frames={
-                        "ft": SensorFrame(
-                            sensor_name="ft",
-                            sensor_type="ft_sensor",
-                            modality="force_torque",
-                            frame_id=1,
-                            time=FrameTime(host_time=1.0, monotonic_time=2.0),
-                            payload={
-                                "force_torque": [1.0, 2.0, 3.0, 0.1, 0.2, 0.3],
-                                "force": [1.0, 2.0, 3.0],
-                                "torque": [0.1, 0.2, 0.3],
-                            },
-                        ),
-                        "imu": SensorFrame(
-                            sensor_name="imu",
-                            sensor_type="imu_sensor",
-                            modality="imu",
-                            frame_id=1,
-                            time=FrameTime(host_time=1.0, monotonic_time=2.0),
-                            payload={"acceleration": [0.1, 0.2, 0.3]},
-                        )
+                        "ft": ft_frame_0,
+                        "imu": imu_frame_0,
+                        "realsense": realsense_frame_0,
+                        "motors": motors_frame_0,
                     },
                     missing_sensors=[],
-                    age_by_sensor={"ft": 0.0, "imu": 0.0},
+                    age_by_sensor={"ft": 0.0, "imu": 0.0, "realsense": 0.0, "motors": 0.0},
                     metadata={
                         "gravity_compensation": {
                             "applied": True,
@@ -1023,6 +1076,20 @@ class SessionWriterTest(unittest.TestCase):
                             "gravity_force": [0.0, 0.0, -2.45],
                         }
                     },
+                )
+            )
+            writer.write_aligned_frame(
+                AlignedFrame(
+                    sequence_id=1,
+                    aligned_time=1.1,
+                    frames={
+                        "ft": ft_frame_1,
+                        "imu": imu_frame_1,
+                        "realsense": realsense_frame_1,
+                        "motors": motors_frame_1,
+                    },
+                    missing_sensors=[],
+                    age_by_sensor={"ft": 0.0, "imu": 0.0, "realsense": 0.0, "motors": 0.0},
                 )
             )
             writer.write_trajectory_frame(
@@ -1035,6 +1102,17 @@ class SessionWriterTest(unittest.TestCase):
                     tracking_state="OK",
                 )
             )
+            writer.write_trajectory_frame(
+                TrajectoryFrame(
+                    source="orbslam3",
+                    frame_id=2,
+                    time=FrameTime(host_time=1.1, monotonic_time=1.1, aligned_time=1.1),
+                    position=[1.5, 2.25, 3.5],
+                    quaternion=[0.7071067811865476, 0.0, 0.0, 0.7071067811865476],
+                    tracking_state="OK",
+                )
+            )
+            writer.close()
 
             rlds_result = RLDSSessionExporter().export(session.output_dir)
             lerobot_result = LeRobotSessionExporter().export(session.output_dir)
@@ -1052,10 +1130,190 @@ class SessionWriterTest(unittest.TestCase):
 
             import pyarrow.parquet as pq
             table = pq.read_table(lerobot_result.output_path / "data" / "chunk-000" / "file-000.parquet")
-            row = table.to_pylist()[0]
+            rows = table.to_pylist()
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
             self.assertEqual(row["observation.ft.force.0"], 1.0)
             self.assertEqual(row["observation.gravity_compensation.pure_force.2"], 0.4)
             self.assertEqual(row["observation.trajectory.position.1"], 2.0)
+            self.assertEqual(row["observation.motors.motor_2.position"], 4.0)
+            self.assertAlmostEqual(row["action.ee_delta.position.0"], 0.5)
+            self.assertAlmostEqual(row["action.ee_delta.position.1"], 0.25)
+            self.assertAlmostEqual(row["action.ee_delta.position.2"], 0.5)
+            self.assertAlmostEqual(row["action.ee_delta.quaternion.0"], 0.7071067811865476)
+            self.assertAlmostEqual(row["action.ee_delta.quaternion.1"], 0.0)
+            self.assertAlmostEqual(row["action.ee_delta.quaternion.2"], 0.0)
+            self.assertAlmostEqual(row["action.ee_delta.quaternion.3"], 0.7071067811865476)
+            self.assertAlmostEqual(row["action.gripper.position_delta"], 0.3)
+
+    def test_lerobot_export_skips_ineligible_action_samples(self) -> None:
+        def build_session(
+            output_root: str,
+            *,
+            include_next_trajectory: bool = True,
+            next_tracking_state: str = "OK",
+            include_next_motor_2: bool = True,
+        ) -> Path:
+            session = create_session_info(
+                output_root,
+                sensors={
+                    "realsense": {"sensor_type": "realsense", "modality": "rgbd"},
+                    "motors": {"sensor_type": "motors_sensor", "modality": "motor_state"},
+                },
+                config={"align_rate_hz": 30},
+            )
+            writer = SessionWriter(session)
+
+            realsense_frame_0 = SensorFrame(
+                sensor_name="realsense",
+                sensor_type="realsense",
+                modality="rgbd",
+                frame_id=1,
+                time=FrameTime(host_time=1.0, monotonic_time=1.0, device_time=1.0),
+                payload={"depth": np.full((2, 2), 1000, dtype=np.uint16)},
+            )
+            realsense_frame_1 = SensorFrame(
+                sensor_name="realsense",
+                sensor_type="realsense",
+                modality="rgbd",
+                frame_id=2,
+                time=FrameTime(host_time=1.1, monotonic_time=1.1, device_time=1.1),
+                payload={"depth": np.full((2, 2), 1010, dtype=np.uint16)},
+            )
+            motors_frame_0 = SensorFrame(
+                sensor_name="motors",
+                sensor_type="motors_sensor",
+                modality="motor_state",
+                frame_id=10,
+                time=FrameTime(host_time=1.0, monotonic_time=1.0, device_time=1.0),
+                payload={"motor_2": {"position": 3.0, "velocity": 0.0, "torque": 0.0}},
+            )
+            motors_payload_1 = {}
+            if include_next_motor_2:
+                motors_payload_1["motor_2"] = {"position": 3.2, "velocity": 0.0, "torque": 0.0}
+            motors_frame_1 = SensorFrame(
+                sensor_name="motors",
+                sensor_type="motors_sensor",
+                modality="motor_state",
+                frame_id=11,
+                time=FrameTime(host_time=1.1, monotonic_time=1.1, device_time=1.1),
+                payload=motors_payload_1,
+            )
+
+            for frame in (realsense_frame_0, realsense_frame_1, motors_frame_0, motors_frame_1):
+                writer.write_sensor_frame(frame)
+
+            writer.write_aligned_frame(
+                AlignedFrame(
+                    sequence_id=0,
+                    aligned_time=1.0,
+                    frames={"realsense": realsense_frame_0, "motors": motors_frame_0},
+                    missing_sensors=[],
+                    age_by_sensor={"realsense": 0.0, "motors": 0.0},
+                )
+            )
+            writer.write_aligned_frame(
+                AlignedFrame(
+                    sequence_id=1,
+                    aligned_time=1.1,
+                    frames={"realsense": realsense_frame_1, "motors": motors_frame_1},
+                    missing_sensors=[],
+                    age_by_sensor={"realsense": 0.0, "motors": 0.0},
+                )
+            )
+            writer.write_trajectory_frame(
+                TrajectoryFrame(
+                    source="orbslam3",
+                    frame_id=1,
+                    time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+                    position=[0.0, 0.0, 0.0],
+                    quaternion=[1.0, 0.0, 0.0, 0.0],
+                    tracking_state="OK",
+                )
+            )
+            if include_next_trajectory:
+                writer.write_trajectory_frame(
+                    TrajectoryFrame(
+                        source="orbslam3",
+                        frame_id=2,
+                        time=FrameTime(host_time=1.1, monotonic_time=1.1, aligned_time=1.1),
+                        position=[0.1, 0.0, 0.0],
+                        quaternion=[1.0, 0.0, 0.0, 0.0],
+                        tracking_state=next_tracking_state,
+                    )
+                )
+            writer.close()
+            return session.output_dir
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            single_step_session = create_session_info(
+                tmp_dir,
+                sensors={
+                    "realsense": {"sensor_type": "realsense", "modality": "rgbd"},
+                    "motors": {"sensor_type": "motors_sensor", "modality": "motor_state"},
+                },
+                config={"align_rate_hz": 30},
+            )
+            single_step_writer = SessionWriter(single_step_session)
+            realsense_frame = SensorFrame(
+                sensor_name="realsense",
+                sensor_type="realsense",
+                modality="rgbd",
+                frame_id=1,
+                time=FrameTime(host_time=1.0, monotonic_time=1.0, device_time=1.0),
+                payload={"depth": np.full((2, 2), 1000, dtype=np.uint16)},
+            )
+            motors_frame = SensorFrame(
+                sensor_name="motors",
+                sensor_type="motors_sensor",
+                modality="motor_state",
+                frame_id=2,
+                time=FrameTime(host_time=1.0, monotonic_time=1.0, device_time=1.0),
+                payload={"motor_2": {"position": 3.0, "velocity": 0.0, "torque": 0.0}},
+            )
+            single_step_writer.write_sensor_frame(realsense_frame)
+            single_step_writer.write_sensor_frame(motors_frame)
+            single_step_writer.write_aligned_frame(
+                AlignedFrame(
+                    sequence_id=0,
+                    aligned_time=1.0,
+                    frames={"realsense": realsense_frame, "motors": motors_frame},
+                    missing_sensors=[],
+                    age_by_sensor={"realsense": 0.0, "motors": 0.0},
+                )
+            )
+            single_step_writer.write_trajectory_frame(
+                TrajectoryFrame(
+                    source="orbslam3",
+                    frame_id=1,
+                    time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+                    position=[0.0, 0.0, 0.0],
+                    quaternion=[1.0, 0.0, 0.0, 0.0],
+                    tracking_state="OK",
+                )
+            )
+            single_step_writer.close()
+
+            import pyarrow.parquet as pq
+
+            result = LeRobotSessionExporter().export(single_step_session.output_dir)
+            rows = pq.read_table(result.output_path / "data" / "chunk-000" / "file-000.parquet").to_pylist()
+            self.assertEqual(rows, [])
+
+        scenarios = [
+            ("missing next trajectory", {"include_next_trajectory": False}),
+            ("missing next motor_2", {"include_next_motor_2": False}),
+            ("non OK trajectory", {"next_tracking_state": "LOST"}),
+        ]
+        for label, overrides in scenarios:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    session_dir = build_session(tmp_dir, **overrides)
+                    result = LeRobotSessionExporter().export(session_dir)
+                    import pyarrow.parquet as pq
+
+                    rows = pq.read_table(result.output_path / "data" / "chunk-000" / "file-000.parquet").to_pylist()
+                    self.assertEqual(rows, [])
 
     def test_export_csv_snapshot_with_compensation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

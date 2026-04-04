@@ -733,6 +733,86 @@ class AnnotationIntegrationTest(unittest.TestCase):
             finally:
                 running.close()
 
+    def test_annotation_web_server_prefers_standalone_imu_over_realsense_imu_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session = create_session_info(
+                tmp_dir,
+                sensors={
+                    "imu": {"sensor_type": "imu_sensor", "modality": "imu"},
+                    "realsense": {"sensor_type": "realsense", "modality": "rgbd"},
+                },
+                config={"align_rate_hz": 30},
+            )
+            writer = SessionWriter(session)
+
+            imu_frame = SensorFrame(
+                sensor_name="imu",
+                sensor_type="imu_sensor",
+                modality="imu",
+                frame_id=0,
+                time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+                payload={
+                    "acceleration": [0.1, 0.2, 9.8],
+                    "angular_velocity": [0.01, 0.02, 0.03],
+                    "quaternion": [1.0, 0.0, 0.0, 0.0],
+                },
+            )
+            realsense_frame = SensorFrame(
+                sensor_name="realsense",
+                sensor_type="realsense",
+                modality="rgbd",
+                frame_id=0,
+                time=FrameTime(host_time=1.0, monotonic_time=1.0, aligned_time=1.0),
+                payload={
+                    "depth": np.zeros((2, 2), dtype=np.uint16),
+                    "imu_samples": [
+                        {
+                            "sample_type": "accel",
+                            "frame_number": 10,
+                            "timestamp_ms": 1000.0,
+                            "x": 1.0,
+                            "y": 2.0,
+                            "z": 3.0,
+                        },
+                        {
+                            "sample_type": "gyro",
+                            "frame_number": 11,
+                            "timestamp_ms": 1001.0,
+                            "x": 4.0,
+                            "y": 5.0,
+                            "z": 6.0,
+                        },
+                    ],
+                    # Even if a RealSense payload contains IMU-like scalar keys,
+                    # the annotation page should not surface them as IMU curves.
+                    "acceleration": [99.0, 98.0, 97.0],
+                    "angular_velocity": [0.9, 0.8, 0.7],
+                },
+            )
+            writer.write_sensor_frame(imu_frame)
+            writer.write_sensor_frame(realsense_frame)
+            writer.write_aligned_frame(
+                AlignedFrame(
+                    sequence_id=0,
+                    aligned_time=1.0,
+                    frames={"imu": imu_frame, "realsense": realsense_frame},
+                    missing_sensors=[],
+                    age_by_sensor={"imu": 0.0, "realsense": 0.0},
+                )
+            )
+            writer.close()
+
+            running = start_annotation_server(session.output_dir, port=0)
+            try:
+                state_payload = json.loads(urlopen(f"{running.url}api/state").read().decode("utf-8"))
+                stream_ids = {item["id"] for item in state_payload["scalar_streams"]}
+                self.assertIn("imu.acceleration.0", stream_ids)
+                self.assertIn("imu.angular_velocity.2", stream_ids)
+                self.assertIn("imu.quaternion.3", stream_ids)
+                self.assertFalse(any(item.startswith("realsense.") for item in stream_ids))
+            finally:
+                running.close()
+
     def test_annotation_web_server_exposes_audio_as_summary_signals(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             session_dir = self._create_session_with_audio(tmp_dir)

@@ -1845,17 +1845,32 @@ class AnnotationWebApp:
                             value=value,
                         )
                     continue
-                flattened: dict[str, float] = {}
-                self._collect_scalar_values(frame.payload, prefix=sensor_name, output=flattened)
-                for key, value in flattened.items():
-                    self._append_scalar_point(
-                        series,
-                        key=key,
-                        sequence_id=sequence_id,
-                        aligned_time=record["aligned_time"],
-                        value=value,
-                    )
+                if frame.modality == "imu":
+                    imu_features = self._extract_imu_features(sensor_name, frame.payload)
+                    for key, value in imu_features.items():
+                        self._append_scalar_point(
+                            series,
+                            key=key,
+                            sequence_id=sequence_id,
+                            aligned_time=record["aligned_time"],
+                            value=value,
+                        )
+                    continue
+                # Keep scalar rendering limited to explicit signal modalities so
+                # RealSense-side IMU payloads never leak into the annotation UI.
+                continue
         return [series[key] for key in sorted(series.keys())]
+
+    def _extract_imu_features(self, sensor_name: str, payload: dict[str, Any]) -> dict[str, float]:
+        features: dict[str, float] = {}
+        for field_name in ("acceleration", "angular_velocity", "quaternion"):
+            values = payload.get(field_name)
+            if not isinstance(values, list):
+                continue
+            for index, value in enumerate(values):
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    features[f"{sensor_name}.{field_name}.{index}"] = float(value)
+        return features
 
     def _append_scalar_point(
         self,
