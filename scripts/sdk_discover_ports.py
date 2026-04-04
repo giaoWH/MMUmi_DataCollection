@@ -215,7 +215,7 @@ def set_sensor_port(config_payload: dict[str, object], spec: PortSensorSpec, por
 def set_sensor_config_value(
     config_payload: dict[str, object],
     spec: VisualSensorSpec,
-    value: str | int,
+    value: str | int | None,
 ) -> None:
     sensor_config = config_payload.get(spec.config_key)
     if not isinstance(sensor_config, dict):
@@ -438,14 +438,18 @@ def prompt_for_uvc_index(
         print("无效输入，请重新输入。")
 
 
-def prompt_for_realsense_serial(spec: VisualSensorSpec, devices: list[RealSenseDeviceInfo]) -> str | None:
+def prompt_for_realsense_serial(
+    spec: VisualSensorSpec,
+    devices: list[RealSenseDeviceInfo],
+) -> tuple[bool, str | None]:
     if not devices:
         print(f"未检测到 {spec.label}，保持原配置不变。")
-        return None
+        return False, None
     if len(devices) == 1:
         item = devices[0]
         print(f"自动识别到唯一的 {spec.label}: {item.name} ({item.serial_number})")
-        return item.serial_number
+        print(f"将 {spec.config_key}.{spec.config_field} 写回为 null，运行时自动选择该设备。")
+        return True, None
 
     print()
     print(f"检测到多个 {spec.label}，请选择要写入的 serial_number：")
@@ -454,14 +458,20 @@ def prompt_for_realsense_serial(spec: VisualSensorSpec, devices: list[RealSenseD
     while True:
         raw = input("请输入编号；输入 's' 跳过，'q' 退出: ").strip().lower()
         if raw == "s":
-            return None
+            return False, None
         if raw == "q":
             raise KeyboardInterrupt
         if raw.isdigit():
             index = int(raw)
             if 1 <= index <= len(devices):
-                return devices[index - 1].serial_number
+                return True, devices[index - 1].serial_number
         print("无效输入，请重新选择。")
+
+
+def format_resolved_value(value: str | int | None) -> str:
+    if value is None:
+        return "auto"
+    return str(value)
 
 
 def _discover_serial_assignments(
@@ -545,7 +555,7 @@ def _discover_visual_assignments(
     max_index: int,
     preview_sec: float,
     include_realsense_nodes: bool,
-) -> tuple[dict[str, str | int], list[str]]:
+) -> tuple[dict[str, str | int | None], list[str]]:
     steps, skipped = build_visual_discovery_plan(config_payload)
     if not steps:
         return {}, skipped
@@ -557,7 +567,7 @@ def _discover_visual_assignments(
     if skipped:
         print(f"以下已启用设备不参与视觉发现: {', '.join(skipped)}")
 
-    resolved_values: dict[str, str | int] = {}
+    resolved_values: dict[str, str | int | None] = {}
     used_uvc_indices: set[int] = set()
     cached_video_devices: list[VideoDeviceInfo] | None = None
 
@@ -566,8 +576,8 @@ def _discover_visual_assignments(
             devices = discover_realsense_devices()
             print()
             print_realsense_devices("当前 RealSense 设备：", devices)
-            serial_number = prompt_for_realsense_serial(spec, devices)
-            if serial_number is None:
+            should_update, serial_number = prompt_for_realsense_serial(spec, devices)
+            if not should_update:
                 continue
             set_sensor_config_value(config_payload, spec, serial_number)
             resolved_values[spec.sensor_key] = serial_number
@@ -663,7 +673,7 @@ def run_visual_discovery(
     print("视觉设备发现完成，已写回配置文件。")
     if resolved_values:
         for sensor_key, value in resolved_values.items():
-            print(f"  - {sensor_key}: {value}")
+            print(f"  - {sensor_key}: {format_resolved_value(value)}")
     else:
         print("  (没有更新任何设备配置)")
     if backup_path is not None:
@@ -721,7 +731,7 @@ def run_device_discovery(
     if resolved_visual:
         print("视觉设备：")
         for sensor_key, value in resolved_visual.items():
-            print(f"  - {sensor_key}: {value}")
+            print(f"  - {sensor_key}: {format_resolved_value(value)}")
     if not resolved_ports and not resolved_visual:
         print("  (没有更新任何设备配置)")
     if backup_path is not None:

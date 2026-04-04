@@ -7,7 +7,7 @@ import cv2
 
 def main():
     parser = argparse.ArgumentParser(description="测试 RGB 相机是否可用")
-    parser.add_argument("--device-index", type=int, default=0, help="相机设备编号")
+    parser.add_argument("--device-index", type=int, default=6, help="相机设备编号")
     parser.add_argument("--width", type=int, default=640, help="图像宽度")
     parser.add_argument("--height", type=int, default=480, help="图像高度")
     parser.add_argument("--fps", type=int, default=30, help="目标帧率")
