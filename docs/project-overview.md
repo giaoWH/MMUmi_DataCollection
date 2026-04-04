@@ -825,6 +825,14 @@ session_xxx/
 当前边界：
 
 - `lerobot` 当前已经支持自动读取 `session/annotations/`，并把 `session` / `span` / `keyframe` 标注映射到扁平字段
+- `lerobot` 当前默认导出为更适合直接训练消费的面向图像组织形式：
+  - `data/chunk-000/file-000.parquet` 中保留逐 step 的低维字段、`observation.state`、`action`、标注以及原始模态细节列
+  - 视觉模态会额外导出为 `observation.images.*` 字段，并把对应图像文件写入 `exports/lerobot/images/`
+  - 当前已覆盖的训练友好视觉字段包括 `camera`、`gelsight`、`realsense.color / depth / aligned_depth_to_color / ir1 / ir2`
+  - 麦克风音频会额外导出为 `observation.audios.microphone`，并把逐样本音频块写入 `exports/lerobot/audio/`
+  - `action` 会同时保留训练友好的致密向量 `action[8]`，以及可读性更强的 `action.ee_delta.*` / `action.gripper.position_delta`
+  - `observation.state` 会把当前 step 可数值化的低维观测按稳定顺序拼成一个向量；若某些字段在该 step 缺失，会按 `0.0` 填充，但原始缺失信息仍可通过明细列与 `missing_sensors` 判断
+  - 为了不丢失采集信息，原始 `observation.<sensor>.*` 扁平列仍然保留，因此导出结果同时兼顾训练直接读取和完整模态回溯
 - `rosbag2` 的真实验证仍依赖 ROS 2 环境
 - `validate` 当前主要检查导出目录、关键文件以及 step / frame 数等结构级 / 数量级一致性
 - `rosbag2` 在 `validate` 环节当前只检查输出目录存在且非空，不代表已经完成更强的语义一致性验证

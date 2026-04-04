@@ -1133,10 +1133,13 @@ class SessionWriterTest(unittest.TestCase):
             rows = table.to_pylist()
             self.assertEqual(len(rows), 1)
             row = rows[0]
+            info_payload = json.loads((lerobot_result.output_path / "meta" / "info.json").read_text(encoding="utf-8"))
             self.assertEqual(row["observation.ft.force.0"], 1.0)
             self.assertEqual(row["observation.gravity_compensation.pure_force.2"], 0.4)
             self.assertEqual(row["observation.trajectory.position.1"], 2.0)
             self.assertEqual(row["observation.motors.motor_2.position"], 4.0)
+            self.assertEqual(len(row["action"]), 8)
+            self.assertGreater(len(row["observation.state"]), 0)
             self.assertAlmostEqual(row["action.ee_delta.position.0"], 0.5)
             self.assertAlmostEqual(row["action.ee_delta.position.1"], 0.25)
             self.assertAlmostEqual(row["action.ee_delta.position.2"], 0.5)
@@ -1145,6 +1148,11 @@ class SessionWriterTest(unittest.TestCase):
             self.assertAlmostEqual(row["action.ee_delta.quaternion.2"], 0.0)
             self.assertAlmostEqual(row["action.ee_delta.quaternion.3"], 0.7071067811865476)
             self.assertAlmostEqual(row["action.gripper.position_delta"], 0.3)
+            self.assertIn("observation.images.realsense_depth", row)
+            self.assertEqual(info_payload["features"]["action"]["dtype"], "float32")
+            self.assertEqual(info_payload["features"]["observation.state"]["dtype"], "float32")
+            self.assertEqual(info_payload["features"]["observation.images.realsense_depth"]["dtype"], "image")
+            self.assertTrue((lerobot_result.output_path / row["observation.images.realsense_depth"]["path"]).exists())
 
     def test_lerobot_export_skips_ineligible_action_samples(self) -> None:
         def build_session(
@@ -1301,9 +1309,9 @@ class SessionWriterTest(unittest.TestCase):
             self.assertEqual(rows, [])
 
         scenarios = [
-            ("missing next trajectory", {"include_next_trajectory": False}),
-            ("missing next motor_2", {"include_next_motor_2": False}),
-            ("non OK trajectory", {"next_tracking_state": "LOST"}),
+            ("缺少下一步轨迹", {"include_next_trajectory": False}),
+            ("缺少下一步 motor_2", {"include_next_motor_2": False}),
+            ("轨迹状态不是 OK", {"next_tracking_state": "LOST"}),
         ]
         for label, overrides in scenarios:
             with self.subTest(label=label):
