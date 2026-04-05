@@ -22,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from sdk.annotations import AnnotationService, AnnotationSchema, load_annotation_schema
 from sdk.config import deep_merge, load_config_file
 from sdk.core import BufferedFrameAligner, SensorRegistry, SessionInfo, SystemClock, create_session_info
 from sdk.logging import build_logger
@@ -65,6 +66,7 @@ DEFAULT_RECORD_CONFIG_CANDIDATES = (
     REPO_ROOT / "configs" / "record.yml",
     REPO_ROOT / "configs" / "record.json",
 )
+DEFAULT_ANNOTATION_SCHEMA_PATH = REPO_ROOT / "configs" / "annotation_schema.yaml"
 
 KEY_SPACE = "space"
 KEY_ENTER = "enter"
@@ -73,6 +75,7 @@ KEY_CTRL_C = "ctrl_c"
 
 STATE_BOOTING = "booting"
 STATE_IDLE_READY = "idle_ready"
+STATE_READY_TO_RECORD = "ready_to_record"
 STATE_RECORDING = "recording"
 STATE_STOPPING = "stopping"
 STATE_REVIEW_STOPPED = "review_stopped"
@@ -142,6 +145,34 @@ class KeySource:
     def poll_key(self, timeout_sec: float = 0.0) -> str | None:
         raise NotImplementedError
 
+    def read_line(self, prompt: str = "") -> str | None:
+        if prompt:
+            print(prompt, end="", flush=True)
+        buffer: list[str] = []
+        while True:
+            if not is_running:
+                raise KeyboardInterrupt
+            raw_key = self.poll_key(timeout_sec=0.05)
+            if raw_key is None:
+                continue
+            if raw_key == "\x03":
+                raise KeyboardInterrupt
+            if raw_key == "\x1b":
+                print("")
+                return None
+            if raw_key in {"\r", "\n"}:
+                print("")
+                value = "".join(buffer).strip()
+                return value or None
+            if raw_key in {"\x7f", "\b"}:
+                if buffer:
+                    buffer.pop()
+                    print("\b \b", end="", flush=True)
+                continue
+            if raw_key.isprintable():
+                buffer.append(raw_key)
+                print(raw_key, end="", flush=True)
+
     def drain_pending_input(self) -> None:
         return None
 
@@ -194,18 +225,27 @@ class TimedKeySource(KeySource):
         self._time_fn = time_fn
         self._started_at = self._time_fn()
         self._index = 0
+        self._pending_chars = ""
 
     def poll_key(self, timeout_sec: float = 0.0) -> str | None:
         del timeout_sec
+        if self._pending_chars:
+            key = self._pending_chars[0]
+            self._pending_chars = self._pending_chars[1:]
+            return key
         if self._index >= len(self._timed_keys):
             return None
         scheduled_at_sec, key = self._timed_keys[self._index]
         if (self._time_fn() - self._started_at) < scheduled_at_sec:
             return None
         self._index += 1
-        return key
+        if not key:
+            return None
+        self._pending_chars = key[1:]
+        return key[0]
 
     def drain_pending_input(self) -> None:
+        self._pending_chars = ""
         elapsed = self._time_fn() - self._started_at
         while self._index < len(self._timed_keys):
             scheduled_at_sec, _key = self._timed_keys[self._index]
@@ -801,6 +841,44 @@ def _warn_deprecated_trajectory(config: RecorderConfig, logger: logging.Logger |
         logger.warning(warning_message)
 
 
+def _load_interactive_annotation_schema() -> AnnotationSchema:
+    schema_path = DEFAULT_ANNOTATION_SCHEMA_PATH if DEFAULT_ANNOTATION_SCHEMA_PATH.exists() else None
+    return load_annotation_schema(str(schema_path) if schema_path is not None else None)
+
+
+def _validate_interactive_annotation_schema(schema: AnnotationSchema) -> None:
+    for field in schema.fields_for_scope("session"):
+        if field.id != "task_name":
+            continue
+        if field.type != "string":
+            raise RuntimeError("交互式录制要求 session.task_name 为 string 类型")
+        return
+    raise RuntimeError("交互式录制要求 annotation schema 中存在 session.task_name 字段")
+
+
+def _prompt_task_name(key_source: KeySource) -> str | None:
+    print("")
+    print("=== Session Annotation ===")
+    print("请输入 task name，按 Enter 确认。空值或 Esc 取消本次准备。")
+    task_name = key_source.read_line("task_name> ")
+    if task_name is None:
+        print("已取消本次 session 准备。按空格重新填写 task name。")
+        return None
+    print(f"已记录 task name: {task_name}")
+    print("按空格开始录制，按 q 取消本次准备，按 Ctrl+C 退出。")
+    return task_name
+
+
+def _write_session_annotation(
+    *,
+    session_dir: Path,
+    schema: AnnotationSchema,
+    task_name: str,
+) -> None:
+    service = AnnotationService(session_dir, schema=schema)
+    service.upsert_session_annotation({"task_name": task_name})
+
+
 def _build_shared_calibration_notes(
     calibration_notes: dict[str, object],
     startup_discard_notes: dict[str, object],
@@ -1253,6 +1331,7 @@ def _run_interactive(
     active_session: RecordingSession | None = None
     stopping_session: StoppingSession | None = None
     stopped_session: StoppedSession | None = None
+    pending_task_name: str | None = None
     registry_started = False
     exit_code = 0
     exit_after_stopping = False
@@ -1269,6 +1348,8 @@ def _run_interactive(
             print(message)
             run_logger.warning(message)
         _warn_deprecated_trajectory(config, run_logger)
+        annotation_schema = _load_interactive_annotation_schema()
+        _validate_interactive_annotation_schema(annotation_schema)
 
         registry.start_all()
         registry_started = True
@@ -1307,7 +1388,8 @@ def _run_interactive(
 
         print("")
         print("所有传感器已就绪，校准完成。")
-        print("操作说明: 空格开始/停止，Enter 保存当前 session，q 放弃当前 session，Ctrl+C 退出")
+        print("操作说明: 第一次空格填写 task name，第二次空格开始录制，第三次空格结束录制")
+        print("录制结束后按 Enter 保存当前 session，按 q 放弃当前 session，按 Ctrl+C 退出")
         state = STATE_IDLE_READY
 
         while True:
@@ -1457,6 +1539,20 @@ def _run_interactive(
 
             if state == STATE_IDLE_READY:
                 if action == KEY_SPACE:
+                    try:
+                        pending_task_name = _prompt_task_name(key_source)
+                    except KeyboardInterrupt:
+                        pending_task_name = None
+                        is_running = False
+                        continue
+                    if pending_task_name is not None:
+                        state = STATE_READY_TO_RECORD
+                elif action == KEY_ENTER:
+                    print("\n当前还没有待保存的 session。先按空格填写 task name。")
+                elif action == KEY_QUIT_SESSION:
+                    print("\n当前没有可放弃的 session。使用 Ctrl+C 退出。")
+            elif state == STATE_READY_TO_RECORD:
+                if action == KEY_SPACE:
                     session_index += 1
                     active_session = _start_interactive_session(
                         config=config,
@@ -1466,11 +1562,24 @@ def _run_interactive(
                         shared_calibration=shared_calibration,
                         session_index=session_index,
                     )
+                    try:
+                        _write_session_annotation(
+                            session_dir=active_session.session_info.output_dir,
+                            schema=annotation_schema,
+                            task_name=pending_task_name or "",
+                        )
+                    except Exception:
+                        active_session.writer.close()
+                        shutil.rmtree(active_session.session_info.output_dir, ignore_errors=True)
+                        raise
+                    pending_task_name = None
                     state = STATE_RECORDING
                 elif action == KEY_ENTER:
-                    print("\n当前没有已停止待确认的 session。按空格开始录制。")
+                    print("\n已填写 task name。按空格开始录制，按 q 取消本次准备。")
                 elif action == KEY_QUIT_SESSION:
-                    print("\n当前没有可放弃的 session。使用 Ctrl+C 退出。")
+                    pending_task_name = None
+                    state = STATE_IDLE_READY
+                    print("\n已取消本次 session 准备。按空格重新填写 task name。")
             elif state == STATE_RECORDING and active_session is not None:
                 if action == KEY_SPACE:
                     stop_requested_monotonic_time_ns = time.perf_counter_ns()

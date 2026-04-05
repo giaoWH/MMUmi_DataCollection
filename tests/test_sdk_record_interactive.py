@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts import sdk_record
+from sdk.annotations import AnnotationField, AnnotationSchema
 from sdk.core import SensorRegistry
 from sdk.sensors.base import SensorAdapter
 from sdk.storage import SessionReader
@@ -100,6 +101,9 @@ class FailingSensor(SensorAdapter):
 
 
 class InteractiveRecordTest(unittest.TestCase):
+    def _load_session_annotation(self, session_dir: Path) -> dict[str, object]:
+        return json.loads((session_dir / "annotations" / "session.json").read_text(encoding="utf-8"))
+
     def test_interactive_mode_can_save_multiple_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_root = Path(tmp_dir) / "sessions"
@@ -110,12 +114,16 @@ class InteractiveRecordTest(unittest.TestCase):
                 key_source=sdk_record.TimedKeySource(
                     [
                         (0.05, " "),
+                        (0.06, "pick_cube\n"),
                         (0.20, " "),
-                        (0.35, "\n"),
-                        (0.45, " "),
+                        (0.35, " "),
+                        (0.50, "\n"),
                         (0.60, " "),
-                        (0.75, "\n"),
-                        (0.95, "\x03"),
+                        (0.61, "place_cube\n"),
+                        (0.75, " "),
+                        (0.90, " "),
+                        (1.05, "\n"),
+                        (1.20, "\x03"),
                     ]
                 ),
             )
@@ -123,6 +131,8 @@ class InteractiveRecordTest(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             sessions = sorted(output_root.glob("session_*"))
             self.assertEqual(len(sessions), 2)
+            self.assertEqual(self._load_session_annotation(sessions[0])["data"]["task_name"], "pick_cube")
+            self.assertEqual(self._load_session_annotation(sessions[1])["data"]["task_name"], "place_cube")
 
             first_reader = SessionReader(sessions[0])
             second_reader = SessionReader(sessions[1])
@@ -164,9 +174,11 @@ class InteractiveRecordTest(unittest.TestCase):
                 key_source=sdk_record.TimedKeySource(
                     [
                         (0.05, " "),
+                        (0.06, "discard_me\n"),
                         (0.20, " "),
-                        (0.35, "q"),
-                        (0.55, "\x03"),
+                        (0.35, " "),
+                        (0.50, "q"),
+                        (0.70, "\x03"),
                     ]
                 ),
             )
@@ -184,7 +196,9 @@ class InteractiveRecordTest(unittest.TestCase):
                 key_source=sdk_record.TimedKeySource(
                     [
                         (0.05, " "),
-                        (0.18, "\x03"),
+                        (0.06, "ctrl_c_task\n"),
+                        (0.18, " "),
+                        (0.30, "\x03"),
                     ]
                 ),
             )
@@ -221,9 +235,11 @@ class InteractiveRecordTest(unittest.TestCase):
                         key_source=sdk_record.TimedKeySource(
                             [
                                 (0.05, " "),
+                                (0.06, "slow_stop\n"),
                                 (0.20, " "),
-                                (0.21, "\n"),
-                                (0.60, "\x03"),
+                                (0.35, " "),
+                                (0.36, "\n"),
+                                (0.75, "\x03"),
                             ]
                         ),
                     )
@@ -254,8 +270,10 @@ class InteractiveRecordTest(unittest.TestCase):
                     key_source=sdk_record.TimedKeySource(
                         [
                             (0.05, " "),
+                            (0.06, "ctrl_c_while_stopping\n"),
                             (0.20, " "),
-                            (0.21, "\x03"),
+                            (0.35, " "),
+                            (0.60, "\x03"),
                         ]
                     ),
                 )
@@ -278,7 +296,71 @@ class InteractiveRecordTest(unittest.TestCase):
             with patch.object(sdk_record, "build_registry", return_value=registry):
                 exit_code = sdk_record.main(
                     ["--config", str(config_path)],
-                    key_source=sdk_record.TimedKeySource([(0.05, " ")]),
+                    key_source=sdk_record.TimedKeySource(
+                        [
+                            (0.05, " "),
+                            (0.06, "sensor_failure\n"),
+                            (0.10, " "),
+                        ]
+                    ),
+                )
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(sorted(output_root.glob("session_*")), [])
+
+    def test_interactive_mode_does_not_create_session_before_record_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_root = Path(tmp_dir) / "sessions"
+            config_path = _write_interactive_config(tmp_dir, output_root=output_root)
+
+            exit_code = sdk_record.main(
+                ["--config", str(config_path)],
+                key_source=sdk_record.TimedKeySource(
+                    [
+                        (0.05, " "),
+                        (0.06, "prepare_only\n"),
+                        (0.25, "\x03"),
+                    ]
+                ),
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(sorted(output_root.glob("session_*")), [])
+
+    def test_interactive_mode_cancels_empty_task_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_root = Path(tmp_dir) / "sessions"
+            config_path = _write_interactive_config(tmp_dir, output_root=output_root)
+
+            exit_code = sdk_record.main(
+                ["--config", str(config_path)],
+                key_source=sdk_record.TimedKeySource(
+                    [
+                        (0.05, " "),
+                        (0.06, "\n"),
+                        (0.20, "\x03"),
+                    ]
+                ),
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(sorted(output_root.glob("session_*")), [])
+
+    def test_interactive_mode_fails_when_task_name_schema_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_root = Path(tmp_dir) / "sessions"
+            config_path = _write_interactive_config(tmp_dir, output_root=output_root)
+            invalid_schema = AnnotationSchema(
+                version="1.0.0",
+                fields=[
+                    AnnotationField(id="instruction", scope="session", type="string", label="Instruction"),
+                ],
+            )
+
+            with patch.object(sdk_record, "_load_interactive_annotation_schema", return_value=invalid_schema):
+                exit_code = sdk_record.main(
+                    ["--config", str(config_path)],
+                    key_source=sdk_record.TimedKeySource([(0.05, "\x03")]),
                 )
 
             self.assertEqual(exit_code, 1)
