@@ -22,13 +22,13 @@ enable_camera: true
 enable_gelsight: true
 ft:
   name: ft
-  port: /dev/ttyACM0
+  port: /dev/ttyACM2
   baudrate: 115200
   calibration_duration: 3.0
   enable_torque: true
 imu:
   name: imu
-  port: /dev/ttyUSB0
+  port: /dev/ttyUSB1
   baudrate: 115200
 realsense:
   name: realsense
@@ -64,7 +64,7 @@ realsense:
     pointcloud_colored: false
 motors:
   name: motors
-  port: /dev/ttyACM1
+  port: /dev/ttyACM3
   baudrate: 115200
   calibration_duration: 3.0
   enable_motor_1: false
@@ -86,7 +86,7 @@ camera:
   frame_queue_size: 128
 gelsight:
   name: gelsight
-  device_index: 8
+  device_index: 9
   width: 320
   height: 240
   fps: 25
@@ -107,3 +107,17 @@ trajectory:
   source_name: orbslam3
   bundle_dir: null
   env: {}
+trajectory_qc:
+  enabled: true
+  output_dir: quality
+  output_filename: trajectory_qc.json
+  thresholds:
+    min_trajectory_coverage_ratio: 0.95
+    min_action_eligible_ratio: 0.9
+    max_fail_step_ratio: 0.1
+    max_translation_delta_m: 0.15
+    max_rotation_delta_deg: 45.0
+    max_translation_speed_mps: 1.0
+    max_rotation_speed_degps: 360.0
+    max_translation_accel_mps2: 10.0
+    max_rotation_accel_degps2: 2000.0

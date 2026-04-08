@@ -32,6 +32,25 @@ class SessionReader:
     def has_annotations(self) -> bool:
         return self.annotations_dir().exists()
 
+    def quality_dir(self) -> Path:
+        return self.session_dir / "quality"
+
+    def trajectory_qc_report_path(self) -> Path | None:
+        default_path = self.quality_dir() / "trajectory_qc.json"
+        if default_path.exists():
+            return default_path
+        for candidate in self.session_dir.rglob("*.json"):
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if _looks_like_trajectory_qc_report(payload):
+                return candidate
+        return None
+
+    def has_trajectory_qc_report(self) -> bool:
+        return self.trajectory_qc_report_path() is not None
+
     def summary(self) -> dict[str, Any]:
         payload = {
             "schema_version": self.manifest.schema_version,
@@ -43,6 +62,8 @@ class SessionReader:
         }
         if self.has_annotations():
             payload["annotation_summary"] = self.annotation_summary()
+        if self.has_trajectory_qc_report():
+            payload["trajectory_qc_summary"] = self.trajectory_qc_summary()
         return payload
 
     def load_annotation_bundle(self) -> dict[str, Any] | None:
@@ -90,6 +111,31 @@ class SessionReader:
 
         service = AnnotationService(self.session_dir)
         return service.summary()
+
+    def load_trajectory_qc_report(self) -> dict[str, Any] | None:
+        path = self.trajectory_qc_report_path()
+        if path is None:
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def trajectory_qc_summary(self) -> dict[str, Any]:
+        report = self.load_trajectory_qc_report()
+        report_path = self.trajectory_qc_report_path()
+        if report is None:
+            return {
+                "exists": False,
+                "path": None,
+                "session_status": None,
+                "summary": None,
+                "session_flags": [],
+            }
+        return {
+            "exists": True,
+            "path": str(path_relative_to_session(self.session_dir, report_path)) if report_path is not None else None,
+            "session_status": report.get("session_status"),
+            "summary": report.get("summary"),
+            "session_flags": report.get("session_flags", []),
+        }
 
     def iter_sensor_frames(
         self,
@@ -255,3 +301,17 @@ class SessionReader:
         if isinstance(value, list):
             return [self._deserialize_value(item, load_payload=load_payload) for item in value]
         return value
+
+
+def path_relative_to_session(session_dir: Path, path: Path) -> Path:
+    try:
+        return path.relative_to(session_dir)
+    except ValueError:
+        return path
+
+
+def _looks_like_trajectory_qc_report(payload: Any) -> bool:
+    return (
+        isinstance(payload, dict)
+        and {"session_status", "summary", "thresholds", "step_results"} <= set(payload.keys())
+    )
