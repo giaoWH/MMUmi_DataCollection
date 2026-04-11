@@ -24,10 +24,13 @@ def create_session_info(
     sensors: dict[str, dict[str, object]],
     config: dict[str, object],
     notes: dict[str, object] | None = None,
+    session_name: str | None = None,
 ) -> SessionInfo:
     started_at = datetime.now().timestamp()
-    session_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    output_dir = Path(output_root) / f"session_{session_id}"
+    default_session_name = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+    requested_name = (session_name or "").strip() or default_session_name
+    session_id = _resolve_unique_session_name(Path(output_root), requested_name)
+    output_dir = Path(output_root) / session_id
     return SessionInfo(
         schema_version=SDK_SCHEMA_VERSION,
         session_id=session_id,
@@ -37,3 +40,14 @@ def create_session_info(
         config=config,
         notes=notes or {},
     )
+
+
+def _resolve_unique_session_name(output_root: Path, requested_name: str) -> str:
+    if not (output_root / requested_name).exists():
+        return requested_name
+    suffix = 2
+    while True:
+        candidate = f"{requested_name}-{suffix}"
+        if not (output_root / candidate).exists():
+            return candidate
+        suffix += 1

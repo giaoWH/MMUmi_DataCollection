@@ -444,6 +444,7 @@ UMI_DataCollection/
 │   ├── orbslam3/
 │   └── record.yaml
 ├── docs/
+│   ├── session-data-layout.md
 │   ├── orbslam3-io-contract.md
 │   └── project-overview.md
 ├── plan.md

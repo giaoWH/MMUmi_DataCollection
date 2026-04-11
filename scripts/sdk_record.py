@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import logging
@@ -191,6 +192,7 @@ class TerminalKeySource(KeySource):
         # 更适合一边单键交互、一边持续打印状态。
         tty.setcbreak(self._fd)
         self._closed = False
+        self._decoder = codecs.getincrementaldecoder("utf-8")()
 
     def poll_key(self, timeout_sec: float = 0.0) -> str | None:
         if self._closed:
@@ -201,9 +203,11 @@ class TerminalKeySource(KeySource):
         data = os.read(self._fd, 1)
         if not data:
             return None
-        return data.decode("utf-8", errors="ignore")
+        decoded = self._decoder.decode(data, final=False)
+        return decoded or None
 
     def drain_pending_input(self) -> None:
+        self._decoder.reset()
         while True:
             ready, _, _ = select.select([self._fd], [], [], 0.0)
             if not ready:
@@ -215,6 +219,7 @@ class TerminalKeySource(KeySource):
     def close(self) -> None:
         if self._closed:
             return
+        self._decoder.reset()
         termios.tcsetattr(self._fd, termios.TCSADRAIN, self._original_mode)
         self._closed = True
 
@@ -859,7 +864,7 @@ def _validate_interactive_annotation_schema(schema: AnnotationSchema) -> None:
 def _prompt_task_name(key_source: KeySource) -> str | None:
     print("")
     print("=== Session Annotation ===")
-    print("请输入 task name，按 Enter 确认。空值或 Esc 取消本次准备。")
+    print("请输入 task name（支持中文），按 Enter 确认。空值或 Esc 取消本次准备。")
     task_name = key_source.read_line("task_name> ")
     if task_name is None:
         print("已取消本次 session 准备。按空格重新填写 task name。")
@@ -894,6 +899,7 @@ def _create_session_info(
     config: RecorderConfig,
     config_path: Path | None,
     registry: SensorRegistry,
+    task_name: str | None = None,
     record_run_id: str | None = None,
     shared_calibration: dict[str, object] | None = None,
     session_index: int | None = None,
@@ -917,7 +923,26 @@ def _create_session_info(
         sensors=registry.get_metadata(),
         config=asdict(config),
         notes=notes,
+        session_name=_build_interactive_session_name(task_name) if task_name is not None else None,
     )
+
+
+def _build_interactive_session_name(task_name: str) -> str:
+    normalized_task_name = _normalize_task_name_for_session_name(task_name)
+    date_str = datetime.now().strftime("%Y%m%d")
+    return f"{normalized_task_name}-{date_str}"
+
+
+def _normalize_task_name_for_session_name(task_name: str) -> str:
+    collapsed = " ".join(task_name.strip().split())
+    sanitized_chars: list[str] = []
+    for char in collapsed:
+        if char in {"/", "\\"} or ord(char) < 32:
+            sanitized_chars.append("-")
+            continue
+        sanitized_chars.append(char)
+    normalized = "".join(sanitized_chars).strip(" .-")
+    return normalized or "session"
 
 
 def _create_session_logger(session_info: SessionInfo) -> logging.Logger:
@@ -1061,6 +1086,7 @@ def _start_interactive_session(
     config: RecorderConfig,
     config_path: Path | None,
     registry: SensorRegistry,
+    task_name: str,
     record_run_id: str,
     shared_calibration: dict[str, object],
     session_index: int,
@@ -1071,6 +1097,7 @@ def _start_interactive_session(
         config=config,
         config_path=config_path,
         registry=registry,
+        task_name=task_name,
         record_run_id=record_run_id,
         shared_calibration=shared_calibration,
         session_index=session_index,
@@ -1558,6 +1585,7 @@ def _run_interactive(
                         config=config,
                         config_path=config_path,
                         registry=registry,
+                        task_name=pending_task_name or "",
                         record_run_id=record_run_id,
                         shared_calibration=shared_calibration,
                         session_index=session_index,

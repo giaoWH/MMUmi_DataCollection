@@ -101,6 +101,11 @@ class FailingSensor(SensorAdapter):
 
 
 class InteractiveRecordTest(unittest.TestCase):
+    def _list_session_dirs(self, output_root: Path) -> list[Path]:
+        if not output_root.exists():
+            return []
+        return sorted(path for path in output_root.iterdir() if path.is_dir())
+
     def _load_session_annotation(self, session_dir: Path) -> dict[str, object]:
         return json.loads((session_dir / "annotations" / "session.json").read_text(encoding="utf-8"))
 
@@ -129,8 +134,10 @@ class InteractiveRecordTest(unittest.TestCase):
             )
 
             self.assertEqual(exit_code, 0)
-            sessions = sorted(output_root.glob("session_*"))
+            sessions = self._list_session_dirs(output_root)
             self.assertEqual(len(sessions), 2)
+            self.assertTrue(sessions[0].name.startswith("pick_cube-"))
+            self.assertTrue(sessions[1].name.startswith("place_cube-"))
             self.assertEqual(self._load_session_annotation(sessions[0])["data"]["task_name"], "pick_cube")
             self.assertEqual(self._load_session_annotation(sessions[1])["data"]["task_name"], "place_cube")
 
@@ -184,7 +191,7 @@ class InteractiveRecordTest(unittest.TestCase):
             )
 
             self.assertEqual(exit_code, 0)
-            self.assertEqual(sorted(output_root.glob("session_*")), [])
+            self.assertEqual(self._list_session_dirs(output_root), [])
 
     def test_interactive_mode_discards_active_session_on_ctrl_c(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -204,7 +211,7 @@ class InteractiveRecordTest(unittest.TestCase):
             )
 
             self.assertEqual(exit_code, 0)
-            self.assertEqual(sorted(output_root.glob("session_*")), [])
+            self.assertEqual(self._list_session_dirs(output_root), [])
 
     def test_interactive_mode_fails_fast_without_tty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -215,7 +222,7 @@ class InteractiveRecordTest(unittest.TestCase):
                 exit_code = sdk_record.main(["--config", str(config_path)])
 
             self.assertEqual(exit_code, 1)
-            self.assertEqual(sorted(output_root.glob("session_*")), [])
+            self.assertEqual(self._list_session_dirs(output_root), [])
 
     def test_interactive_mode_shows_stopping_message_and_drops_early_enter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -246,7 +253,7 @@ class InteractiveRecordTest(unittest.TestCase):
 
             output = captured.getvalue()
             self.assertEqual(exit_code, 0)
-            self.assertEqual(sorted(output_root.glob("session_*")), [])
+            self.assertEqual(self._list_session_dirs(output_root), [])
             self.assertIn("停止中，正在收尾写盘，请稍候...", output)
             self.assertIn("session 已停止。按 Enter 保存，按 q 放弃，按 Ctrl+C 退出。", output)
             self.assertLess(
@@ -279,7 +286,7 @@ class InteractiveRecordTest(unittest.TestCase):
                 )
 
             self.assertEqual(exit_code, 0)
-            self.assertEqual(sorted(output_root.glob("session_*")), [])
+            self.assertEqual(self._list_session_dirs(output_root), [])
 
     def test_interactive_mode_aborts_when_sensor_fails_mid_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -306,7 +313,7 @@ class InteractiveRecordTest(unittest.TestCase):
                 )
 
             self.assertEqual(exit_code, 1)
-            self.assertEqual(sorted(output_root.glob("session_*")), [])
+            self.assertEqual(self._list_session_dirs(output_root), [])
 
     def test_interactive_mode_does_not_create_session_before_record_start(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -325,7 +332,7 @@ class InteractiveRecordTest(unittest.TestCase):
             )
 
             self.assertEqual(exit_code, 0)
-            self.assertEqual(sorted(output_root.glob("session_*")), [])
+            self.assertEqual(self._list_session_dirs(output_root), [])
 
     def test_interactive_mode_cancels_empty_task_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -344,7 +351,7 @@ class InteractiveRecordTest(unittest.TestCase):
             )
 
             self.assertEqual(exit_code, 0)
-            self.assertEqual(sorted(output_root.glob("session_*")), [])
+            self.assertEqual(self._list_session_dirs(output_root), [])
 
     def test_interactive_mode_fails_when_task_name_schema_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -364,4 +371,29 @@ class InteractiveRecordTest(unittest.TestCase):
                 )
 
             self.assertEqual(exit_code, 1)
-            self.assertEqual(sorted(output_root.glob("session_*")), [])
+            self.assertEqual(self._list_session_dirs(output_root), [])
+
+    def test_interactive_mode_uses_chinese_task_name_for_session_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_root = Path(tmp_dir) / "sessions"
+            config_path = _write_interactive_config(tmp_dir, output_root=output_root)
+
+            exit_code = sdk_record.main(
+                ["--config", str(config_path)],
+                key_source=sdk_record.TimedKeySource(
+                    [
+                        (0.05, " "),
+                        (0.06, "抓取方块\n"),
+                        (0.20, " "),
+                        (0.35, " "),
+                        (0.50, "\n"),
+                        (0.70, "\x03"),
+                    ]
+                ),
+            )
+
+            self.assertEqual(exit_code, 0)
+            sessions = self._list_session_dirs(output_root)
+            self.assertEqual(len(sessions), 1)
+            self.assertRegex(sessions[0].name, r"^抓取方块-\d{8}$")
+            self.assertEqual(self._load_session_annotation(sessions[0])["data"]["task_name"], "抓取方块")
