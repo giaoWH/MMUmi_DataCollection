@@ -191,11 +191,7 @@ session_20260411_153045_123456/
     "device_time": 3.233,
     "device_time_ns": 3233000000,
     "aligned_time": 1712811045.100,
-    "aligned_time_ns": 1712811045100000000,
-    "host_arrival_time": 1712811045.124,
-    "host_arrival_time_ns": 1712811045124000000,
-    "host_read_start_time_ns": 1712811045123100000,
-    "host_read_end_time_ns": 1712811045123900000
+    "aligned_time_ns": 1712811045100000000
   },
   "payload": {
     "...": "..."
@@ -235,10 +231,6 @@ session_20260411_153045_123456/
   - 设备侧时间，若设备支持则会填写
 - `aligned_time_ns`
   - 对齐后时间轴对应时间
-- `host_arrival_time_ns`
-  - 数据到达主机的时间
-- `host_read_start_time_ns` / `host_read_end_time_ns`
-  - 主机读该数据的起止时间
 
 建议：
 
@@ -475,9 +467,7 @@ session_20260411_153045_123456/
       "monotonic_time": 8123.2,
       "monotonic_time_ns": 8123200000000,
       "device_time": 3.100,
-      "device_time_ns": 3100000000,
-      "host_arrival_time": 1712811045.100,
-      "host_arrival_time_ns": 1712811045100000000
+      "device_time_ns": 3100000000
     }
   },
   "metadata": {
@@ -787,4 +777,3 @@ print(depth.shape, depth.dtype)
 - 用 `streams/<sensor>/frames.jsonl` 看原始流
 - 用 `SessionReader` 解码 `mp4_frame` / `mp4_audio` / `png` / `npy`
 - 把 `trajectory/`、`annotations/`、`quality/`、`exports/` 都视为“附加层”，不要和原始采集真源混淆
-

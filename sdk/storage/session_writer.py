@@ -189,10 +189,6 @@ class SessionWriter:
                 "device_time_ns": frame.time.device_time_ns,
                 "aligned_time": frame.time.aligned_time,
                 "aligned_time_ns": frame.time.aligned_time_ns,
-                "host_arrival_time": frame.time.host_arrival_time,
-                "host_arrival_time_ns": frame.time.host_arrival_time_ns,
-                "host_read_start_time_ns": frame.time.host_read_start_time_ns,
-                "host_read_end_time_ns": frame.time.host_read_end_time_ns,
             },
             "payload": self._serialize_payload(
                 sensor_dir=sensor_dir,
@@ -272,8 +268,6 @@ class SessionWriter:
                     "monotonic_time_ns": frame.time.monotonic_time_ns,
                     "device_time": frame.time.device_time,
                     "device_time_ns": frame.time.device_time_ns,
-                    "host_arrival_time": frame.time.host_arrival_time,
-                    "host_arrival_time_ns": frame.time.host_arrival_time_ns,
                 }
                 for name, frame in aligned.frames.items()
             },
@@ -294,10 +288,6 @@ class SessionWriter:
                 "device_time_ns": frame.time.device_time_ns,
                 "aligned_time": frame.time.aligned_time,
                 "aligned_time_ns": frame.time.aligned_time_ns,
-                "host_arrival_time": frame.time.host_arrival_time,
-                "host_arrival_time_ns": frame.time.host_arrival_time_ns,
-                "host_read_start_time_ns": frame.time.host_read_start_time_ns,
-                "host_read_end_time_ns": frame.time.host_read_end_time_ns,
             },
             "position": frame.position,
             "quaternion": frame.quaternion,

@@ -180,9 +180,10 @@ class SessionWriterTest(unittest.TestCase):
             self.assertEqual(record["payload"]["acceleration"], [1.0, 2.0, 3.0])
             self.assertEqual(record["time"]["host_time_ns"], 1_000_000_000)
             self.assertEqual(record["time"]["monotonic_time_ns"], 2_000_000_000)
-            self.assertEqual(record["time"]["host_arrival_time_ns"], 1_000_200_000)
-            self.assertEqual(record["time"]["host_read_start_time_ns"], 999_900_000)
-            self.assertEqual(record["time"]["host_read_end_time_ns"], 1_000_100_000)
+            self.assertNotIn("host_arrival_time", record["time"])
+            self.assertNotIn("host_arrival_time_ns", record["time"])
+            self.assertNotIn("host_read_start_time_ns", record["time"])
+            self.assertNotIn("host_read_end_time_ns", record["time"])
 
             depth_path = Path(session.output_dir) / record["payload"]["depth"]["path"]
             self.assertTrue(depth_path.exists())
@@ -192,9 +193,10 @@ class SessionWriterTest(unittest.TestCase):
             self.assertEqual(loaded_frame.payload["acceleration"], [1.0, 2.0, 3.0])
             self.assertEqual(loaded_frame.time.host_time_ns, 1_000_000_000)
             self.assertEqual(loaded_frame.time.monotonic_time_ns, 2_000_000_000)
-            self.assertEqual(loaded_frame.time.host_arrival_time_ns, 1_000_200_000)
-            self.assertEqual(loaded_frame.time.host_read_start_time_ns, 999_900_000)
-            self.assertEqual(loaded_frame.time.host_read_end_time_ns, 1_000_100_000)
+            self.assertIsNone(loaded_frame.time.host_arrival_time)
+            self.assertIsNone(loaded_frame.time.host_arrival_time_ns)
+            self.assertIsNone(loaded_frame.time.host_read_start_time_ns)
+            self.assertIsNone(loaded_frame.time.host_read_end_time_ns)
             np.testing.assert_array_equal(
                 loaded_frame.payload["depth"],
                 np.ones((2, 2), dtype=np.uint16),

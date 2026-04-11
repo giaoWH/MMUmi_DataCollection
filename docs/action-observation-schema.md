@@ -373,9 +373,6 @@ LeRobot 导出字段：
 - `host_time_ns`
 - `monotonic_time_ns`
 - `device_time_ns`
-- `host_arrival_time_ns`
-- `host_read_start_time_ns`
-- `host_read_end_time_ns`
 
 ### 6.2 对齐策略
 
