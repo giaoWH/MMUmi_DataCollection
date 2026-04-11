@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from sdk.session_naming import stream_media_path
 
 try:
     import av
@@ -57,12 +58,8 @@ class MediaEncodingConfig:
         return payload
 
 
-def media_path_for_sensor(sensor_name: str, modality: str) -> str | None:
-    if modality in {"rgb", "visuotactile"}:
-        return f"streams/{sensor_name}/media.mp4"
-    if modality == "rgbd":
-        return f"streams/{sensor_name}/color.mp4"
-    return None
+def media_path_for_sensor(sensor_name: str, modality: str, task_slug: str, seq: int = 1) -> str | None:
+    return stream_media_path(sensor_name, modality, task_slug, seq)
 
 
 def media_role_for_sensor(sensor_name: str, modality: str) -> str | None:

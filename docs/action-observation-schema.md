@@ -177,8 +177,8 @@ action 样本只有在以下条件同时满足时才会导出：
 
 session 原始字段：
 
-- `streams/camera/frames.jsonl -> payload.color`
-- `streams/realsense/frames.jsonl -> payload.color`
+- `streams/camera/<task_slug>_rgb_001.jsonl -> payload.color`
+- `streams/realsense/<task_slug>_rgbd_001.jsonl -> payload.color`
 
 LeRobot 导出字段：
 
@@ -196,7 +196,7 @@ LeRobot 导出字段：
 
 session 原始字段：
 
-- `streams/realsense/frames.jsonl -> payload.depth`
+- `streams/realsense/<task_slug>_rgbd_001.jsonl -> payload.depth`
 - 可选派生字段：`payload.aligned_depth_to_color`
 
 LeRobot 导出字段：
@@ -242,7 +242,7 @@ LeRobot 导出字段：
 
 session 原始字段：
 
-- `streams/gelsight/frames.jsonl -> payload.image`
+- `streams/gelsight/<task_slug>_visuotactile_001.jsonl -> payload.image`
 
 LeRobot 导出字段：
 
@@ -314,7 +314,7 @@ LeRobot 导出字段：
 
 session 原始字段：
 
-- `streams/microphone/frames.jsonl -> payload.audio`
+- `streams/microphone/<task_slug>_audio_001.jsonl -> payload.audio`
 
 LeRobot 导出字段：
 
@@ -449,9 +449,9 @@ session_xxx/
   meta.json
   streams/
     <sensor_name>/
-      frames.jsonl
+      <task_slug>_<modality>_001.jsonl
       artifacts/
-      media.mp4 或 color.mp4
+      <task_slug>_<modality>_001.mp4
   aligned/
     frames.jsonl
   trajectory/
@@ -465,19 +465,19 @@ session_xxx/
 
 | 模态 | session 落盘方式 |
 | --- | --- |
-| `camera.color` | `streams/camera/media.mp4`，`frames.jsonl` 中保存 `mp4_frame` 索引 |
-| `gelsight.image` | `streams/gelsight/media.mp4`，`frames.jsonl` 中保存 `mp4_frame` 索引 |
-| `realsense.color` | `streams/realsense/color.mp4`，`frames.jsonl` 中保存 `mp4_frame` 索引 |
+| `camera.color` | `streams/camera/<task_slug>_rgb_001.mp4`，对应 `*.jsonl` 中保存 `mp4_frame` 索引 |
+| `gelsight.image` | `streams/gelsight/<task_slug>_visuotactile_001.mp4`，对应 `*.jsonl` 中保存 `mp4_frame` 索引 |
+| `realsense.color` | `streams/realsense/<task_slug>_rgbd_001.mp4`，对应 `*.jsonl` 中保存 `mp4_frame` 索引 |
 | `realsense.depth` | `npy` artifact 引用 |
 | `realsense.aligned_depth_to_color` | 通常为 `npy` artifact 引用 |
 | `realsense.ir1/ir2` | 一般为 `png` 或 `npy` artifact 引用，取决于 dtype |
-| `microphone.audio` | 写入 `streams/camera/media.mp4` 的主音轨，`frames.jsonl` 中保存 `mp4_audio` 切片索引 |
+| `microphone.audio` | 写入 `streams/camera/<task_slug>_rgb_001.mp4` 的主音轨，对应 `*.jsonl` 中保存 `mp4_audio` 切片索引 |
 | FT / Motors / trajectory | 直接写入 JSON 数值字段 |
 
 注意：
 
 - 当前若启用 `microphone`，必须同时启用 `camera`，因为音频被复用到 `camera` 的主视频容器中
-- `frames.jsonl` 永远是索引层，真正的图像/音频数据可能在 MP4 或 artifact 文件里
+- `*.jsonl` 永远是索引层，真正的图像/音频数据可能在 MP4 或 artifact 文件里
 
 ### 8.3 LeRobot 导出格式
 

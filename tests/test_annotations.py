@@ -28,6 +28,7 @@ class AnnotationIntegrationTest(unittest.TestCase):
     def _create_session(self, output_root: str) -> Path:
         session = create_session_info(
             output_root,
+            task_name="annotation_session",
             sensors={
                 "camera": {"sensor_type": "camera_sensor", "modality": "rgb"},
                 "ft": {"sensor_type": "ft_sensor", "modality": "force_torque"},
@@ -113,6 +114,7 @@ class AnnotationIntegrationTest(unittest.TestCase):
     def _create_session_with_audio(self, output_root: str) -> Path:
         session = create_session_info(
             output_root,
+            task_name="annotation_audio_session",
             sensors={
                 "camera": {"sensor_type": "camera_sensor", "modality": "rgb"},
                 "ft": {"sensor_type": "ft_sensor", "modality": "force_torque"},
@@ -234,6 +236,7 @@ class AnnotationIntegrationTest(unittest.TestCase):
     def _create_session_with_motors(self, output_root: str) -> Path:
         session = create_session_info(
             output_root,
+            task_name="annotation_motors_session",
             sensors={
                 "camera": {"sensor_type": "camera_sensor", "modality": "rgb"},
                 "motors": {"sensor_type": "motors_sensor", "modality": "motor_state"},
@@ -342,6 +345,8 @@ class AnnotationIntegrationTest(unittest.TestCase):
 
             reader = SessionReader(session_dir)
             summary = reader.summary()
+            self.assertEqual(summary["task_name"], "annotation_session")
+            self.assertEqual(summary["task_slug"], "annotation_session")
             self.assertIn("annotation_summary", summary)
             self.assertEqual(summary["annotation_summary"]["span_count"], 1)
             self.assertEqual(summary["annotation_summary"]["keyframe_count"], 1)
@@ -651,6 +656,7 @@ class AnnotationIntegrationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             session = create_session_info(
                 tmp_dir,
+                task_name="annotation_web_media",
                 sensors={"camera": {"sensor_type": "camera_sensor", "modality": "rgb"}},
                 config={"align_rate_hz": 30},
             )
@@ -737,6 +743,7 @@ class AnnotationIntegrationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             session = create_session_info(
                 tmp_dir,
+                task_name="annotation_web_imu",
                 sensors={
                     "imu": {"sensor_type": "imu_sensor", "modality": "imu"},
                     "realsense": {"sensor_type": "realsense", "modality": "rgbd"},

@@ -239,8 +239,8 @@ sensor adapters
     -> SensorRegistry
     -> BufferedFrameAligner
     -> SessionWriter
-        -> media.mp4 / color.mp4
-        -> frames.jsonl (frame/audio 索引)
+        -> <task_slug>_<modality>_001.mp4
+        -> <task_slug>_<modality>_001.jsonl (frame/audio 索引)
         -> depth npy artifacts
     -> SessionReader
         -> decode media-backed payloads
@@ -602,6 +602,7 @@ python scripts/sdk_record.py
 
 支持的主要配置项：
 
+- 通用命名：`--task-name`（仅 non-interactive 必填，用于 session 内 stream 文件命名前缀）
 - FT：`--ft-port`
 - IMU：`--imu-port`
 - 通用录制行为：`--duration` / `--startup-discard-sec` / `--align-rate`
@@ -613,6 +614,7 @@ python scripts/sdk_record.py
 
 更推荐写在 `record.yaml` 里的细粒度配置包括：
 
+- `task_name`（仅 non-interactive 必填）
 - `ft.enable_torque`
 - `motors.enable_motor_1`
 - `motors.enable_motor_2`

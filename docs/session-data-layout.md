@@ -10,7 +10,12 @@
 - 图像、音频、深度、标量分别以什么形式存储
 - 推荐怎样读取，才能兼容当前 schema 和后续扩展
 
-本文描述的是当前仓库使用的 session schema `2.0.0`。
+本文描述的是当前仓库使用的 session schema `2.1.0`。
+
+说明：
+
+- `2.1.0` 起，`streams/<sensor>/` 内的 `jsonl/mp4` 文件名改为基于 `task_name` 的统一命名
+- 当前 reader 不保证兼容旧的固定文件名 session；读取时应优先依赖 `manifest.json`
 
 ## 2. Session 目录总览
 
@@ -28,28 +33,28 @@ session_20260411_153045_123456/
 ├── manifest.json
 ├── streams/
 │   ├── camera/
-│   │   ├── frames.jsonl
-│   │   ├── media.mp4
+│   │   ├── pick_place_rgb_001.jsonl
+│   │   ├── pick_place_rgb_001.mp4
 │   │   └── artifacts/
 │   ├── microphone/
-│   │   ├── frames.jsonl
+│   │   ├── pick_place_audio_001.jsonl
 │   │   └── artifacts/
 │   ├── realsense/
-│   │   ├── frames.jsonl
-│   │   ├── color.mp4
+│   │   ├── pick_place_rgbd_001.jsonl
+│   │   ├── pick_place_rgbd_001.mp4
 │   │   └── artifacts/
 │   ├── ft/
-│   │   ├── frames.jsonl
+│   │   ├── pick_place_force_torque_001.jsonl
 │   │   └── artifacts/
 │   ├── imu/
-│   │   ├── frames.jsonl
+│   │   ├── pick_place_imu_001.jsonl
 │   │   └── artifacts/
 │   ├── motors/
-│   │   ├── frames.jsonl
+│   │   ├── pick_place_motor_state_001.jsonl
 │   │   └── artifacts/
 │   └── gelsight/
-│       ├── frames.jsonl
-│       ├── media.mp4
+│       ├── pick_place_visuotactile_001.jsonl
+│       ├── pick_place_visuotactile_001.mp4
 │       └── artifacts/
 ├── aligned/
 │   └── frames.jsonl
@@ -84,7 +89,7 @@ session_20260411_153045_123456/
 
 1. `manifest.json`
 2. `aligned/frames.jsonl`
-3. `streams/<sensor>/frames.jsonl`
+3. `streams/<sensor>/<task_slug>_<modality>_<seq>.jsonl`
 4. `trajectory/frames.jsonl`
 5. `annotations/`、`quality/`、`exports/`
 
@@ -92,7 +97,7 @@ session_20260411_153045_123456/
 
 - `manifest.json` 告诉你这个 session 实际包含哪些传感器、每个传感器的数据路径是什么
 - `aligned/frames.jsonl` 提供统一对齐后的时间轴，是大多数多模态分析的主入口
-- `streams/<sensor>/frames.jsonl` 是各传感器原始流
+- `streams/<sensor>/*.jsonl` 是各传感器原始流
 - `trajectory/frames.jsonl` 是后处理产物，不是每个 session 都有
 
 ## 4. `manifest.json` 的作用
@@ -113,20 +118,22 @@ session_20260411_153045_123456/
 
 ```json
 {
-  "schema_version": "2.0.0",
+  "schema_version": "2.1.0",
   "session_id": "20260411_153045_123456",
   "started_at": 1712811045.123,
   "session_dir": "/abs/path/to/session_xxx",
+  "task_name": "pick place",
+  "task_slug": "pick_place",
   "config": { "...": "..." },
   "sensors": {
     "camera": {
       "sensor_name": "camera",
       "sensor_type": "camera_sensor",
       "modality": "rgb",
-      "frames_path": "streams/camera/frames.jsonl",
+      "frames_path": "streams/camera/pick_place_rgb_001.jsonl",
       "artifacts_dir": "streams/camera/artifacts",
       "storage_mode": "indexed_media",
-      "media_path": "streams/camera/media.mp4",
+      "media_path": "streams/camera/pick_place_rgb_001.mp4",
       "media_role": "primary_av",
       "metadata": { "...": "..." }
     }
@@ -151,6 +158,8 @@ session_20260411_153045_123456/
 - `schema_version`
 - `session_id`
 - `started_at`
+- `task_name`
+- `task_slug`
 - `config`
 - `sensors`
 - `notes`
@@ -163,15 +172,23 @@ session_20260411_153045_123456/
 
 每个启用的传感器在 `streams/<sensor_name>/` 下都有自己的目录，核心文件是：
 
-- `frames.jsonl`
+- `<task_slug>_<modality>_<seq>.jsonl`
 - `artifacts/`
-- 可选的媒体文件，如 `media.mp4` 或 `color.mp4`
+- 可选的媒体文件，如 `<task_slug>_<modality>_<seq>.mp4`
 
 其中：
 
-- `frames.jsonl` 负责记录逐帧索引、时间信息、payload 引用
+- `*.jsonl` 负责记录逐帧索引、时间信息、payload 引用
 - `artifacts/` 保存无法内嵌到 JSONL 的外部数组或图像文件
 - 媒体文件保存 MP4 视频帧或主音轨
+
+当前命名规则：
+
+- `jsonl`：`<task_slug>_<modality>_<seq>.jsonl`
+- `mp4`：`<task_slug>_<modality>_<seq>.mp4`
+- `artifact`：`<task_slug>_<modality>_<seq>_<frame_id六位补零>_<payload_key>.<ext>`
+- `seq` 当前固定从 `001` 开始
+- `task_slug` 来自录制前必填的 `task_name`
 
 ### 6.2 单条 `frames.jsonl` 记录的公共结构
 
@@ -267,7 +284,7 @@ session_20260411_153045_123456/
 
 ```json
 {
-  "path": "streams/camera/media.mp4",
+  "path": "streams/camera/pick_place_rgb_001.mp4",
   "storage": "mp4_frame",
   "shape": [480, 640, 3],
   "dtype": "uint8",
@@ -286,7 +303,7 @@ session_20260411_153045_123456/
 
 ```json
 {
-  "path": "streams/camera/media.mp4",
+  "path": "streams/camera/pick_place_rgb_001.mp4",
   "storage": "mp4_audio",
   "shape": [1024],
   "dtype": "int16",
@@ -306,7 +323,7 @@ session_20260411_153045_123456/
 
 ```json
 {
-  "path": "streams/realsense/artifacts/000123_depth.npy",
+  "path": "streams/realsense/artifacts/pick_place_rgbd_001_000123_depth.npy",
   "storage": "npy",
   "shape": [480, 640],
   "dtype": "uint16"
@@ -317,7 +334,7 @@ session_20260411_153045_123456/
 
 ```json
 {
-  "path": "streams/realsense/artifacts/000123_ir1.png",
+  "path": "streams/realsense/artifacts/pick_place_rgbd_001_000123_ir1.png",
   "storage": "png",
   "shape": [480, 640],
   "dtype": "uint8"
@@ -334,7 +351,7 @@ session_20260411_153045_123456/
 - 模态：`rgb`
 - 主字段：`payload.color`
 - 常见存储方式：`mp4_frame`
-- 媒体文件：`streams/camera/media.mp4`
+- 媒体文件：`streams/camera/<task_slug>_rgb_001.mp4`
 - 角色：主视频容器，也是主音轨容器
 
 说明：
@@ -348,11 +365,11 @@ session_20260411_153045_123456/
 - 模态：`audio`
 - 主字段：`payload.audio`
 - 常见存储方式：`mp4_audio`
-- 实际音频位置：`streams/camera/media.mp4` 的音轨
+- 实际音频位置：`streams/camera/<task_slug>_rgb_001.mp4` 的音轨
 
 说明：
 
-- `streams/microphone/frames.jsonl` 中保存的是索引引用，不是独立 `wav`
+- `streams/microphone/<task_slug>_audio_001.jsonl` 中保存的是索引引用，不是独立 `wav`
 - 当前默认采集参数通常是单声道 `48000 Hz`、`int16`
 
 ### 8.3 `realsense`
@@ -372,7 +389,7 @@ session_20260411_153045_123456/
 
 - `color`
   - `mp4_frame`
-  - 对应媒体文件通常是 `streams/realsense/color.mp4`
+  - 对应媒体文件通常是 `streams/realsense/<task_slug>_rgbd_001.mp4`
 - `depth`
   - `npy`
 - `ir1` / `ir2`
@@ -441,7 +458,7 @@ session_20260411_153045_123456/
 - 模态：`visuotactile`
 - 主字段：`payload.image`
 - 常见存储方式：`mp4_frame`
-- 媒体文件：`streams/gelsight/media.mp4`
+- 媒体文件：`streams/gelsight/<task_slug>_visuotactile_001.mp4`
 
 ## 9. `aligned/frames.jsonl`：统一时间轴主入口
 
@@ -687,8 +704,14 @@ print(depth.shape, depth.dtype)
 
 - 所有传感器都启用
 - 所有 `streams/<sensor>/` 都存在
+- 所有 stream 文件都叫 `frames.jsonl`
 - 所有图像都是 PNG
 - 麦克风有独立音频文件
+
+尤其在 `2.1.0` 之后：
+
+- 不要自己拼接 `streams/<sensor>/<task_slug>_<modality>_<seq>.jsonl`
+- 应始终以 `manifest.json` 里的 `frames_path` / `media_path` 为准
 
 ### 14.2 识别 `payload` 是“值”还是“引用”
 
@@ -747,7 +770,7 @@ print(depth.shape, depth.dtype)
 
 推荐入口：
 
-- 直接遍历 `streams/<sensor>/frames.jsonl`
+- 直接遍历 `streams/<sensor>/*.jsonl`
 
 适合：
 
@@ -774,6 +797,6 @@ print(depth.shape, depth.dtype)
 
 - 用 `manifest.json` 了解 session 结构
 - 用 `aligned/frames.jsonl` 做多模态主时间轴
-- 用 `streams/<sensor>/frames.jsonl` 看原始流
+- 用 `streams/<sensor>/*.jsonl` 看原始流
 - 用 `SessionReader` 解码 `mp4_frame` / `mp4_audio` / `png` / `npy`
 - 把 `trajectory/`、`annotations/`、`quality/`、`exports/` 都视为“附加层”，不要和原始采集真源混淆

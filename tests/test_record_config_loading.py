@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts import sdk_record
+from sdk.annotations import AnnotationField, AnnotationSchema
 
 
 class RecorderConfigLoadingTest(unittest.TestCase):
@@ -66,6 +67,54 @@ class RecorderConfigLoadingTest(unittest.TestCase):
         self.assertTrue(config.enable_ft)
         self.assertTrue(config.enable_motors)
         self.assertEqual(config.camera.width, 960)
+
+    def test_parse_args_loads_task_name(self) -> None:
+        config, loaded_path = sdk_record.parse_args(["--task-name", "pick cube"])
+
+        self.assertIsNone(loaded_path)
+        self.assertEqual(config.task_name, "pick cube")
+
+    def test_main_fails_fast_without_noninteractive_task_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "record.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "output_root": str(Path(tmp_dir) / "sessions"),
+                        "sensor_source": "fake",
+                        "duration_sec": 0.1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code = sdk_record.main(["--config", str(config_path)])
+
+        self.assertEqual(exit_code, 1)
+
+    def test_main_fails_fast_when_noninteractive_task_name_schema_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "record.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "output_root": str(Path(tmp_dir) / "sessions"),
+                        "sensor_source": "fake",
+                        "duration_sec": 0.1,
+                        "task_name": "pick_cube",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            invalid_schema = AnnotationSchema(
+                version="1.0.0",
+                fields=[AnnotationField(id="instruction", scope="session", type="string", label="Instruction")],
+            )
+
+            with patch.object(sdk_record, "_load_interactive_annotation_schema", return_value=invalid_schema):
+                exit_code = sdk_record.main(["--config", str(config_path)])
+
+        self.assertEqual(exit_code, 1)
 
     def test_parse_args_loads_camera_flip_vertical_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

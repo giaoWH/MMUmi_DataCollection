@@ -6,6 +6,7 @@ from typing import Any, Iterator
 
 import numpy as np
 
+from sdk.session_naming import stream_frames_path
 from sdk.core.frame import FrameTime, SensorFrame, TrajectoryFrame
 from sdk.storage.media_io import MediaArtifactReader, media_path_for_sensor, media_role_for_sensor
 from sdk.storage.schema import SessionManifest, manifest_path_for
@@ -56,6 +57,8 @@ class SessionReader:
             "schema_version": self.manifest.schema_version,
             "session_id": self.manifest.session_id,
             "started_at": format_wall_time(self.manifest.started_at),
+            "task_name": self.manifest.task_name,
+            "task_slug": self.manifest.task_slug,
             "sensor_names": self.sensor_names(),
             "aligned_path": self.manifest.aligned_path,
             "trajectory_path": self.manifest.trajectory_path,
@@ -210,27 +213,39 @@ class SessionReader:
     def _load_manifest(self) -> SessionManifest:
         path = manifest_path_for(self.session_dir)
         if path.exists():
-            return SessionManifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            try:
+                return SessionManifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            except KeyError as exc:
+                raise FileNotFoundError(
+                    f"session manifest 缺少 2.1.0 所需的 task_name/task_slug 字段，不支持旧命名 session: {self.session_dir}"
+                ) from exc
 
         meta_path = self.session_dir / "meta.json"
         if not meta_path.exists():
             raise FileNotFoundError(f"未找到 manifest.json 或 meta.json: {self.session_dir}")
         meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        task_name = meta_payload.get("task_name")
+        task_slug = meta_payload.get("task_slug")
+        if not isinstance(task_name, str) or not isinstance(task_slug, str):
+            raise FileNotFoundError(
+                f"未找到可读取的新 schema manifest.json，且 meta.json 缺少 task_name/task_slug: {self.session_dir}"
+            )
         sensors = {}
         for sensor_name, metadata in meta_payload.get("sensors", {}).items():
+            modality = metadata.get("modality", "unknown")
             sensors[sensor_name] = {
                 "sensor_name": sensor_name,
                 "sensor_type": metadata.get("sensor_type", sensor_name),
-                "modality": metadata.get("modality", "unknown"),
-                "frames_path": f"streams/{sensor_name}/frames.jsonl",
+                "modality": modality,
+                "frames_path": stream_frames_path(sensor_name, modality, task_slug),
                 "artifacts_dir": f"streams/{sensor_name}/artifacts",
                 "storage_mode": (
                     "indexed_media"
-                    if media_path_for_sensor(sensor_name, metadata.get("modality", "unknown"))
+                    if media_path_for_sensor(sensor_name, modality, task_slug)
                     else "artifact_stream"
                 ),
-                "media_path": media_path_for_sensor(sensor_name, metadata.get("modality", "unknown")),
-                "media_role": media_role_for_sensor(sensor_name, metadata.get("modality", "unknown")),
+                "media_path": media_path_for_sensor(sensor_name, modality, task_slug),
+                "media_role": media_role_for_sensor(sensor_name, modality),
                 "metadata": metadata,
             }
         payload = {
@@ -238,6 +253,8 @@ class SessionReader:
             "session_id": meta_payload["session_id"],
             "started_at": meta_payload["started_at"],
             "session_dir": str(self.session_dir),
+            "task_name": task_name,
+            "task_slug": task_slug,
             "config": meta_payload.get("config", {}),
             "sensors": sensors,
             "notes": meta_payload.get("notes", {}),

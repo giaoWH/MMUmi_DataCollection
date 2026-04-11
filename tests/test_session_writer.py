@@ -46,6 +46,7 @@ class SessionWriterTest(unittest.TestCase):
     def _create_orbslam3_session(self, output_root: str) -> Path:
         session = create_session_info(
             output_root,
+            task_name="orbslam3_session",
             sensors={
                 "realsense": {"sensor_type": "realsense_rgbd", "modality": "rgbd"},
             },
@@ -161,6 +162,7 @@ class SessionWriterTest(unittest.TestCase):
 
         session = create_session_info(
             output_root,
+            task_name=task_name,
             sensors=sensors,
             config={"align_rate_hz": 30},
             session_name=session_name,
@@ -270,6 +272,7 @@ class SessionWriterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             session = create_session_info(
                 tmp_dir,
+                task_name="realsense_capture",
                 sensors={"realsense": {"modality": "rgbd"}},
                 config={"align_rate_hz": 30},
             )
@@ -296,13 +299,24 @@ class SessionWriterTest(unittest.TestCase):
 
             meta_path = session.output_dir / "meta.json"
             manifest_path = session.output_dir / "manifest.json"
-            sensor_log = session.output_dir / "streams" / "realsense" / "frames.jsonl"
+            sensor_log = session.output_dir / "streams" / "realsense" / "realsense_capture_rgbd_001.jsonl"
             self.assertTrue(meta_path.exists())
             self.assertTrue(manifest_path.exists())
             self.assertTrue(sensor_log.exists())
 
             payload = json.loads(meta_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["config"]["align_rate_hz"], 30)
+            self.assertEqual(payload["task_name"], "realsense_capture")
+            self.assertEqual(payload["task_slug"], "realsense_capture")
+            manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                manifest_payload["sensors"]["realsense"]["frames_path"],
+                "streams/realsense/realsense_capture_rgbd_001.jsonl",
+            )
+            self.assertEqual(
+                manifest_payload["sensors"]["realsense"]["media_path"],
+                "streams/realsense/realsense_capture_rgbd_001.mp4",
+            )
 
             records = sensor_log.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(len(records), 1)
@@ -314,6 +328,10 @@ class SessionWriterTest(unittest.TestCase):
             self.assertNotIn("host_arrival_time_ns", record["time"])
             self.assertNotIn("host_read_start_time_ns", record["time"])
             self.assertNotIn("host_read_end_time_ns", record["time"])
+            self.assertEqual(
+                record["payload"]["depth"]["path"],
+                "streams/realsense/artifacts/realsense_capture_rgbd_001_000001_depth.npy",
+            )
 
             depth_path = Path(session.output_dir) / record["payload"]["depth"]["path"]
             self.assertTrue(depth_path.exists())
@@ -347,10 +365,21 @@ class SessionWriterTest(unittest.TestCase):
             self.assertEqual(len(trajectory), 1)
             self.assertEqual(trajectory[0].source, "orbslam3")
 
+    def test_create_session_info_rejects_invalid_task_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.assertRaisesRegex(ValueError, "task_name"):
+                create_session_info(
+                    tmp_dir,
+                    task_name=" / \\\\ ",
+                    sensors={"camera": {"modality": "rgb"}},
+                    config={"align_rate_hz": 30},
+                )
+
     def test_async_writer_flushes_records_and_persists_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             session = create_session_info(
                 tmp_dir,
+                task_name="camera_async",
                 sensors={"camera": {"modality": "rgb"}},
                 config={"align_rate_hz": 30},
             )
@@ -377,7 +406,7 @@ class SessionWriterTest(unittest.TestCase):
             )
             writer.close()
 
-            sensor_log = session.output_dir / "streams" / "camera" / "frames.jsonl"
+            sensor_log = session.output_dir / "streams" / "camera" / "camera_async_rgb_001.jsonl"
             aligned_log = session.output_dir / "aligned" / "frames.jsonl"
             self.assertTrue(sensor_log.exists())
             self.assertTrue(aligned_log.exists())
@@ -396,6 +425,7 @@ class SessionWriterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             session = create_session_info(
                 tmp_dir,
+                task_name="camera_media",
                 sensors={"camera": {"sensor_type": "camera_sensor", "modality": "rgb"}},
                 config={"align_rate_hz": 30},
             )
@@ -417,14 +447,22 @@ class SessionWriterTest(unittest.TestCase):
             )
             writer.close()
 
-            sensor_log = session.output_dir / "streams" / "camera" / "frames.jsonl"
+            sensor_log = session.output_dir / "streams" / "camera" / "camera_media_rgb_001.jsonl"
             record = json.loads(sensor_log.read_text(encoding="utf-8").strip())
             reference = record["payload"]["color"]
             self.assertEqual(reference["storage"], "mp4_frame")
             self.assertEqual(reference["channel_order"], "rgb")
             media_path = session.output_dir / reference["path"]
             self.assertTrue(media_path.exists())
-            self.assertEqual(media_path.name, "media.mp4")
+            self.assertEqual(media_path.name, "camera_media_rgb_001.mp4")
+            self.assertEqual(
+                writer.manifest.sensors["camera"].frames_path,
+                "streams/camera/camera_media_rgb_001.jsonl",
+            )
+            self.assertEqual(
+                writer.manifest.sensors["camera"].media_path,
+                "streams/camera/camera_media_rgb_001.mp4",
+            )
             self.assertEqual(
                 writer.manifest.sensors["camera"].metadata["media_encoding"]["video_codec"],
                 "libx264",
@@ -464,6 +502,7 @@ class SessionWriterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             session = create_session_info(
                 tmp_dir,
+                task_name="camera_microphone",
                 sensors={
                     "camera": {"sensor_type": "camera_sensor", "modality": "rgb", "fps": 30},
                     "microphone": {
@@ -497,11 +536,11 @@ class SessionWriterTest(unittest.TestCase):
             writer.write_sensor_frame(camera_frame)
             writer.close()
 
-            sensor_log = session.output_dir / "streams" / "microphone" / "frames.jsonl"
+            sensor_log = session.output_dir / "streams" / "microphone" / "camera_microphone_audio_001.jsonl"
             record = json.loads(sensor_log.read_text(encoding="utf-8").strip())
             reference = record["payload"]["audio"]
             self.assertEqual(reference["storage"], "mp4_audio")
-            self.assertEqual(reference["path"], "streams/camera/media.mp4")
+            self.assertEqual(reference["path"], "streams/camera/camera_microphone_rgb_001.mp4")
 
             reader = SessionReader(session.output_dir)
             loaded_frame = next(reader.iter_sensor_frames("microphone", load_payload=True))
@@ -1062,6 +1101,7 @@ class SessionWriterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             session = create_session_info(
                 tmp_dir,
+                task_name="hdf5_export",
                 sensors={"imu": {"sensor_type": "imu_sensor", "modality": "imu"}},
                 config={"align_rate_hz": 30},
             )
@@ -1089,6 +1129,7 @@ class SessionWriterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             session = create_session_info(
                 tmp_dir,
+                task_name="rlds_lerobot_export",
                 sensors={
                     "ft": {"sensor_type": "ft_sensor", "modality": "force_torque"},
                     "imu": {"sensor_type": "imu_sensor", "modality": "imu"},
@@ -1296,6 +1337,7 @@ class SessionWriterTest(unittest.TestCase):
         ) -> Path:
             session = create_session_info(
                 output_root,
+                task_name="ineligible_action",
                 sensors={
                     "realsense": {"sensor_type": "realsense", "modality": "rgbd"},
                     "motors": {"sensor_type": "motors_sensor", "modality": "motor_state"},
@@ -1388,6 +1430,7 @@ class SessionWriterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             single_step_session = create_session_info(
                 tmp_dir,
+                task_name="single_step",
                 sensors={
                     "realsense": {"sensor_type": "realsense", "modality": "rgbd"},
                     "motors": {"sensor_type": "motors_sensor", "modality": "motor_state"},
@@ -1604,6 +1647,7 @@ class SessionWriterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             session = create_session_info(
                 tmp_dir,
+                task_name="csv_snapshot",
                 sensors={
                     "ft": {"sensor_type": "ft_sensor", "modality": "force_torque"},
                     "imu": {"sensor_type": "imu_sensor", "modality": "imu"},

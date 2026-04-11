@@ -42,6 +42,7 @@ class SDKEndToEndTest(unittest.TestCase):
                 json.dumps(
                     {
                         "output_root": str(output_root),
+                        "task_name": "fake_record_no_trajectory",
                         "sensor_source": "fake",
                         "duration_sec": 0.2,
                         "enable_camera": True,
@@ -110,6 +111,7 @@ class SDKEndToEndTest(unittest.TestCase):
                 json.dumps(
                     {
                         "output_root": str(output_root),
+                        "task_name": "fake_record_exports",
                         "sensor_source": "fake",
                         "align_rate_hz": 20,
                         "duration_sec": 0.2,
@@ -165,6 +167,8 @@ class SDKEndToEndTest(unittest.TestCase):
             )
             self.assertEqual(inspect_result.returncode, 0, msg=inspect_result.stderr)
             summary = json.loads(inspect_result.stdout)
+            self.assertEqual(summary["task_name"], "fake_record_exports")
+            self.assertEqual(summary["task_slug"], "fake_record_exports")
             self.assertIn("ft", summary["sensor_names"])
             self.assertIn("imu", summary["sensor_names"])
             self.assertIn("realsense", summary["sensor_names"])

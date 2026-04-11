@@ -7,6 +7,8 @@
 #   python scripts/sdk_process_trajectory.py <session_dir> --config configs/record.yaml
 
 output_root: /mnt/m2ssd/umi-data/sessions
+# interactive=false 时必须显式提供 task_name，作为 stream 文件命名前缀。
+# task_name: pick_place
 sensor_source: real
 align_rate_hz: 30.0
 duration_sec: 10.0

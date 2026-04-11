@@ -67,7 +67,7 @@ orbslam3_rgbd_inertial/
 
 在媒体化存储实验格式下还需注意：
 
-- `rgb/` 内的彩色图像可能来自 `streams/realsense/color.mp4`
+- `rgb/` 内的彩色图像可能来自 `streams/realsense/<task_slug>_rgbd_001.mp4`
 - 这些 MP4 当前默认采用 `H.264/yuv420p` 编码，以优先保证设备端可播放性
 - `depth/` 内的深度图仍来自无损数组 artifact
 - 因此 `rgbd_inertial` 仍坚持“彩色可压缩、深度不压缩”的策略

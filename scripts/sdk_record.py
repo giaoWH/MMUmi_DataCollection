@@ -29,6 +29,7 @@ from sdk.core import BufferedFrameAligner, SensorRegistry, SessionInfo, SystemCl
 from sdk.logging import build_logger
 from sdk.perception import OrbSlam3SessionProcessConfig
 from sdk.processors import GravityCompensationConfig, GravityCompensator
+from sdk.session_naming import normalize_task_slug
 from sdk.sensors.fake import (
     FakeCameraAdapter,
     FakeCameraConfig,
@@ -86,6 +87,7 @@ STATE_EXITING = "exiting"
 @dataclass(frozen=True)
 class RecorderConfig:
     output_root: str = "sessions"
+    task_name: str = ""
     sensor_source: str = "real"
     align_rate_hz: float = 30.0
     duration_sec: float = 0.0
@@ -694,6 +696,7 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict[str, object]:
     overrides: dict[str, object] = {}
     mapping = {
         "output_root": ("output_root",),
+        "task_name": ("task_name",),
         "sensor_source": ("sensor_source",),
         "align_rate_hz": ("align_rate_hz",),
         "duration_sec": ("duration_sec",),
@@ -749,6 +752,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
         help="录制配置文件路径；未提供时会自动尝试 configs/record.yaml",
     )
     parser.add_argument("--output-root")
+    parser.add_argument("--task-name")
     parser.add_argument("--sensor-source", choices=["real", "fake"])
     parser.add_argument("--align-rate", dest="align_rate_hz", type=float)
     parser.add_argument("--duration", dest="duration_sec", type=float)
@@ -793,6 +797,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
 
     config = RecorderConfig(
         output_root=payload["output_root"],
+        task_name=payload.get("task_name", ""),
         sensor_source=payload.get("sensor_source", "real"),
         align_rate_hz=payload["align_rate_hz"],
         duration_sec=payload["duration_sec"],
@@ -851,14 +856,14 @@ def _load_interactive_annotation_schema() -> AnnotationSchema:
     return load_annotation_schema(str(schema_path) if schema_path is not None else None)
 
 
-def _validate_interactive_annotation_schema(schema: AnnotationSchema) -> None:
+def _validate_annotation_schema_task_name_field(schema: AnnotationSchema) -> None:
     for field in schema.fields_for_scope("session"):
         if field.id != "task_name":
             continue
         if field.type != "string":
-            raise RuntimeError("交互式录制要求 session.task_name 为 string 类型")
+            raise RuntimeError("录制要求 annotation schema 中的 session.task_name 为 string 类型")
         return
-    raise RuntimeError("交互式录制要求 annotation schema 中存在 session.task_name 字段")
+    raise RuntimeError("录制要求 annotation schema 中存在 session.task_name 字段")
 
 
 def _prompt_task_name(key_source: KeySource) -> str | None:
@@ -920,6 +925,7 @@ def _create_session_info(
         )
     return create_session_info(
         config.output_root,
+        task_name=task_name if task_name is not None else config.task_name,
         sensors=registry.get_metadata(),
         config=asdict(config),
         notes=notes,
@@ -1177,6 +1183,18 @@ def _run_noninteractive(
     config: RecorderConfig,
     config_path: Path | None,
 ) -> int:
+    try:
+        normalize_task_slug(config.task_name)
+    except ValueError as exc:
+        print(f"非交互式录制要求提供有效 task_name: {exc}")
+        return 1
+    try:
+        annotation_schema = _load_interactive_annotation_schema()
+        _validate_annotation_schema_task_name_field(annotation_schema)
+    except RuntimeError as exc:
+        print(f"非交互式录制启动失败: {exc}")
+        return 1
+
     clock = SystemClock()
     registry = build_registry(config, clock)
 
@@ -1258,6 +1276,11 @@ def _run_noninteractive(
     )
 
     try:
+        _write_session_annotation(
+            session_dir=session_info.output_dir,
+            schema=annotation_schema,
+            task_name=session_info.task_name,
+        )
         while is_running:
             loop_start = time.perf_counter()
 
@@ -1376,7 +1399,7 @@ def _run_interactive(
             run_logger.warning(message)
         _warn_deprecated_trajectory(config, run_logger)
         annotation_schema = _load_interactive_annotation_schema()
-        _validate_interactive_annotation_schema(annotation_schema)
+        _validate_annotation_schema_task_name_field(annotation_schema)
 
         registry.start_all()
         registry_started = True

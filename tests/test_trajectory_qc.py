@@ -41,6 +41,7 @@ class TrajectoryQcTest(unittest.TestCase):
 
         session = create_session_info(
             output_root,
+            task_name="trajectory_qc",
             sensors={
                 "realsense": {"sensor_type": "realsense", "modality": "rgbd"},
                 "motors": {"sensor_type": "motors_sensor", "modality": "motor_state"},

@@ -53,6 +53,8 @@ class SessionManifest:
     session_id: str
     started_at: float
     session_dir: str
+    task_name: str
+    task_slug: str
     config: dict[str, Any]
     sensors: dict[str, StreamManifest]
     notes: dict[str, Any] = field(default_factory=dict)
@@ -66,6 +68,8 @@ class SessionManifest:
             "session_id": self.session_id,
             "started_at": self.started_at,
             "session_dir": self.session_dir,
+            "task_name": self.task_name,
+            "task_slug": self.task_slug,
             "config": self.config,
             "sensors": {
                 name: stream.to_dict() for name, stream in self.sensors.items()
@@ -83,6 +87,8 @@ class SessionManifest:
             session_id=payload["session_id"],
             started_at=payload["started_at"],
             session_dir=payload.get("session_dir", ""),
+            task_name=payload["task_name"],
+            task_slug=payload["task_slug"],
             config=payload.get("config", {}),
             sensors={
                 name: StreamManifest.from_dict(stream_payload)

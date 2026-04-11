@@ -13,6 +13,7 @@ import numpy as np
 from sdk.core.frame import AlignedFrame, SensorFrame
 from sdk.core.frame import TrajectoryFrame
 from sdk.core.session import SessionInfo
+from sdk.session_naming import stream_artifact_stem, stream_frames_path
 from sdk.storage.media_io import (
     MediaEncodingConfig,
     MediaStreamWriter,
@@ -81,9 +82,14 @@ class SessionWriter:
     @classmethod
     def open_existing(cls, session_dir: str | Path) -> "SessionWriter":
         session_dir = Path(session_dir)
-        manifest = SessionManifest.from_dict(
-            json.loads(manifest_path_for(session_dir).read_text(encoding="utf-8"))
-        )
+        try:
+            manifest = SessionManifest.from_dict(
+                json.loads(manifest_path_for(session_dir).read_text(encoding="utf-8"))
+            )
+        except KeyError as exc:
+            raise FileNotFoundError(
+                f"session manifest 缺少 2.1.0 所需的 task_name/task_slug 字段，不支持旧命名 session: {session_dir}"
+            ) from exc
         writer = cls.__new__(cls)
         writer.session_info = None
         writer.base_dir = session_dir
@@ -198,7 +204,8 @@ class SessionWriter:
             ),
             "metadata": self._to_jsonable(frame.metadata),
         }
-        self._append_jsonl(sensor_dir / "frames.jsonl", record)
+        stream = self.manifest.sensors[frame.sensor_name]
+        self._append_jsonl(self.base_dir / stream.frames_path, record)
 
     def _sync_stream_metadata_from_frame(self, frame: SensorFrame) -> None:
         self._merge_stream_metadata(frame.sensor_name, frame.metadata)
@@ -228,6 +235,8 @@ class SessionWriter:
                 session_id=self.manifest.session_id,
                 started_at=self.manifest.started_at,
                 session_dir=self.manifest.session_dir,
+                task_name=self.manifest.task_name,
+                task_slug=self.manifest.task_slug,
                 config=self.manifest.config,
                 sensors=sensors,
                 notes=self.manifest.notes,
@@ -329,6 +338,8 @@ class SessionWriter:
             "schema_version": self.session_info.schema_version,
             "session_id": self.session_info.session_id,
             "started_at": self.session_info.started_at,
+            "task_name": self.session_info.task_name,
+            "task_slug": self.session_info.task_slug,
             "config": self._to_jsonable(self.session_info.config),
             "sensors": self._to_jsonable(self.session_info.sensors),
             "notes": self._to_jsonable(self.session_info.notes),
@@ -351,7 +362,11 @@ class SessionWriter:
                 sensor_name=sensor_name,
                 sensor_type=str(sensor_meta.get("sensor_type", sensor_name)),
                 modality=str(sensor_meta.get("modality", "unknown")),
-                frames_path=f"streams/{sensor_name}/frames.jsonl",
+                frames_path=stream_frames_path(
+                    sensor_name,
+                    str(sensor_meta.get("modality", "unknown")),
+                    self.session_info.task_slug,
+                ),
                 artifacts_dir=f"streams/{sensor_name}/artifacts",
                 storage_mode=self._storage_mode_for_sensor(
                     sensor_name,
@@ -360,6 +375,7 @@ class SessionWriter:
                 media_path=media_path_for_sensor(
                     sensor_name,
                     str(sensor_meta.get("modality", "unknown")),
+                    self.session_info.task_slug,
                 ),
                 media_role=media_role_for_sensor(
                     sensor_name,
@@ -374,6 +390,8 @@ class SessionWriter:
             session_id=self.session_info.session_id,
             started_at=self.session_info.started_at,
             session_dir=str(self.base_dir),
+            task_name=self.session_info.task_name,
+            task_slug=self.session_info.task_slug,
             config=self._to_jsonable(self.session_info.config),
             sensors=streams,
             notes=self._to_jsonable(self.session_info.notes),
@@ -420,7 +438,7 @@ class SessionWriter:
             )
 
     def _storage_mode_for_sensor(self, sensor_name: str, modality: str) -> str:
-        if media_path_for_sensor(sensor_name, modality):
+        if media_path_for_sensor(sensor_name, modality, self.session_info.task_slug):
             return "indexed_media"
         return "artifact_stream"
 
@@ -639,7 +657,17 @@ class SessionWriter:
         value: np.ndarray,
     ) -> dict[str, Any]:
         artifacts_dir = sensor_dir / "artifacts"
-        base_name = f"{frame_id:06d}_{key}"
+        task_slug = (
+            self.session_info.task_slug
+            if self.session_info is not None
+            else self.manifest.task_slug
+        )
+        base_name = stream_artifact_stem(
+            task_slug,
+            modality,
+            frame_id,
+            key,
+        )
         channel_order = self._infer_channel_order(
             sensor_type=sensor_type,
             modality=modality,

@@ -24,6 +24,7 @@ class SessionExportValidationTest(unittest.TestCase):
     def _create_session(self, output_root: str) -> Path:
         session = create_session_info(
             output_root,
+            task_name="export_validation",
             sensors={
                 "ft": {"sensor_type": "ft_sensor", "modality": "force_torque"},
                 "imu": {"sensor_type": "imu_sensor", "modality": "imu"},
@@ -142,6 +143,7 @@ class SessionExportValidationTest(unittest.TestCase):
     def _create_session_with_lerobot_action(self, output_root: str) -> Path:
         session = create_session_info(
             output_root,
+            task_name="export_validation_lerobot",
             sensors={
                 "realsense": {"sensor_type": "realsense", "modality": "rgbd"},
                 "motors": {"sensor_type": "motors_sensor", "modality": "motor_state"},
