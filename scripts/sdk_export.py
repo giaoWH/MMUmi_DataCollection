@@ -19,6 +19,7 @@ def main() -> None:
     parser.add_argument("--format", choices=list_export_formats(), default="lerobot")
     parser.add_argument("--output", default=None)
     parser.add_argument("--config", default=None)
+    parser.add_argument("--merge-sessions", action="store_true", help="将输入目录下的一级 session 合并导出")
     args = parser.parse_args()
 
     export_format = args.format
@@ -31,7 +32,12 @@ def main() -> None:
     logger = build_logger("sdk.export", log_file=Path(args.session_dir) / "logs" / "sdk_export.log")
     logger.info("开始导出，format=%s", export_format)
     exporter = create_exporter(export_format)
-    result = exporter.export(args.session_dir, output)
+    if args.merge_sessions:
+        if export_format != "lerobot":
+            raise ValueError("--merge-sessions 当前仅支持 --format lerobot")
+        result = exporter.export_sessions_dir(args.session_dir, output)
+    else:
+        result = exporter.export(args.session_dir, output)
     logger.info("导出完成: %s", result.output_path)
     print(f"导出完成: {result.export_format} -> {result.output_path}")
 

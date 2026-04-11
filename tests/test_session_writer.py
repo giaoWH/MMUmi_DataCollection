@@ -1,4 +1,5 @@
 import json
+import subprocess
 import shlex
 import sys
 import tempfile
@@ -7,10 +8,11 @@ from pathlib import Path
 
 import numpy as np
 
+from sdk.annotations import AnnotationSchema, AnnotationService
 from sdk.core.frame import AlignedFrame, FrameTime, SensorFrame, TrajectoryFrame
 from sdk.core.session import create_session_info
 from sdk.exporters.hdf5_exporter import HDF5SessionExporter
-from sdk.exporters.lerobot_exporter import LeRobotSessionExporter
+from sdk.exporters.lerobot_exporter import LeRobotSessionExporter, _split_for_session_id
 from sdk.exporters.rlds_exporter import RLDSSessionExporter
 from sdk.exporters.csv_exporter import CSVSnapshotExporter
 from sdk.perception.orbslam3.bundle import OrbSlam3SessionBundleExporter
@@ -135,6 +137,134 @@ class SessionWriterTest(unittest.TestCase):
         )
         script_path.chmod(0o755)
         return script_path
+
+    def _create_lerobot_merge_session(
+        self,
+        output_root: str,
+        *,
+        session_name: str,
+        task_name: str = "unspecified",
+        num_steps: int = 2,
+        include_final_trajectory: bool = True,
+        include_final_motor_2: bool = True,
+        include_camera: bool = False,
+        include_microphone: bool = False,
+    ) -> Path:
+        sensors = {
+            "realsense": {"sensor_type": "realsense", "modality": "rgbd"},
+            "motors": {"sensor_type": "motors_sensor", "modality": "motor_state"},
+        }
+        if include_camera:
+            sensors["camera"] = {"sensor_type": "camera_sensor", "modality": "rgb"}
+        if include_microphone:
+            sensors["microphone"] = {"sensor_type": "microphone_sensor", "modality": "audio"}
+
+        session = create_session_info(
+            output_root,
+            sensors=sensors,
+            config={"align_rate_hz": 30},
+            session_name=session_name,
+        )
+        writer = SessionWriter(session)
+
+        realsense_frames: list[SensorFrame] = []
+        motors_frames: list[SensorFrame] = []
+        camera_frames: list[SensorFrame] = []
+        microphone_frames: list[SensorFrame] = []
+        for step in range(num_steps):
+            timestamp = 1.0 + 0.1 * step
+            realsense_frame = SensorFrame(
+                sensor_name="realsense",
+                sensor_type="realsense",
+                modality="rgbd",
+                frame_id=step + 1,
+                time=FrameTime(host_time=timestamp, monotonic_time=timestamp, aligned_time=timestamp, device_time=timestamp),
+                payload={"depth": np.full((2, 2), 1000 + step, dtype=np.uint16)},
+            )
+            realsense_frames.append(realsense_frame)
+
+            motors_payload = {}
+            if include_final_motor_2 or step < (num_steps - 1):
+                motors_payload["motor_2"] = {
+                    "position": 2.0 + 0.2 * step,
+                    "velocity": 0.0,
+                    "torque": 0.0,
+                }
+            motors_frame = SensorFrame(
+                sensor_name="motors",
+                sensor_type="motors_sensor",
+                modality="motor_state",
+                frame_id=100 + step,
+                time=FrameTime(host_time=timestamp, monotonic_time=timestamp, aligned_time=timestamp, device_time=timestamp),
+                payload=motors_payload,
+            )
+            motors_frames.append(motors_frame)
+
+            if include_camera:
+                camera_frame = SensorFrame(
+                    sensor_name="camera",
+                    sensor_type="camera_sensor",
+                    modality="rgb",
+                    frame_id=200 + step,
+                    time=FrameTime(host_time=timestamp, monotonic_time=timestamp, aligned_time=timestamp),
+                    payload={"color": np.full((4, 4, 3), 32 + step * 16, dtype=np.uint8)},
+                )
+                camera_frames.append(camera_frame)
+            if include_microphone:
+                microphone_frame = SensorFrame(
+                    sensor_name="microphone",
+                    sensor_type="microphone_sensor",
+                    modality="audio",
+                    frame_id=300 + step,
+                    time=FrameTime(host_time=timestamp, monotonic_time=timestamp, aligned_time=timestamp),
+                    payload={"audio": np.array([0, 1000 + step, -1000 - step, 500 + step], dtype=np.int16)},
+                )
+                microphone_frames.append(microphone_frame)
+
+        for frame in realsense_frames + motors_frames + camera_frames + microphone_frames:
+            writer.write_sensor_frame(frame)
+
+        for step in range(num_steps):
+            frames = {
+                "realsense": realsense_frames[step],
+                "motors": motors_frames[step],
+            }
+            age_by_sensor = {"realsense": 0.0, "motors": 0.0}
+            if include_camera:
+                frames["camera"] = camera_frames[step]
+                age_by_sensor["camera"] = 0.0
+            if include_microphone:
+                frames["microphone"] = microphone_frames[step]
+                age_by_sensor["microphone"] = 0.0
+            writer.write_aligned_frame(
+                AlignedFrame(
+                    sequence_id=step,
+                    aligned_time=1.0 + 0.1 * step,
+                    frames=frames,
+                    missing_sensors=[],
+                    age_by_sensor=age_by_sensor,
+                )
+            )
+
+        trajectory_steps = num_steps if include_final_trajectory else max(1, num_steps - 1)
+        for step in range(trajectory_steps):
+            timestamp = 1.0 + 0.1 * step
+            writer.write_trajectory_frame(
+                TrajectoryFrame(
+                    source="orbslam3",
+                    frame_id=400 + step,
+                    time=FrameTime(host_time=timestamp, monotonic_time=timestamp, aligned_time=timestamp),
+                    position=[0.1 * step, 0.0, 0.0],
+                    quaternion=[1.0, 0.0, 0.0, 0.0],
+                    tracking_state="OK",
+                )
+            )
+        writer.close()
+
+        service = AnnotationService(session.output_dir, schema=AnnotationSchema.default())
+        service.ensure_initialized()
+        service.upsert_session_annotation({"task_name": task_name})
+        return session.output_dir
 
     def test_write_sensor_frame_and_meta(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1324,6 +1454,151 @@ class SessionWriterTest(unittest.TestCase):
 
                     rows = pq.read_table(result.output_path / "data" / "chunk-000" / "file-000.parquet").to_pylist()
                     self.assertEqual(rows, [])
+
+    def test_lerobot_merge_export_batches_sessions_with_split_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            session_a = self._create_lerobot_merge_session(
+                tmp_dir,
+                session_name="session_alpha",
+                task_name="task_pick",
+                num_steps=3,
+            )
+            session_b = self._create_lerobot_merge_session(
+                tmp_dir,
+                session_name="session_beta",
+                task_name="task_place",
+                num_steps=2,
+            )
+            session_c = self._create_lerobot_merge_session(
+                tmp_dir,
+                session_name="session_gamma",
+                task_name="task_pick",
+                num_steps=2,
+            )
+            self._create_lerobot_merge_session(
+                tmp_dir,
+                session_name="session_missing_trajectory",
+                task_name="task_skip",
+                num_steps=2,
+                include_final_trajectory=False,
+            )
+            self._create_lerobot_merge_session(
+                tmp_dir,
+                session_name="session_missing_gripper",
+                task_name="task_skip",
+                num_steps=2,
+                include_final_motor_2=False,
+            )
+            (root / "not_a_session").mkdir()
+
+            result = LeRobotSessionExporter().export_sessions_dir(root)
+
+            import pyarrow.parquet as pq
+
+            rows = pq.read_table(result.output_path / "data" / "chunk-000" / "file-000.parquet").to_pylist()
+            episodes = pq.read_table(result.output_path / "meta" / "episodes" / "chunk-000" / "file-000.parquet").to_pylist()
+            info_payload = json.loads((result.output_path / "meta" / "info.json").read_text(encoding="utf-8"))
+            merge_report = json.loads((result.output_path / "meta" / "merge_report.json").read_text(encoding="utf-8"))
+            tasks = [
+                json.loads(line)
+                for line in (result.output_path / "meta" / "tasks.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+
+            self.assertEqual(info_payload["total_episodes"], 3)
+            self.assertEqual(len(episodes), 3)
+            self.assertEqual(info_payload["total_frames"], len(rows))
+            self.assertEqual(sum(item["length"] for item in episodes), len(rows))
+            self.assertEqual({row["index"] for row in rows}, set(range(len(rows))))
+            self.assertEqual({episode["episode_index"] for episode in episodes}, {0, 1, 2})
+            self.assertEqual({task["task"] for task in tasks}, {"task_pick", "task_place"})
+            self.assertEqual(info_payload["total_tasks"], 2)
+
+            grouped_rows: dict[int, list[dict[str, object]]] = {}
+            for row in rows:
+                grouped_rows.setdefault(int(row["episode_index"]), []).append(row)
+                self.assertIn("source_session_id", row)
+            for episode_index, grouped in grouped_rows.items():
+                grouped.sort(key=lambda item: int(item["frame_index"]))
+                self.assertEqual(
+                    [int(item["frame_index"]) for item in grouped],
+                    list(range(len(grouped))),
+                )
+                self.assertEqual({item["task_index"] for item in grouped}, {episodes[episode_index]["task_index"]})
+
+            expected_ranges = {"train": [], "val": [], "test": []}
+            for episode in episodes:
+                split_name = _split_for_session_id(str(episode["source_session_id"]))
+                expected_ranges[split_name].append(int(episode["episode_index"]))
+            for split_name, indices in expected_ranges.items():
+                range_text = info_payload["splits"][split_name]
+                start_text, end_text = range_text.split(":")
+                self.assertEqual(indices, list(range(int(start_text), int(end_text))))
+
+            self.assertEqual(merge_report["valid_sessions"], 3)
+            self.assertEqual(merge_report["scanned_directories"], 6)
+            skipped_reasons = {item["reason"] for item in merge_report["skipped"]}
+            self.assertIn("missing_trajectory", skipped_reasons)
+            self.assertIn("no_valid_rows", skipped_reasons)
+            self.assertIn("not_a_session_dir", skipped_reasons)
+
+            source_ids = {episode["source_session_id"] for episode in episodes}
+            self.assertEqual(
+                source_ids,
+                {
+                    SessionReader(session_a).manifest.session_id,
+                    SessionReader(session_b).manifest.session_id,
+                    SessionReader(session_c).manifest.session_id,
+                },
+            )
+
+    @unittest.skipIf(av is None or cv2 is None, "未安装 PyAV 或 opencv-python")
+    def test_lerobot_merge_export_preserves_unique_media_and_cli_entrypoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            self._create_lerobot_merge_session(
+                tmp_dir,
+                session_name="session_media_one",
+                task_name="task_media",
+                include_camera=True,
+                include_microphone=True,
+            )
+            self._create_lerobot_merge_session(
+                tmp_dir,
+                session_name="session_media_two",
+                task_name="task_media",
+                include_camera=True,
+                include_microphone=True,
+            )
+
+            repo_root = Path(__file__).resolve().parents[1]
+            cli_result = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "scripts" / "sdk_export.py"),
+                    str(root),
+                    "--format",
+                    "lerobot",
+                    "--merge-sessions",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=str(repo_root),
+            )
+            self.assertEqual(cli_result.returncode, 0, msg=cli_result.stderr)
+
+            import pyarrow.parquet as pq
+
+            output_path = root / "exports" / "lerobot_merged"
+            rows = pq.read_table(output_path / "data" / "chunk-000" / "file-000.parquet").to_pylist()
+            image_paths = [row["observation.images.camera"]["path"] for row in rows]
+            audio_paths = [row["observation.audios.microphone"]["path"] for row in rows]
+            self.assertEqual(len(image_paths), len(set(image_paths)))
+            self.assertEqual(len(audio_paths), len(set(audio_paths)))
+            for relative_path in image_paths + audio_paths:
+                self.assertTrue((output_path / relative_path).exists())
 
     def test_export_csv_snapshot_with_compensation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

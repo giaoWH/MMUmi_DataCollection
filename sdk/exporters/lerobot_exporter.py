@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -32,6 +33,20 @@ class LeRobotActionSample:
     next_gripper_position: float
 
 
+@dataclass
+class LeRobotEpisodeFragment:
+    session_dir: Path
+    session_id: str
+    task_name: str
+    align_rate_hz: float
+    episode_index: int
+    session_annotations: dict[str, Any]
+    rows: list[dict[str, Any]]
+    row_state_maps: list[dict[str, float]]
+    feature_overrides: dict[str, dict[str, Any]]
+    split: str | None = None
+
+
 def count_lerobot_eligible_rows(reader: SessionReader) -> int:
     frame_index = _build_frame_index(reader)
     aligned_records = list(reader.iter_aligned_records())
@@ -48,19 +63,163 @@ class LeRobotSessionExporter(SessionExporter):
     export_format = "lerobot"
 
     def export(self, session_dir: str | Path, output_path: str | Path | None = None) -> ExportResult:
-        reader = SessionReader(session_dir)
-        target = Path(output_path) if output_path else Path(session_dir) / "exports" / "lerobot"
-        meta_dir = target / "meta"
-        episodes_dir = meta_dir / "episodes" / "chunk-000"
-        data_dir = target / "data" / "chunk-000"
-        images_dir = target / "images"
-        audio_dir = target / "audio"
-        meta_dir.mkdir(parents=True, exist_ok=True)
-        episodes_dir.mkdir(parents=True, exist_ok=True)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        images_dir.mkdir(parents=True, exist_ok=True)
-        audio_dir.mkdir(parents=True, exist_ok=True)
+        session_dir = Path(session_dir)
+        target = Path(output_path) if output_path else session_dir / "exports" / "lerobot"
+        paths = _prepare_lerobot_output_dirs(target)
 
+        reader = SessionReader(session_dir)
+        fragment = self._build_episode_fragment(
+            reader=reader,
+            session_dir=session_dir,
+            images_dir=paths.images_dir,
+            audio_dir=paths.audio_dir,
+            global_row_start=0,
+            episode_index=0,
+            include_source_session_id=False,
+            split=None,
+        )
+        payload = self._finalize_dataset([fragment])
+        self._write_dataset(
+            target=target,
+            rows=payload.rows,
+            episodes=payload.episodes,
+            tasks=payload.tasks,
+            feature_overrides=payload.feature_overrides,
+            fps=payload.fps,
+            splits={"train": "0:1"},
+        )
+        return ExportResult(export_format=self.export_format, output_path=target)
+
+    def export_sessions_dir(self, sessions_dir: str | Path, output_path: str | Path | None = None) -> ExportResult:
+        sessions_dir = Path(sessions_dir)
+        target = Path(output_path) if output_path else sessions_dir / "exports" / "lerobot_merged"
+        scanned_dirs = sorted(path for path in sessions_dir.iterdir() if path.is_dir()) if sessions_dir.exists() else []
+        excluded_dirs = {target}
+        if target.parent.parent == sessions_dir:
+            excluded_dirs.add(target.parent)
+        scanned_dirs = [path for path in scanned_dirs if path not in excluded_dirs]
+        paths = _prepare_lerobot_output_dirs(target)
+        skipped: list[dict[str, Any]] = []
+        candidates: list[tuple[str, str, Path, SessionReader]] = []
+        for path in scanned_dirs:
+            if not _looks_like_session_dir(path):
+                skipped.append(
+                    {
+                        "session_dir": path.name,
+                        "session_id": None,
+                        "reason": "not_a_session_dir",
+                    }
+                )
+                continue
+            try:
+                reader = SessionReader(path)
+            except Exception as exc:
+                skipped.append(
+                    {
+                        "session_dir": path.name,
+                        "session_id": None,
+                        "reason": f"session_read_error: {exc}",
+                    }
+                )
+                continue
+            session_id = reader.manifest.session_id
+            missing_reason = _missing_required_session_component(path, reader)
+            if missing_reason is not None:
+                skipped.append(
+                    {
+                        "session_dir": path.name,
+                        "session_id": session_id,
+                        "reason": missing_reason,
+                    }
+                )
+                continue
+            candidates.append((_split_for_session_id(session_id), session_id, path, reader))
+
+        split_order = {"train": 0, "val": 1, "test": 2}
+        candidates.sort(key=lambda item: (split_order[item[0]], item[1], item[2].name))
+
+        fragments: list[LeRobotEpisodeFragment] = []
+        next_row_index = 0
+        next_episode_index = 0
+        for split_name, session_id, path, reader in candidates:
+            try:
+                fragment = self._build_episode_fragment(
+                    reader=reader,
+                    session_dir=path,
+                    images_dir=paths.images_dir,
+                    audio_dir=paths.audio_dir,
+                    global_row_start=next_row_index,
+                    episode_index=next_episode_index,
+                    include_source_session_id=True,
+                    split=split_name,
+                )
+            except Exception as exc:
+                skipped.append(
+                    {
+                        "session_dir": path.name,
+                        "session_id": session_id,
+                        "reason": f"export_error: {exc}",
+                    }
+                )
+                continue
+
+            if not fragment.rows:
+                skipped.append(
+                    {
+                        "session_dir": path.name,
+                        "session_id": session_id,
+                        "reason": "no_valid_rows",
+                    }
+                )
+                continue
+
+            fragments.append(fragment)
+            next_row_index += len(fragment.rows)
+            next_episode_index += 1
+
+        payload = self._finalize_dataset(fragments)
+        split_counts = _build_split_counts(fragments)
+        splits = _build_split_ranges(split_counts)
+        self._write_dataset(
+            target=target,
+            rows=payload.rows,
+            episodes=payload.episodes,
+            tasks=payload.tasks,
+            feature_overrides=payload.feature_overrides,
+            fps=payload.fps,
+            splits=splits,
+        )
+        merge_report = {
+            "scanned_directories": len(scanned_dirs),
+            "valid_sessions": len(fragments),
+            "skipped_sessions": len(skipped),
+            "skipped": skipped,
+            "splits": {
+                split_name: {
+                    "episodes": split_counts[split_name]["episodes"],
+                    "rows": split_counts[split_name]["rows"],
+                }
+                for split_name in ("train", "val", "test")
+            },
+        }
+        (paths.meta_dir / "merge_report.json").write_text(
+            json.dumps(merge_report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return ExportResult(export_format=self.export_format, output_path=target)
+
+    def _build_episode_fragment(
+        self,
+        *,
+        reader: SessionReader,
+        session_dir: Path,
+        images_dir: Path,
+        audio_dir: Path,
+        global_row_start: int,
+        episode_index: int,
+        include_source_session_id: bool,
+        split: str | None,
+    ) -> LeRobotEpisodeFragment:
         frame_index = _build_frame_index(reader)
         trajectory_frames = list(reader.iter_trajectory_frames())
         aligned_records = list(reader.iter_aligned_records())
@@ -88,19 +247,24 @@ class LeRobotSessionExporter(SessionExporter):
                 ],
             }
         }
-        state_field_order: list[str] = []
-        row_state_maps: list[dict[str, float]] = []
+
         rows: list[dict[str, Any]] = []
-        for row_index, sample in enumerate(samples):
+        row_state_maps: list[dict[str, float]] = []
+        session_id = reader.manifest.session_id
+        task_name = self._resolve_task_name(session_annotations)
+        for local_row_index, sample in enumerate(samples):
             record = sample.aligned_record
             current_compensation = record.get("metadata", {}).get("gravity_compensation")
+            row_index = global_row_start + local_row_index
             row: dict[str, Any] = {
                 "index": row_index,
-                "episode_index": 0,
-                "frame_index": row_index,
+                "episode_index": episode_index,
+                "frame_index": local_row_index,
                 "timestamp": record["aligned_time"],
                 "task_index": 0,
             }
+            if include_source_session_id:
+                row["source_session_id"] = session_id
             action_vector = [
                 sample.next_trajectory.position[index] - sample.current_trajectory.position[index]
                 for index in range(3)
@@ -164,62 +328,148 @@ class LeRobotSessionExporter(SessionExporter):
                 compensation=current_compensation,
             )
             row_state_maps.append(state_map)
-            for field_name in state_map:
-                if field_name not in state_field_order:
-                    state_field_order.append(field_name)
             if sample.aligned_index < len(row_annotations):
                 self._flatten_mapping(row, "", row_annotations[sample.aligned_index])
             rows.append(row)
 
-        if rows:
+        return LeRobotEpisodeFragment(
+            session_dir=session_dir,
+            session_id=session_id,
+            task_name=task_name,
+            align_rate_hz=align_rate_hz,
+            episode_index=episode_index,
+            session_annotations=session_annotations,
+            rows=rows,
+            row_state_maps=row_state_maps,
+            feature_overrides=feature_overrides,
+            split=split,
+        )
+
+    def _finalize_dataset(self, fragments: list[LeRobotEpisodeFragment]) -> "_LeRobotDatasetPayload":
+        feature_overrides: dict[str, dict[str, Any]] = {}
+        global_state_field_order: list[str] = []
+        task_names: list[str] = []
+        for fragment in fragments:
+            for key, value in fragment.feature_overrides.items():
+                feature_overrides.setdefault(key, value)
+            for state_map in fragment.row_state_maps:
+                for field_name in state_map:
+                    if field_name not in global_state_field_order:
+                        global_state_field_order.append(field_name)
+            if fragment.task_name not in task_names:
+                task_names.append(fragment.task_name)
+
+        if global_state_field_order:
             feature_overrides["observation.state"] = {
                 "dtype": "float32",
-                "shape": [len(state_field_order)],
-                "names": state_field_order,
+                "shape": [len(global_state_field_order)],
+                "names": global_state_field_order,
             }
-            for row, state_map in zip(rows, row_state_maps):
-                row["observation.state"] = [float(state_map.get(field_name, 0.0)) for field_name in state_field_order]
 
+        task_to_index = {task_name: index for index, task_name in enumerate(task_names)}
+        rows: list[dict[str, Any]] = []
+        episodes: list[dict[str, Any]] = []
+        for fragment in fragments:
+            task_index = task_to_index[fragment.task_name]
+            from_index = rows[-1]["index"] + 1 if rows else 0
+            for row, state_map in zip(fragment.rows, fragment.row_state_maps):
+                row["task_index"] = task_index
+                if global_state_field_order:
+                    row["observation.state"] = [
+                        float(state_map.get(field_name, 0.0))
+                        for field_name in global_state_field_order
+                    ]
+                rows.append(row)
+            episode_record = {
+                "episode_index": fragment.episode_index,
+                "length": len(fragment.rows),
+                "task_index": task_index,
+                "from_index": from_index,
+                "to_index": from_index + len(fragment.rows),
+                **fragment.session_annotations,
+            }
+            if fragment.rows and "source_session_id" in fragment.rows[0]:
+                episode_record["source_session_id"] = fragment.session_id
+            episodes.append(episode_record)
+
+        tasks = [
+            {
+                "task_index": task_to_index[task_name],
+                "task": task_name,
+            }
+            for task_name in task_names
+        ]
+        fps = fragments[0].align_rate_hz if fragments else 0.0
+        return _LeRobotDatasetPayload(
+            rows=rows,
+            episodes=episodes,
+            tasks=tasks,
+            feature_overrides=feature_overrides,
+            fps=fps,
+        )
+
+    def _write_dataset(
+        self,
+        *,
+        target: Path,
+        rows: list[dict[str, Any]],
+        episodes: list[dict[str, Any]],
+        tasks: list[dict[str, Any]],
+        feature_overrides: dict[str, dict[str, Any]],
+        fps: float,
+        splits: dict[str, str],
+    ) -> None:
+        paths = _prepare_lerobot_output_dirs(target)
         data_table = pa.Table.from_pylist(rows) if rows else pa.table({"index": pa.array([], type=pa.int64())})
-        pq.write_table(data_table, data_dir / "file-000.parquet")
+        pq.write_table(data_table, paths.data_dir / "file-000.parquet")
 
-        task_name = self._resolve_task_name(session_annotations)
-        episode_table = pa.Table.from_pylist(
-            [
-                {
-                    "episode_index": 0,
-                    "length": len(rows),
-                    "task_index": 0,
-                    "from_index": 0,
-                    "to_index": len(rows),
-                    **session_annotations,
-                }
-            ]
-        )
-        pq.write_table(episode_table, episodes_dir / "file-000.parquet")
+        if episodes:
+            episode_table = pa.Table.from_pylist(episodes)
+        else:
+            episode_table = pa.table({"episode_index": pa.array([], type=pa.int64())})
+        pq.write_table(episode_table, paths.episodes_dir / "file-000.parquet")
 
-        (meta_dir / "tasks.jsonl").write_text(
-            json.dumps({"task_index": 0, "task": task_name}, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        (meta_dir / "stats.json").write_text(
+        tasks_payload = "\n".join(json.dumps(task, ensure_ascii=False) for task in tasks)
+        if tasks_payload:
+            tasks_payload += "\n"
+        (paths.meta_dir / "tasks.jsonl").write_text(tasks_payload, encoding="utf-8")
+        (paths.meta_dir / "stats.json").write_text(
             json.dumps(self._build_stats(rows), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        (meta_dir / "info.json").write_text(
-            json.dumps(self._build_info(reader, rows, feature_overrides), ensure_ascii=False, indent=2),
+        (paths.meta_dir / "info.json").write_text(
+            json.dumps(
+                self._build_info(
+                    rows=rows,
+                    feature_overrides=feature_overrides,
+                    fps=fps,
+                    total_episodes=len(episodes),
+                    total_tasks=len(tasks),
+                    splits=splits,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
-        return ExportResult(export_format=self.export_format, output_path=target)
 
     def _build_info(
         self,
-        reader: SessionReader,
+        *,
         rows: list[dict[str, Any]],
         feature_overrides: dict[str, dict[str, Any]],
+        fps: float,
+        total_episodes: int,
+        total_tasks: int,
+        splits: dict[str, str],
     ) -> dict[str, Any]:
-        features = {}
-        for key in rows[0].keys() if rows else []:
+        features: dict[str, dict[str, Any]] = {}
+        ordered_keys: list[str] = []
+        for row in rows:
+            for key in row.keys():
+                if key not in ordered_keys:
+                    ordered_keys.append(key)
+        for key in ordered_keys:
             if key in feature_overrides:
                 features[key] = feature_overrides[key]
                 continue
@@ -229,30 +479,40 @@ class LeRobotSessionExporter(SessionExporter):
         return {
             "codebase_version": "v3.0",
             "robot_type": "unknown",
-            "total_episodes": 1,
+            "total_episodes": total_episodes,
             "total_frames": len(rows),
-            "total_tasks": 1,
+            "total_tasks": total_tasks,
             "chunks_size": len(rows),
-            "fps": float(reader.manifest.config.get("align_rate_hz", 0) or 0),
-            "splits": {"train": "0:1"},
+            "fps": float(fps or 0.0),
+            "splits": splits,
             "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
             "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
             "features": features,
         }
 
     def _build_stats(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
-        stats: dict[str, dict[str, float]] = {}
-        numeric_keys = {}
+        stats: dict[str, dict[str, float | list[float]]] = {}
+        numeric_keys: dict[str, list[np.ndarray]] = {}
         for row in rows:
             for key, value in row.items():
-                if isinstance(value, (int, float)) and key not in {"index", "episode_index", "frame_index", "task_index"}:
-                    numeric_keys.setdefault(key, []).append(float(value))
+                if key in {"index", "episode_index", "frame_index", "task_index"}:
+                    continue
+                sample = self._normalize_stats_sample(value)
+                if sample is None:
+                    continue
+                numeric_keys.setdefault(key, []).append(sample)
         for key, values in numeric_keys.items():
             if values:
+                stacked = np.stack(values, axis=0)
+                min_values = stacked.min(axis=0)
+                max_values = stacked.max(axis=0)
+                mean_values = stacked.mean(axis=0)
+                std_values = stacked.std(axis=0)
                 stats[key] = {
-                    "min": min(values),
-                    "max": max(values),
-                    "mean": sum(values) / len(values),
+                    "min": self._serialize_stats_value(min_values),
+                    "max": self._serialize_stats_value(max_values),
+                    "mean": self._serialize_stats_value(mean_values),
+                    "std": self._serialize_stats_value(std_values),
                 }
         return stats
 
@@ -278,6 +538,28 @@ class LeRobotSessionExporter(SessionExporter):
             return "string"
         return "string"
 
+    def _normalize_stats_sample(self, value: Any) -> np.ndarray | None:
+        if isinstance(value, bool):
+            return np.asarray([float(value)], dtype=np.float64)
+        if isinstance(value, (int, float)):
+            return np.asarray([float(value)], dtype=np.float64)
+        if isinstance(value, np.ndarray):
+            if value.ndim != 1 or value.dtype.kind not in {"b", "i", "u", "f"}:
+                return None
+            return value.astype(np.float64, copy=False)
+        if isinstance(value, (list, tuple)):
+            if not value or not all(isinstance(item, (bool, int, float)) for item in value):
+                return None
+            return np.asarray([float(item) for item in value], dtype=np.float64)
+        return None
+
+    def _serialize_stats_value(self, value: np.ndarray) -> float | list[float]:
+        if value.ndim == 0:
+            return float(value.item())
+        if value.shape == (1,):
+            return float(value[0])
+        return value.astype(np.float64).tolist()
+
     def _flatten_mapping(self, row: dict[str, Any], prefix: str, value: Any) -> None:
         if hasattr(value, "tolist") and not isinstance(value, (str, bytes)):
             self._flatten_mapping(row, prefix, value.tolist())
@@ -293,6 +575,91 @@ class LeRobotSessionExporter(SessionExporter):
                 self._flatten_mapping(row, child_prefix, item)
             return
         row[prefix] = value
+
+
+@dataclass(frozen=True)
+class _LeRobotOutputPaths:
+    meta_dir: Path
+    episodes_dir: Path
+    data_dir: Path
+    images_dir: Path
+    audio_dir: Path
+
+
+@dataclass(frozen=True)
+class _LeRobotDatasetPayload:
+    rows: list[dict[str, Any]]
+    episodes: list[dict[str, Any]]
+    tasks: list[dict[str, Any]]
+    feature_overrides: dict[str, dict[str, Any]]
+    fps: float
+
+
+def _prepare_lerobot_output_dirs(target: Path) -> _LeRobotOutputPaths:
+    meta_dir = target / "meta"
+    episodes_dir = meta_dir / "episodes" / "chunk-000"
+    data_dir = target / "data" / "chunk-000"
+    images_dir = target / "images"
+    audio_dir = target / "audio"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    episodes_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    images_dir.mkdir(parents=True, exist_ok=True)
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    return _LeRobotOutputPaths(
+        meta_dir=meta_dir,
+        episodes_dir=episodes_dir,
+        data_dir=data_dir,
+        images_dir=images_dir,
+        audio_dir=audio_dir,
+    )
+
+
+def _looks_like_session_dir(path: Path) -> bool:
+    return (path / "manifest.json").exists() or (path / "meta.json").exists()
+
+
+def _missing_required_session_component(path: Path, reader: SessionReader) -> str | None:
+    aligned_path = path / reader.manifest.aligned_path
+    if not aligned_path.exists():
+        return "missing_aligned"
+    trajectory_path = path / reader.manifest.trajectory_path
+    if not trajectory_path.exists():
+        return "missing_trajectory"
+    return None
+
+
+def _split_for_session_id(session_id: str) -> str:
+    digest = hashlib.sha1(session_id.encode("utf-8")).digest()
+    bucket = int.from_bytes(digest[:8], byteorder="big", signed=False) % 10
+    if bucket < 8:
+        return "train"
+    if bucket == 8:
+        return "val"
+    return "test"
+
+
+def _build_split_counts(fragments: list[LeRobotEpisodeFragment]) -> dict[str, dict[str, int]]:
+    counts = {
+        "train": {"episodes": 0, "rows": 0},
+        "val": {"episodes": 0, "rows": 0},
+        "test": {"episodes": 0, "rows": 0},
+    }
+    for fragment in fragments:
+        split_name = fragment.split or "train"
+        counts[split_name]["episodes"] += 1
+        counts[split_name]["rows"] += len(fragment.rows)
+    return counts
+
+
+def _build_split_ranges(split_counts: dict[str, dict[str, int]]) -> dict[str, str]:
+    cursor = 0
+    ranges: dict[str, str] = {}
+    for split_name in ("train", "val", "test"):
+        start = cursor
+        cursor += split_counts[split_name]["episodes"]
+        ranges[split_name] = f"{start}:{cursor}"
+    return ranges
 
 
 def _attach_training_friendly_media(
