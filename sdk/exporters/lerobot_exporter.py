@@ -15,7 +15,7 @@ import pyarrow.parquet as pq
 from sdk.annotations import AnnotationService
 from sdk.core.frame import TrajectoryFrame, seconds_to_ns
 from sdk.exporters.base import ExportResult, SessionExporter
-from sdk.storage import SessionReader
+from sdk.storage import SessionReader, discover_session_dirs, looks_like_session_dir
 
 try:
     import cv2
@@ -93,19 +93,22 @@ class LeRobotSessionExporter(SessionExporter):
     def export_sessions_dir(self, sessions_dir: str | Path, output_path: str | Path | None = None) -> ExportResult:
         sessions_dir = Path(sessions_dir)
         target = Path(output_path) if output_path else sessions_dir / "exports" / "lerobot_merged"
-        scanned_dirs = sorted(path for path in sessions_dir.iterdir() if path.is_dir()) if sessions_dir.exists() else []
+        scanned_dirs = discover_session_dirs(sessions_dir)
         excluded_dirs = {target}
         if target.parent.parent == sessions_dir:
             excluded_dirs.add(target.parent)
-        scanned_dirs = [path for path in scanned_dirs if path not in excluded_dirs]
+        scanned_dirs = [
+            path for path in scanned_dirs
+            if path not in excluded_dirs and not any(parent in excluded_dirs for parent in path.parents)
+        ]
         paths = _prepare_lerobot_output_dirs(target)
         skipped: list[dict[str, Any]] = []
         candidates: list[tuple[str, str, Path, SessionReader]] = []
         for path in scanned_dirs:
-            if not _looks_like_session_dir(path):
+            if not looks_like_session_dir(path):
                 skipped.append(
                     {
-                        "session_dir": path.name,
+                        "session_dir": str(path.relative_to(sessions_dir)),
                         "session_id": None,
                         "reason": "not_a_session_dir",
                     }
@@ -616,7 +619,7 @@ def _prepare_lerobot_output_dirs(target: Path) -> _LeRobotOutputPaths:
 
 
 def _looks_like_session_dir(path: Path) -> bool:
-    return (path / "manifest.json").exists() or (path / "meta.json").exists()
+    return looks_like_session_dir(path)
 
 
 def _missing_required_session_component(path: Path, reader: SessionReader) -> str | None:

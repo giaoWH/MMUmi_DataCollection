@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from sdk.storage import SessionReader
+from sdk.storage import SessionReader, discover_session_dirs, looks_like_session_dir
 
 from .service import AnnotationService, create_annotation_service
 
@@ -1701,32 +1701,54 @@ class AnnotationWebApp:
     def _navigation_payload(self) -> dict[str, Any]:
         total = len(self.sibling_sessions)
         current_index = self.current_session_index
+        collection_root = self._session_collection_root()
+        current_name = self.session_dir.name
+        if collection_root is not None:
+            try:
+                current_name = str(self.session_dir.relative_to(collection_root))
+            except ValueError:
+                current_name = self.session_dir.name
         return {
             "total": total,
             "position": (current_index + 1) if current_index is not None else None,
             "has_previous": current_index is not None and current_index > 0,
             "has_next": current_index is not None and current_index < total - 1,
             "current_session_dir": str(self.session_dir),
-            "current_session_name": self.session_dir.name,
+            "current_session_name": current_name,
         }
 
     def _discover_sibling_sessions(self) -> list[Path]:
-        parent = self.session_dir.parent
-        if not parent.exists():
+        output_root = self._session_collection_root()
+        if output_root is None or not output_root.exists():
             return [self.session_dir]
-        candidates = [
-            path
-            for path in parent.iterdir()
-            if path.is_dir() and self._looks_like_session_dir(path)
-        ]
+        candidates = discover_session_dirs(output_root)
         if self.session_dir not in candidates:
             candidates.append(self.session_dir)
-        return sorted(candidates, key=lambda item: item.name)
+        return sorted(candidates, key=lambda item: self._session_sort_key(item, output_root))
 
     def _looks_like_session_dir(self, path: Path) -> bool:
-        if (path / "manifest.json").exists() or (path / "meta.json").exists():
-            return True
-        return (path / "streams").is_dir() and (path / "aligned.jsonl").exists()
+        return looks_like_session_dir(path)
+
+    def _session_collection_root(self) -> Path | None:
+        configured_output_root = None
+        if self.reader is not None:
+            configured_output_root = (self.reader.manifest.config or {}).get("output_root")
+        if configured_output_root:
+            output_root = Path(configured_output_root)
+        else:
+            output_root = None
+        if output_root is not None and output_root.exists():
+            return output_root
+        fallback = self.session_dir.parent
+        if looks_like_session_dir(fallback):
+            fallback = fallback.parent
+        return fallback if fallback.exists() else None
+
+    def _session_sort_key(self, session_dir: Path, output_root: Path) -> tuple[str, ...]:
+        try:
+            return tuple(session_dir.relative_to(output_root).parts)
+        except ValueError:
+            return ("..", str(session_dir))
 
     def _build_frame_index(self) -> dict[str, dict[int, Any]]:
         return {

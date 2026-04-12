@@ -58,7 +58,7 @@ class MediaEncodingConfig:
         return payload
 
 
-def media_path_for_sensor(sensor_name: str, modality: str, task_slug: str, seq: int = 1) -> str | None:
+def media_path_for_sensor(sensor_name: str, modality: str, task_slug: str, seq: str | int = 1) -> str | None:
     return stream_media_path(sensor_name, modality, task_slug, seq)
 
 

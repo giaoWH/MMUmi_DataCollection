@@ -4,7 +4,7 @@ UMI Data Collection SDK
 
 1. 统一接入多种真实传感器与 fake 数据源
 2. 在统一时间轴下记录多模态原始数据
-3. 将原始流、对齐结果、轨迹结果写入标准 session
+3. 将原始流、对齐结果、轨迹结果写入按 task 批次分组的标准 session
 4. 为 ORB-SLAM3 提供 RGB-D-Inertial / Stereo / Stereo-Inertial 输入
 5. 将 session 导出为常见机器人与具身智能数据格式
 
@@ -31,7 +31,7 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 2. 首次安装时按需运行 `python scripts/sdk_discover_ports.py`
 3. 在采集端运行 `conda activate umi_sdk`
 4. 运行 `python scripts/sdk_record.py`
-5. 将 `sessions/session_xxx` 拷贝到 PC
+5. 将 `sessions/<task>/<index>` 拷贝到 PC
 6. 在 PC 上运行 `conda activate umi_sdk`
 7. 运行 `python scripts/sdk_process_trajectory.py <session_dir> --config configs/record.yaml`
 8. 在 PC 上运行 `python scripts/sdk_annotate.py <session_dir>`

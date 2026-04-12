@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from sdk.constants import SDK_SCHEMA_VERSION
 from sdk.core.frame import AlignedFrame, SensorFrame
 from sdk.core.frame import TrajectoryFrame
 from sdk.core.session import SessionInfo
@@ -88,7 +89,7 @@ class SessionWriter:
             )
         except KeyError as exc:
             raise FileNotFoundError(
-                f"session manifest 缺少 2.1.0 所需的 task_name/task_slug 字段，不支持旧命名 session: {session_dir}"
+                f"session manifest 缺少 {SDK_SCHEMA_VERSION} 所需的 task_name/task_slug 字段，不支持旧命名 session: {session_dir}"
             ) from exc
         writer = cls.__new__(cls)
         writer.session_info = None
@@ -134,6 +135,20 @@ class SessionWriter:
 
     def write_trajectory_frame(self, frame: TrajectoryFrame) -> None:
         self._submit_write("trajectory", frame)
+
+    def __enter__(self) -> "SessionWriter":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def __del__(self) -> None:  # pragma: no cover
+        if getattr(self, "_closed", True):
+            return
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def close(self) -> None:
         if self._closed:
@@ -237,6 +252,9 @@ class SessionWriter:
                 session_dir=self.manifest.session_dir,
                 task_name=self.manifest.task_name,
                 task_slug=self.manifest.task_slug,
+                task_dir=self.manifest.task_dir,
+                item_index=self.manifest.item_index,
+                item_name=self.manifest.item_name,
                 config=self.manifest.config,
                 sensors=sensors,
                 notes=self.manifest.notes,
@@ -340,6 +358,9 @@ class SessionWriter:
             "started_at": self.session_info.started_at,
             "task_name": self.session_info.task_name,
             "task_slug": self.session_info.task_slug,
+            "task_dir": self.session_info.task_dir,
+            "item_index": self.session_info.item_index,
+            "item_name": self.session_info.item_name,
             "config": self._to_jsonable(self.session_info.config),
             "sensors": self._to_jsonable(self.session_info.sensors),
             "notes": self._to_jsonable(self.session_info.notes),
@@ -366,6 +387,7 @@ class SessionWriter:
                     sensor_name,
                     str(sensor_meta.get("modality", "unknown")),
                     self.session_info.task_slug,
+                    self.session_info.item_name,
                 ),
                 artifacts_dir=f"streams/{sensor_name}/artifacts",
                 storage_mode=self._storage_mode_for_sensor(
@@ -376,6 +398,7 @@ class SessionWriter:
                     sensor_name,
                     str(sensor_meta.get("modality", "unknown")),
                     self.session_info.task_slug,
+                    self.session_info.item_name,
                 ),
                 media_role=media_role_for_sensor(
                     sensor_name,
@@ -392,6 +415,9 @@ class SessionWriter:
             session_dir=str(self.base_dir),
             task_name=self.session_info.task_name,
             task_slug=self.session_info.task_slug,
+            task_dir=self.session_info.task_dir,
+            item_index=self.session_info.item_index,
+            item_name=self.session_info.item_name,
             config=self._to_jsonable(self.session_info.config),
             sensors=streams,
             notes=self._to_jsonable(self.session_info.notes),
@@ -438,7 +464,7 @@ class SessionWriter:
             )
 
     def _storage_mode_for_sensor(self, sensor_name: str, modality: str) -> str:
-        if media_path_for_sensor(sensor_name, modality, self.session_info.task_slug):
+        if media_path_for_sensor(sensor_name, modality, self.session_info.task_slug, self.session_info.item_name):
             return "indexed_media"
         return "artifact_stream"
 
@@ -667,6 +693,7 @@ class SessionWriter:
             modality,
             frame_id,
             key,
+            self.manifest.item_name,
         )
         channel_order = self._infer_channel_order(
             sensor_type=sensor_type,

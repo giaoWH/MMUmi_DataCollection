@@ -6,7 +6,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-import pyrealsense2 as rs
+
+try:
+    import pyrealsense2 as rs
+except ImportError:  # pragma: no cover
+    rs = None
 
 from .common.base_sensor import BaseSensor
 
@@ -98,6 +102,8 @@ class RealsenseSensor(BaseSensor):
         self._max_queue_depth = 0
 
     def start(self):
+        if rs is None:
+            raise RuntimeError("未安装 pyrealsense2，无法启动 RealSense 传感器")
         self.latest_data = None
         self.latest_timestamp = 0.0
         self.frame_count = 0
@@ -216,6 +222,8 @@ class RealsenseSensor(BaseSensor):
         self._pointcloud = None
 
     def _open_pipeline(self):
+        if rs is None:
+            raise RuntimeError("未安装 pyrealsense2，无法打开 RealSense 设备")
         self._pipeline = rs.pipeline()
         config = rs.config()
         if self.config.serial_number:

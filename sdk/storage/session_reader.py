@@ -6,6 +6,8 @@ from typing import Any, Iterator
 
 import numpy as np
 
+from sdk.constants import SDK_SCHEMA_VERSION
+from sdk.core.session import infer_session_layout
 from sdk.session_naming import stream_frames_path
 from sdk.core.frame import FrameTime, SensorFrame, TrajectoryFrame
 from sdk.storage.media_io import MediaArtifactReader, media_path_for_sensor, media_role_for_sensor
@@ -59,6 +61,8 @@ class SessionReader:
             "started_at": format_wall_time(self.manifest.started_at),
             "task_name": self.manifest.task_name,
             "task_slug": self.manifest.task_slug,
+            "task_dir": self.manifest.task_dir,
+            "item_name": self.manifest.item_name,
             "sensor_names": self.sensor_names(),
             "aligned_path": self.manifest.aligned_path,
             "trajectory_path": self.manifest.trajectory_path,
@@ -217,7 +221,7 @@ class SessionReader:
                 return SessionManifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
             except KeyError as exc:
                 raise FileNotFoundError(
-                    f"session manifest 缺少 2.1.0 所需的 task_name/task_slug 字段，不支持旧命名 session: {self.session_dir}"
+                    f"session manifest 缺少 {SDK_SCHEMA_VERSION} 所需的 task_name/task_slug 字段，不支持旧命名 session: {self.session_dir}"
                 ) from exc
 
         meta_path = self.session_dir / "meta.json"
@@ -230,6 +234,19 @@ class SessionReader:
             raise FileNotFoundError(
                 f"未找到可读取的新 schema manifest.json，且 meta.json 缺少 task_name/task_slug: {self.session_dir}"
             )
+        task_dir = meta_payload.get("task_dir")
+        item_name = meta_payload.get("item_name")
+        item_index = meta_payload.get("item_index")
+        try:
+            inferred_task_dir, inferred_item_index, inferred_item_name = infer_session_layout(self.session_dir)
+        except ValueError:
+            inferred_task_dir, inferred_item_index, inferred_item_name = "", 1, "01"
+        if not isinstance(task_dir, str) or not task_dir:
+            task_dir = inferred_task_dir
+        if not isinstance(item_name, str) or not item_name.isdigit():
+            item_name = inferred_item_name
+        if item_index is None:
+            item_index = inferred_item_index
         sensors = {}
         for sensor_name, metadata in meta_payload.get("sensors", {}).items():
             modality = metadata.get("modality", "unknown")
@@ -237,14 +254,14 @@ class SessionReader:
                 "sensor_name": sensor_name,
                 "sensor_type": metadata.get("sensor_type", sensor_name),
                 "modality": modality,
-                "frames_path": stream_frames_path(sensor_name, modality, task_slug),
+                "frames_path": stream_frames_path(sensor_name, modality, task_slug, item_name),
                 "artifacts_dir": f"streams/{sensor_name}/artifacts",
                 "storage_mode": (
                     "indexed_media"
-                    if media_path_for_sensor(sensor_name, modality, task_slug)
+                    if media_path_for_sensor(sensor_name, modality, task_slug, item_name)
                     else "artifact_stream"
                 ),
-                "media_path": media_path_for_sensor(sensor_name, modality, task_slug),
+                "media_path": media_path_for_sensor(sensor_name, modality, task_slug, item_name),
                 "media_role": media_role_for_sensor(sensor_name, modality),
                 "metadata": metadata,
             }
@@ -255,6 +272,9 @@ class SessionReader:
             "session_dir": str(self.session_dir),
             "task_name": task_name,
             "task_slug": task_slug,
+            "task_dir": task_dir,
+            "item_index": int(item_index),
+            "item_name": item_name,
             "config": meta_payload.get("config", {}),
             "sensors": sensors,
             "notes": meta_payload.get("notes", {}),

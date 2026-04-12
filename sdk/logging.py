@@ -14,7 +14,9 @@ def build_logger(
 ) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(level)
-    logger.handlers.clear()
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
     logger.propagate = False
 
     formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")

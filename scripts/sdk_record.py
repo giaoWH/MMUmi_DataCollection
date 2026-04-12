@@ -29,7 +29,7 @@ from sdk.core import BufferedFrameAligner, SensorRegistry, SessionInfo, SystemCl
 from sdk.logging import build_logger
 from sdk.perception import OrbSlam3SessionProcessConfig
 from sdk.processors import GravityCompensationConfig, GravityCompensator
-from sdk.session_naming import normalize_task_slug
+from sdk.session_naming import format_item_name, normalize_task_slug
 from sdk.sensors.fake import (
     FakeCameraAdapter,
     FakeCameraConfig,
@@ -88,6 +88,7 @@ STATE_EXITING = "exiting"
 class RecorderConfig:
     output_root: str = "sessions"
     task_name: str = ""
+    task_name_batch_size: int = 5
     sensor_source: str = "real"
     align_rate_hz: float = 30.0
     duration_sec: float = 0.0
@@ -125,6 +126,15 @@ class RecordingSession:
     next_aligned_monotonic_time_ns: int
     sensor_status_baseline: dict[str, dict[str, object]]
     session_queue_peak: dict[str, int]
+
+
+@dataclass
+class TaskBatchContext:
+    task_name: str
+    task_dir: str
+    saved_count: int
+    next_item_index: int
+    next_item_name: str
 
 
 @dataclass
@@ -697,6 +707,7 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict[str, object]:
     mapping = {
         "output_root": ("output_root",),
         "task_name": ("task_name",),
+        "task_name_batch_size": ("task_name_batch_size",),
         "sensor_source": ("sensor_source",),
         "align_rate_hz": ("align_rate_hz",),
         "duration_sec": ("duration_sec",),
@@ -753,6 +764,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
     )
     parser.add_argument("--output-root")
     parser.add_argument("--task-name")
+    parser.add_argument("--task-name-batch-size", dest="task_name_batch_size", type=int)
     parser.add_argument("--sensor-source", choices=["real", "fake"])
     parser.add_argument("--align-rate", dest="align_rate_hz", type=float)
     parser.add_argument("--duration", dest="duration_sec", type=float)
@@ -798,6 +810,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
     config = RecorderConfig(
         output_root=payload["output_root"],
         task_name=payload.get("task_name", ""),
+        task_name_batch_size=max(1, int(payload.get("task_name_batch_size", 5))),
         sensor_source=payload.get("sensor_source", "real"),
         align_rate_hz=payload["align_rate_hz"],
         duration_sec=payload["duration_sec"],
@@ -905,6 +918,9 @@ def _create_session_info(
     config_path: Path | None,
     registry: SensorRegistry,
     task_name: str | None = None,
+    task_dir: str | None = None,
+    item_index: int | None = None,
+    item_name: str | None = None,
     record_run_id: str | None = None,
     shared_calibration: dict[str, object] | None = None,
     session_index: int | None = None,
@@ -929,26 +945,11 @@ def _create_session_info(
         sensors=registry.get_metadata(),
         config=asdict(config),
         notes=notes,
-        session_name=_build_interactive_session_name(task_name) if task_name is not None else None,
+        task_dir=task_dir,
+        item_index=item_index,
+        item_name=item_name,
+        batch_size=config.task_name_batch_size,
     )
-
-
-def _build_interactive_session_name(task_name: str) -> str:
-    normalized_task_name = _normalize_task_name_for_session_name(task_name)
-    date_str = datetime.now().strftime("%Y%m%d")
-    return f"{normalized_task_name}-{date_str}"
-
-
-def _normalize_task_name_for_session_name(task_name: str) -> str:
-    collapsed = " ".join(task_name.strip().split())
-    sanitized_chars: list[str] = []
-    for char in collapsed:
-        if char in {"/", "\\"} or ord(char) < 32:
-            sanitized_chars.append("-")
-            continue
-        sanitized_chars.append(char)
-    normalized = "".join(sanitized_chars).strip(" .-")
-    return normalized or "session"
 
 
 def _create_session_logger(session_info: SessionInfo) -> logging.Logger:
@@ -1093,6 +1094,9 @@ def _start_interactive_session(
     config_path: Path | None,
     registry: SensorRegistry,
     task_name: str,
+    task_dir: str | None,
+    item_index: int | None,
+    item_name: str | None,
     record_run_id: str,
     shared_calibration: dict[str, object],
     session_index: int,
@@ -1104,6 +1108,9 @@ def _start_interactive_session(
         config_path=config_path,
         registry=registry,
         task_name=task_name,
+        task_dir=task_dir,
+        item_index=item_index,
+        item_name=item_name,
         record_run_id=record_run_id,
         shared_calibration=shared_calibration,
         session_index=session_index,
@@ -1382,6 +1389,7 @@ def _run_interactive(
     stopping_session: StoppingSession | None = None
     stopped_session: StoppedSession | None = None
     pending_task_name: str | None = None
+    current_batch: TaskBatchContext | None = None
     registry_started = False
     exit_code = 0
     exit_after_stopping = False
@@ -1438,7 +1446,10 @@ def _run_interactive(
 
         print("")
         print("所有传感器已就绪，校准完成。")
-        print("操作说明: 第一次空格填写 task name，第二次空格开始录制，第三次空格结束录制")
+        print(
+            f"操作说明: 每填写一次 task name，将连续录制并保存 {config.task_name_batch_size} 条；"
+            "首条仍然是第一次空格填写 task name，第二次空格开始录制，第三次空格结束录制"
+        )
         print("录制结束后按 Enter 保存当前 session，按 q 放弃当前 session，按 Ctrl+C 退出")
         state = STATE_IDLE_READY
 
@@ -1589,16 +1600,45 @@ def _run_interactive(
 
             if state == STATE_IDLE_READY:
                 if action == KEY_SPACE:
-                    try:
-                        pending_task_name = _prompt_task_name(key_source)
-                    except KeyboardInterrupt:
-                        pending_task_name = None
-                        is_running = False
-                        continue
-                    if pending_task_name is not None:
-                        state = STATE_READY_TO_RECORD
+                    if current_batch is not None:
+                        session_index += 1
+                        active_session = _start_interactive_session(
+                            config=config,
+                            config_path=config_path,
+                            registry=registry,
+                            task_name=current_batch.task_name,
+                            task_dir=current_batch.task_dir,
+                            item_index=current_batch.next_item_index,
+                            item_name=current_batch.next_item_name,
+                            record_run_id=record_run_id,
+                            shared_calibration=shared_calibration,
+                            session_index=session_index,
+                        )
+                        try:
+                            _write_session_annotation(
+                                session_dir=active_session.session_info.output_dir,
+                                schema=annotation_schema,
+                                task_name=current_batch.task_name,
+                            )
+                        except Exception:
+                            active_session.writer.close()
+                            shutil.rmtree(active_session.session_info.output_dir, ignore_errors=True)
+                            raise
+                        state = STATE_RECORDING
+                    else:
+                        try:
+                            pending_task_name = _prompt_task_name(key_source)
+                        except KeyboardInterrupt:
+                            pending_task_name = None
+                            is_running = False
+                            continue
+                        if pending_task_name is not None:
+                            state = STATE_READY_TO_RECORD
                 elif action == KEY_ENTER:
-                    print("\n当前还没有待保存的 session。先按空格填写 task name。")
+                    if current_batch is not None:
+                        print(f"\n当前批次 task name 为 {current_batch.task_name}。按空格开始下一条录制。")
+                    else:
+                        print("\n当前还没有待保存的 session。先按空格填写 task name。")
                 elif action == KEY_QUIT_SESSION:
                     print("\n当前没有可放弃的 session。使用 Ctrl+C 退出。")
             elif state == STATE_READY_TO_RECORD:
@@ -1609,9 +1649,19 @@ def _run_interactive(
                         config_path=config_path,
                         registry=registry,
                         task_name=pending_task_name or "",
+                        task_dir=None,
+                        item_index=None,
+                        item_name=None,
                         record_run_id=record_run_id,
                         shared_calibration=shared_calibration,
                         session_index=session_index,
+                    )
+                    current_batch = TaskBatchContext(
+                        task_name=active_session.session_info.task_name,
+                        task_dir=active_session.session_info.task_dir,
+                        saved_count=0,
+                        next_item_index=active_session.session_info.item_index,
+                        next_item_name=active_session.session_info.item_name,
                     )
                     try:
                         _write_session_annotation(
@@ -1622,6 +1672,7 @@ def _run_interactive(
                     except Exception:
                         active_session.writer.close()
                         shutil.rmtree(active_session.session_info.output_dir, ignore_errors=True)
+                        current_batch = None
                         raise
                     pending_task_name = None
                     state = STATE_RECORDING
@@ -1659,14 +1710,43 @@ def _run_interactive(
             elif state == STATE_REVIEW_STOPPED and stopped_session is not None:
                 if action == KEY_ENTER:
                     print(f"已保存 session #{stopped_session.session_index}: {stopped_session.session_info.output_dir}")
+                    if current_batch is None:
+                        current_batch = TaskBatchContext(
+                            task_name=stopped_session.session_info.task_name,
+                            task_dir=stopped_session.session_info.task_dir,
+                            saved_count=0,
+                            next_item_index=stopped_session.session_info.item_index,
+                            next_item_name=stopped_session.session_info.item_name,
+                        )
+                    current_batch.saved_count += 1
+                    if current_batch.saved_count >= config.task_name_batch_size:
+                        current_batch = None
+                    else:
+                        current_batch.next_item_index = current_batch.saved_count + 1
+                        current_batch.next_item_name = format_item_name(
+                            current_batch.next_item_index,
+                            batch_size=config.task_name_batch_size,
+                        )
                     stopped_session = None
                     state = STATE_IDLE_READY
-                    print("按空格开始下一个 session，按 Ctrl+C 结束。")
+                    if current_batch is None:
+                        print("当前 task 批次已完成。按空格填写新的 task name，按 Ctrl+C 结束。")
+                    else:
+                        print(
+                            f"当前 task 批次进度: {current_batch.saved_count}/{config.task_name_batch_size}。"
+                            "按空格开始下一条录制，沿用当前 task name。"
+                        )
                 elif action == KEY_QUIT_SESSION:
                     _discard_stopped_session(stopped_session, reason="operator_discard")
                     stopped_session = None
                     state = STATE_IDLE_READY
-                    print("已回到待机状态。按空格开始下一个 session，按 Ctrl+C 结束。")
+                    if current_batch is not None:
+                        print(
+                            f"已回到待机状态。当前 task 批次仍为 {current_batch.task_name}，"
+                            "本条不计入名额；按空格重录当前序号。"
+                        )
+                    else:
+                        print("已回到待机状态。按空格开始下一个 session，按 Ctrl+C 结束。")
                 elif action == KEY_SPACE:
                     print("\n当前 session 已停止，请先按 Enter 保存或按 q 放弃。")
 

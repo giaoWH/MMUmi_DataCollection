@@ -8,7 +8,11 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import pyrealsense2 as rs
+
+try:
+    import pyrealsense2 as rs
+except ImportError:  # pragma: no cover
+    rs = None
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -216,6 +220,8 @@ def main() -> None:
     args = parser.parse_args()
 
     print(f"pyrealsense2 已加载: pipeline={hasattr(rs, 'pipeline')}, align={hasattr(rs, 'align')}, pointcloud={hasattr(rs, 'pointcloud')}")
+    if rs is None:
+        raise RuntimeError("未安装 pyrealsense2，无法运行 RealSense 连通性测试")
 
     config_path = None if args.use_default_config else (args.config or _find_default_config_path())
     sensor_config, loaded_config_path = _load_sensor_config(config_path)

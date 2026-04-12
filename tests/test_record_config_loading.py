@@ -69,10 +69,26 @@ class RecorderConfigLoadingTest(unittest.TestCase):
         self.assertEqual(config.camera.width, 960)
 
     def test_parse_args_loads_task_name(self) -> None:
-        config, loaded_path = sdk_record.parse_args(["--task-name", "pick cube"])
+        with patch.object(sdk_record, "DEFAULT_RECORD_CONFIG_CANDIDATES", ()):
+            config, loaded_path = sdk_record.parse_args(["--task-name", "pick cube"])
 
         self.assertIsNone(loaded_path)
         self.assertEqual(config.task_name, "pick cube")
+
+    def test_parse_args_defaults_task_name_batch_size_to_five(self) -> None:
+        config, _loaded_path = sdk_record.parse_args([])
+
+        self.assertEqual(config.task_name_batch_size, 5)
+
+    def test_parse_args_loads_task_name_batch_size(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "record.yaml"
+            config_path.write_text("task_name_batch_size: 7\n", encoding="utf-8")
+
+            config, loaded_path = sdk_record.parse_args(["--config", str(config_path)])
+
+        self.assertEqual(loaded_path, config_path.resolve())
+        self.assertEqual(config.task_name_batch_size, 7)
 
     def test_main_fails_fast_without_noninteractive_task_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

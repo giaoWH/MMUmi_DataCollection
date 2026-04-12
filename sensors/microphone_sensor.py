@@ -2,9 +2,13 @@ from collections import deque
 import threading
 import time
 import numpy as np
-import pyaudio
 from .common.base_sensor import BaseSensor
 from .microphone.audio_utils import create_audio_interface, open_input_stream
+
+try:
+    import pyaudio
+except ImportError:  # pragma: no cover
+    pyaudio = None
 
 
 class MicrophoneSensor(BaseSensor):
@@ -41,6 +45,8 @@ class MicrophoneSensor(BaseSensor):
         self._frame_queue = deque()
 
     def start(self):
+        if pyaudio is None:
+            raise RuntimeError("未安装 pyaudio，无法启动麦克风传感器")
         self.effective_rate = self.rate
         self.resolved_device_index = self.device_index
         self.device_name = None

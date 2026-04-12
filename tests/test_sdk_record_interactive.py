@@ -11,7 +11,7 @@ from scripts import sdk_record
 from sdk.annotations import AnnotationField, AnnotationSchema
 from sdk.core import SensorRegistry
 from sdk.sensors.base import SensorAdapter
-from sdk.storage import SessionReader
+from sdk.storage import SessionReader, discover_session_dirs
 
 
 def _write_interactive_config(
@@ -102,17 +102,19 @@ class FailingSensor(SensorAdapter):
 
 class InteractiveRecordTest(unittest.TestCase):
     def _list_session_dirs(self, output_root: Path) -> list[Path]:
-        if not output_root.exists():
-            return []
-        return sorted(path for path in output_root.iterdir() if path.is_dir())
+        return discover_session_dirs(output_root)
 
     def _load_session_annotation(self, session_dir: Path) -> dict[str, object]:
         return json.loads((session_dir / "annotations" / "session.json").read_text(encoding="utf-8"))
 
-    def test_interactive_mode_can_save_multiple_sessions(self) -> None:
+    def test_interactive_mode_batches_task_name_and_rolls_over_after_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_root = Path(tmp_dir) / "sessions"
-            config_path = _write_interactive_config(tmp_dir, output_root=output_root)
+            config_path = _write_interactive_config(
+                tmp_dir,
+                output_root=output_root,
+                extra_payload={"task_name_batch_size": 2},
+            )
 
             exit_code = sdk_record.main(
                 ["--config", str(config_path)],
@@ -124,25 +126,31 @@ class InteractiveRecordTest(unittest.TestCase):
                         (0.35, " "),
                         (0.50, "\n"),
                         (0.60, " "),
-                        (0.61, "place_cube\n"),
                         (0.75, " "),
-                        (0.90, " "),
-                        (1.05, "\n"),
-                        (1.20, "\x03"),
+                        (0.90, "\n"),
+                        (1.00, " "),
+                        (1.01, "pick_cube\n"),
+                        (1.15, " "),
+                        (1.30, " "),
+                        (1.45, "\n"),
+                        (1.60, "\x03"),
                     ]
                 ),
             )
 
             self.assertEqual(exit_code, 0)
             sessions = self._list_session_dirs(output_root)
-            self.assertEqual(len(sessions), 2)
-            self.assertTrue(sessions[0].name.startswith("pick_cube-"))
-            self.assertTrue(sessions[1].name.startswith("place_cube-"))
+            self.assertEqual(len(sessions), 3)
+            self.assertEqual(sessions[0].relative_to(output_root), Path("pick_cube") / "01")
+            self.assertEqual(sessions[1].relative_to(output_root), Path("pick_cube") / "02")
+            self.assertEqual(sessions[2].relative_to(output_root), Path("pick_cube_02") / "01")
             self.assertEqual(self._load_session_annotation(sessions[0])["data"]["task_name"], "pick_cube")
-            self.assertEqual(self._load_session_annotation(sessions[1])["data"]["task_name"], "place_cube")
+            self.assertEqual(self._load_session_annotation(sessions[1])["data"]["task_name"], "pick_cube")
+            self.assertEqual(self._load_session_annotation(sessions[2])["data"]["task_name"], "pick_cube")
 
             first_reader = SessionReader(sessions[0])
             second_reader = SessionReader(sessions[1])
+            third_reader = SessionReader(sessions[2])
             first_ft_frames = list(first_reader.iter_sensor_frames("ft", load_payload=False))
             second_ft_frames = list(second_reader.iter_sensor_frames("ft", load_payload=False))
             self.assertTrue(first_ft_frames)
@@ -154,9 +162,11 @@ class InteractiveRecordTest(unittest.TestCase):
             self.assertEqual(first_notes["record_mode"], "interactive")
             self.assertEqual(second_notes["record_mode"], "interactive")
             self.assertEqual(first_notes["record_run_id"], second_notes["record_run_id"])
+            self.assertEqual(first_notes["record_run_id"], third_reader.manifest.notes["record_run_id"])
             self.assertEqual(first_notes["shared_calibration"], second_notes["shared_calibration"])
             self.assertEqual(first_notes["session_index"], 1)
             self.assertEqual(second_notes["session_index"], 2)
+            self.assertEqual(third_reader.manifest.item_name, "01")
             self.assertFalse(first_notes["discarded"])
             self.assertFalse(second_notes["discarded"])
             self.assertIn("session_sensor_stats", first_notes)
@@ -185,13 +195,19 @@ class InteractiveRecordTest(unittest.TestCase):
                         (0.20, " "),
                         (0.35, " "),
                         (0.50, "q"),
-                        (0.70, "\x03"),
+                        (0.70, " "),
+                        (0.85, " "),
+                        (1.00, "\n"),
+                        (1.20, "\x03"),
                     ]
                 ),
             )
 
             self.assertEqual(exit_code, 0)
-            self.assertEqual(self._list_session_dirs(output_root), [])
+            sessions = self._list_session_dirs(output_root)
+            self.assertEqual(len(sessions), 1)
+            self.assertEqual(sessions[0].relative_to(output_root), Path("discard_me") / "01")
+            self.assertEqual(self._load_session_annotation(sessions[0])["data"]["task_name"], "discard_me")
 
     def test_interactive_mode_discards_active_session_on_ctrl_c(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -395,5 +411,5 @@ class InteractiveRecordTest(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             sessions = self._list_session_dirs(output_root)
             self.assertEqual(len(sessions), 1)
-            self.assertRegex(sessions[0].name, r"^抓取方块-\d{8}$")
+            self.assertEqual(sessions[0].relative_to(output_root), Path("抓取方块") / "01")
             self.assertEqual(self._load_session_annotation(sessions[0])["data"]["task_name"], "抓取方块")

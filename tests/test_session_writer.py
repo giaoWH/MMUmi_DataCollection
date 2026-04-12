@@ -299,23 +299,26 @@ class SessionWriterTest(unittest.TestCase):
 
             meta_path = session.output_dir / "meta.json"
             manifest_path = session.output_dir / "manifest.json"
-            sensor_log = session.output_dir / "streams" / "realsense" / "realsense_capture_rgbd_001.jsonl"
+            sensor_log = session.output_dir / "streams" / "realsense" / "realsense_capture_rgbd_01.jsonl"
             self.assertTrue(meta_path.exists())
             self.assertTrue(manifest_path.exists())
             self.assertTrue(sensor_log.exists())
 
             payload = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["session_id"], "realsense_capture__01")
+            self.assertEqual(payload["task_dir"], "realsense_capture")
+            self.assertEqual(payload["item_name"], "01")
             self.assertEqual(payload["config"]["align_rate_hz"], 30)
             self.assertEqual(payload["task_name"], "realsense_capture")
             self.assertEqual(payload["task_slug"], "realsense_capture")
             manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 manifest_payload["sensors"]["realsense"]["frames_path"],
-                "streams/realsense/realsense_capture_rgbd_001.jsonl",
+                "streams/realsense/realsense_capture_rgbd_01.jsonl",
             )
             self.assertEqual(
                 manifest_payload["sensors"]["realsense"]["media_path"],
-                "streams/realsense/realsense_capture_rgbd_001.mp4",
+                "streams/realsense/realsense_capture_rgbd_01.mp4",
             )
 
             records = sensor_log.read_text(encoding="utf-8").strip().splitlines()
@@ -330,7 +333,7 @@ class SessionWriterTest(unittest.TestCase):
             self.assertNotIn("host_read_end_time_ns", record["time"])
             self.assertEqual(
                 record["payload"]["depth"]["path"],
-                "streams/realsense/artifacts/realsense_capture_rgbd_001_000001_depth.npy",
+                "streams/realsense/artifacts/realsense_capture_rgbd_01_000001_depth.npy",
             )
 
             depth_path = Path(session.output_dir) / record["payload"]["depth"]["path"]
@@ -406,7 +409,7 @@ class SessionWriterTest(unittest.TestCase):
             )
             writer.close()
 
-            sensor_log = session.output_dir / "streams" / "camera" / "camera_async_rgb_001.jsonl"
+            sensor_log = session.output_dir / "streams" / "camera" / "camera_async_rgb_01.jsonl"
             aligned_log = session.output_dir / "aligned" / "frames.jsonl"
             self.assertTrue(sensor_log.exists())
             self.assertTrue(aligned_log.exists())
@@ -447,21 +450,21 @@ class SessionWriterTest(unittest.TestCase):
             )
             writer.close()
 
-            sensor_log = session.output_dir / "streams" / "camera" / "camera_media_rgb_001.jsonl"
+            sensor_log = session.output_dir / "streams" / "camera" / "camera_media_rgb_01.jsonl"
             record = json.loads(sensor_log.read_text(encoding="utf-8").strip())
             reference = record["payload"]["color"]
             self.assertEqual(reference["storage"], "mp4_frame")
             self.assertEqual(reference["channel_order"], "rgb")
             media_path = session.output_dir / reference["path"]
             self.assertTrue(media_path.exists())
-            self.assertEqual(media_path.name, "camera_media_rgb_001.mp4")
+            self.assertEqual(media_path.name, "camera_media_rgb_01.mp4")
             self.assertEqual(
                 writer.manifest.sensors["camera"].frames_path,
-                "streams/camera/camera_media_rgb_001.jsonl",
+                "streams/camera/camera_media_rgb_01.jsonl",
             )
             self.assertEqual(
                 writer.manifest.sensors["camera"].media_path,
-                "streams/camera/camera_media_rgb_001.mp4",
+                "streams/camera/camera_media_rgb_01.mp4",
             )
             self.assertEqual(
                 writer.manifest.sensors["camera"].metadata["media_encoding"]["video_codec"],
@@ -536,11 +539,11 @@ class SessionWriterTest(unittest.TestCase):
             writer.write_sensor_frame(camera_frame)
             writer.close()
 
-            sensor_log = session.output_dir / "streams" / "microphone" / "camera_microphone_audio_001.jsonl"
+            sensor_log = session.output_dir / "streams" / "microphone" / "camera_microphone_audio_01.jsonl"
             record = json.loads(sensor_log.read_text(encoding="utf-8").strip())
             reference = record["payload"]["audio"]
             self.assertEqual(reference["storage"], "mp4_audio")
-            self.assertEqual(reference["path"], "streams/camera/camera_microphone_rgb_001.mp4")
+            self.assertEqual(reference["path"], "streams/camera/camera_microphone_rgb_01.mp4")
 
             reader = SessionReader(session.output_dir)
             loaded_frame = next(reader.iter_sensor_frames("microphone", load_payload=True))
@@ -1580,11 +1583,9 @@ class SessionWriterTest(unittest.TestCase):
                 self.assertEqual(indices, list(range(int(start_text), int(end_text))))
 
             self.assertEqual(merge_report["valid_sessions"], 3)
-            self.assertEqual(merge_report["scanned_directories"], 6)
+            self.assertEqual(merge_report["scanned_directories"], 5)
             skipped_reasons = {item["reason"] for item in merge_report["skipped"]}
-            self.assertIn("missing_trajectory", skipped_reasons)
             self.assertIn("no_valid_rows", skipped_reasons)
-            self.assertIn("not_a_session_dir", skipped_reasons)
 
             source_ids = {episode["source_session_id"] for episode in episodes}
             self.assertEqual(

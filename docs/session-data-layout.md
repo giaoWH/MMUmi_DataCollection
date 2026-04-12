@@ -2,7 +2,7 @@
 
 ## 1. 文档目标
 
-这份文档面向需要直接消费 `session_*` 数据的合作伙伴，回答下面几个问题：
+这份文档面向需要直接消费 session 叶子目录数据的合作伙伴，回答下面几个问题：
 
 - 一个 session 目录里有哪些文件和子目录
 - 哪些内容是录制阶段必有，哪些是后处理后才会出现
@@ -10,68 +10,70 @@
 - 图像、音频、深度、标量分别以什么形式存储
 - 推荐怎样读取，才能兼容当前 schema 和后续扩展
 
-本文描述的是当前仓库使用的 session schema `2.1.0`。
+本文描述的是当前仓库使用的 session schema `2.2.0`。
 
 说明：
 
-- `2.1.0` 起，`streams/<sensor>/` 内的 `jsonl/mp4` 文件名改为基于 `task_name` 的统一命名
+- `2.2.0` 起，session 根目录改为 `output_root/<task_dir>/<item_dir>/`
+- `2.2.0` 起，`streams/<sensor>/` 内的 `jsonl/mp4` 文件名序号与 `<item_dir>` 保持一致
 - 当前 reader 不保证兼容旧的固定文件名 session；读取时应优先依赖 `manifest.json`
 
 ## 2. Session 目录总览
 
-每次录制会生成一个独立目录，名称形如：
+每次录制会在 `output_root` 下生成按 task 分组的叶子 session 目录，形如：
 
 ```text
-session_20260411_153045_123456/
+pick_place/01/
 ```
 
 典型结构如下：
 
 ```text
-session_20260411_153045_123456/
-├── meta.json
-├── manifest.json
-├── streams/
-│   ├── camera/
-│   │   ├── pick_place_rgb_001.jsonl
-│   │   ├── pick_place_rgb_001.mp4
-│   │   └── artifacts/
-│   ├── microphone/
-│   │   ├── pick_place_audio_001.jsonl
-│   │   └── artifacts/
-│   ├── realsense/
-│   │   ├── pick_place_rgbd_001.jsonl
-│   │   ├── pick_place_rgbd_001.mp4
-│   │   └── artifacts/
-│   ├── ft/
-│   │   ├── pick_place_force_torque_001.jsonl
-│   │   └── artifacts/
-│   ├── imu/
-│   │   ├── pick_place_imu_001.jsonl
-│   │   └── artifacts/
-│   ├── motors/
-│   │   ├── pick_place_motor_state_001.jsonl
-│   │   └── artifacts/
-│   └── gelsight/
-│       ├── pick_place_visuotactile_001.jsonl
-│       ├── pick_place_visuotactile_001.mp4
-│       └── artifacts/
-├── aligned/
-│   └── frames.jsonl
-├── trajectory/
-│   └── frames.jsonl
-├── annotations/
-│   ├── manifest.json
-│   ├── schema.snapshot.json
-│   ├── session.json
-│   ├── spans.jsonl
-│   └── keyframes.jsonl
-├── quality/
-│   └── trajectory_qc.json
-├── exports/
-│   └── ...
-└── logs/
-    └── ...
+pick_place/
+└── 01/
+    ├── meta.json
+    ├── manifest.json
+    ├── streams/
+    │   ├── camera/
+    │   │   ├── pick_place_rgb_01.jsonl
+    │   │   ├── pick_place_rgb_01.mp4
+    │   │   └── artifacts/
+    │   ├── microphone/
+    │   │   ├── pick_place_audio_01.jsonl
+    │   │   └── artifacts/
+    │   ├── realsense/
+    │   │   ├── pick_place_rgbd_01.jsonl
+    │   │   ├── pick_place_rgbd_01.mp4
+    │   │   └── artifacts/
+    │   ├── ft/
+    │   │   ├── pick_place_force_torque_01.jsonl
+    │   │   └── artifacts/
+    │   ├── imu/
+    │   │   ├── pick_place_imu_01.jsonl
+    │   │   └── artifacts/
+    │   ├── motors/
+    │   │   ├── pick_place_motor_state_01.jsonl
+    │   │   └── artifacts/
+    │   └── gelsight/
+    │       ├── pick_place_visuotactile_01.jsonl
+    │       ├── pick_place_visuotactile_01.mp4
+    │       └── artifacts/
+    ├── aligned/
+    │   └── frames.jsonl
+    ├── trajectory/
+    │   └── frames.jsonl
+    ├── annotations/
+    │   ├── manifest.json
+    │   ├── schema.snapshot.json
+    │   ├── session.json
+    │   ├── spans.jsonl
+    │   └── keyframes.jsonl
+    ├── quality/
+    │   └── trajectory_qc.json
+    ├── exports/
+    │   └── ...
+    └── logs/
+        └── ...
 ```
 
 注意：
@@ -118,7 +120,7 @@ session_20260411_153045_123456/
 
 ```json
 {
-  "schema_version": "2.1.0",
+  "schema_version": "2.2.0",
   "session_id": "20260411_153045_123456",
   "started_at": 1712811045.123,
   "session_dir": "/abs/path/to/session_xxx",
@@ -130,10 +132,10 @@ session_20260411_153045_123456/
       "sensor_name": "camera",
       "sensor_type": "camera_sensor",
       "modality": "rgb",
-      "frames_path": "streams/camera/pick_place_rgb_001.jsonl",
+      "frames_path": "streams/camera/pick_place_rgb_01.jsonl",
       "artifacts_dir": "streams/camera/artifacts",
       "storage_mode": "indexed_media",
-      "media_path": "streams/camera/pick_place_rgb_001.mp4",
+      "media_path": "streams/camera/pick_place_rgb_01.mp4",
       "media_role": "primary_av",
       "metadata": { "...": "..." }
     }
@@ -284,7 +286,7 @@ session_20260411_153045_123456/
 
 ```json
 {
-  "path": "streams/camera/pick_place_rgb_001.mp4",
+  "path": "streams/camera/pick_place_rgb_01.mp4",
   "storage": "mp4_frame",
   "shape": [480, 640, 3],
   "dtype": "uint8",
@@ -303,7 +305,7 @@ session_20260411_153045_123456/
 
 ```json
 {
-  "path": "streams/camera/pick_place_rgb_001.mp4",
+  "path": "streams/camera/pick_place_rgb_01.mp4",
   "storage": "mp4_audio",
   "shape": [1024],
   "dtype": "int16",
@@ -323,7 +325,7 @@ session_20260411_153045_123456/
 
 ```json
 {
-  "path": "streams/realsense/artifacts/pick_place_rgbd_001_000123_depth.npy",
+  "path": "streams/realsense/artifacts/pick_place_rgbd_01_000123_depth.npy",
   "storage": "npy",
   "shape": [480, 640],
   "dtype": "uint16"
@@ -334,7 +336,7 @@ session_20260411_153045_123456/
 
 ```json
 {
-  "path": "streams/realsense/artifacts/pick_place_rgbd_001_000123_ir1.png",
+  "path": "streams/realsense/artifacts/pick_place_rgbd_01_000123_ir1.png",
   "storage": "png",
   "shape": [480, 640],
   "dtype": "uint8"
@@ -351,7 +353,7 @@ session_20260411_153045_123456/
 - 模态：`rgb`
 - 主字段：`payload.color`
 - 常见存储方式：`mp4_frame`
-- 媒体文件：`streams/camera/<task_slug>_rgb_001.mp4`
+- 媒体文件：`streams/camera/<task_slug>_rgb_01.mp4`
 - 角色：主视频容器，也是主音轨容器
 
 说明：
@@ -365,11 +367,11 @@ session_20260411_153045_123456/
 - 模态：`audio`
 - 主字段：`payload.audio`
 - 常见存储方式：`mp4_audio`
-- 实际音频位置：`streams/camera/<task_slug>_rgb_001.mp4` 的音轨
+- 实际音频位置：`streams/camera/<task_slug>_rgb_01.mp4` 的音轨
 
 说明：
 
-- `streams/microphone/<task_slug>_audio_001.jsonl` 中保存的是索引引用，不是独立 `wav`
+- `streams/microphone/<task_slug>_audio_01.jsonl` 中保存的是索引引用，不是独立 `wav`
 - 当前默认采集参数通常是单声道 `48000 Hz`、`int16`
 
 ### 8.3 `realsense`
@@ -389,7 +391,7 @@ session_20260411_153045_123456/
 
 - `color`
   - `mp4_frame`
-  - 对应媒体文件通常是 `streams/realsense/<task_slug>_rgbd_001.mp4`
+  - 对应媒体文件通常是 `streams/realsense/<task_slug>_rgbd_01.mp4`
 - `depth`
   - `npy`
 - `ir1` / `ir2`
@@ -458,7 +460,7 @@ session_20260411_153045_123456/
 - 模态：`visuotactile`
 - 主字段：`payload.image`
 - 常见存储方式：`mp4_frame`
-- 媒体文件：`streams/gelsight/<task_slug>_visuotactile_001.mp4`
+- 媒体文件：`streams/gelsight/<task_slug>_visuotactile_01.mp4`
 
 ## 9. `aligned/frames.jsonl`：统一时间轴主入口
 
@@ -708,7 +710,7 @@ print(depth.shape, depth.dtype)
 - 所有图像都是 PNG
 - 麦克风有独立音频文件
 
-尤其在 `2.1.0` 之后：
+尤其在 `2.2.0` 之后：
 
 - 不要自己拼接 `streams/<sensor>/<task_slug>_<modality>_<seq>.jsonl`
 - 应始终以 `manifest.json` 里的 `frames_path` / `media_path` 为准

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sdk.storage import SessionReader
+from sdk.storage import SessionReader, discover_session_dirs
 
 
 try:
@@ -86,7 +86,7 @@ class SDKEndToEndTest(unittest.TestCase):
             )
             self.assertEqual(record_result.returncode, 0, msg=record_result.stderr)
 
-            sessions = sorted(output_root.glob("session_*"))
+            sessions = discover_session_dirs(output_root)
             self.assertEqual(len(sessions), 1)
             session_dir = sessions[0]
 
@@ -150,7 +150,7 @@ class SDKEndToEndTest(unittest.TestCase):
             )
             self.assertEqual(record_result.returncode, 0, msg=record_result.stderr)
 
-            sessions = sorted(output_root.glob("session_*"))
+            sessions = discover_session_dirs(output_root)
             self.assertEqual(len(sessions), 1)
             session_dir = sessions[0]
 

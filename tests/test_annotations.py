@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 import numpy as np
 
 from sdk.annotations import AnnotationSchema, AnnotationService, start_annotation_server
-from sdk.core.frame import AlignedFrame, FrameTime, SensorFrame
+from sdk.core.frame import AlignedFrame, FrameTime, SensorFrame, TrajectoryFrame
 from sdk.core.session import create_session_info
 from sdk.exporters.lerobot_exporter import LeRobotSessionExporter
 from sdk.storage import SessionReader, SessionWriter
@@ -308,6 +308,80 @@ class AnnotationIntegrationTest(unittest.TestCase):
         writer.close()
         return session.output_dir
 
+    def _create_lerobot_ready_session(self, output_root: str) -> Path:
+        session = create_session_info(
+            output_root,
+            task_name="annotation_lerobot_session",
+            sensors={
+                "realsense": {"sensor_type": "realsense", "modality": "rgbd"},
+                "motors": {"sensor_type": "motors_sensor", "modality": "motor_state"},
+            },
+            config={"align_rate_hz": 30},
+        )
+        writer = SessionWriter(session)
+
+        realsense_frames: list[SensorFrame] = []
+        motors_frames: list[SensorFrame] = []
+        for step in range(3):
+            timestamp = 1.0 + 0.1 * step
+            realsense_frame = SensorFrame(
+                sensor_name="realsense",
+                sensor_type="realsense",
+                modality="rgbd",
+                frame_id=step,
+                time=FrameTime(
+                    host_time=timestamp,
+                    monotonic_time=timestamp,
+                    aligned_time=timestamp,
+                    device_time=timestamp,
+                ),
+                payload={"depth": np.full((2, 2), 1000 + step, dtype=np.uint16)},
+            )
+            motors_frame = SensorFrame(
+                sensor_name="motors",
+                sensor_type="motors_sensor",
+                modality="motor_state",
+                frame_id=step,
+                time=FrameTime(host_time=timestamp, monotonic_time=timestamp, aligned_time=timestamp),
+                payload={
+                    "motor_1": {"position": 1.0 + 0.1 * step, "velocity": 2.0, "torque": 3.0},
+                    "motor_2": {"position": 4.0 + 0.1 * step, "velocity": 5.0, "torque": 6.0},
+                },
+            )
+            realsense_frames.append(realsense_frame)
+            motors_frames.append(motors_frame)
+            writer.write_sensor_frame(realsense_frame)
+            writer.write_sensor_frame(motors_frame)
+
+        for step in range(3):
+            timestamp = 1.0 + 0.1 * step
+            writer.write_aligned_frame(
+                AlignedFrame(
+                    sequence_id=step,
+                    aligned_time=timestamp,
+                    frames={"realsense": realsense_frames[step], "motors": motors_frames[step]},
+                    missing_sensors=[],
+                    age_by_sensor={"realsense": 0.0, "motors": 0.0},
+                )
+            )
+            writer.write_trajectory_frame(
+                TrajectoryFrame(
+                    source="orbslam3",
+                    frame_id=step,
+                    time=FrameTime(
+                        host_time=timestamp,
+                        monotonic_time=timestamp,
+                        aligned_time=timestamp,
+                    ),
+                    position=[0.1 * step, 0.0, 0.0],
+                    quaternion=[1.0, 0.0, 0.0, 0.0],
+                    tracking_state="OK",
+                )
+            )
+
+        writer.close()
+        return session.output_dir
+
     def test_annotation_service_crud_and_reader_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             session_dir = self._create_session(tmp_dir)
@@ -550,7 +624,7 @@ class AnnotationIntegrationTest(unittest.TestCase):
 
     def test_lerobot_export_includes_annotation_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            session_dir = self._create_session(tmp_dir)
+            session_dir = self._create_lerobot_ready_session(tmp_dir)
             service = AnnotationService(session_dir, schema=AnnotationSchema.default())
             service.ensure_initialized()
             service.upsert_session_annotation(
