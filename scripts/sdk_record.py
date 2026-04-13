@@ -126,6 +126,8 @@ class RecordingSession:
     next_aligned_monotonic_time_ns: int
     sensor_status_baseline: dict[str, dict[str, object]]
     session_queue_peak: dict[str, int]
+    session_start_host_time_ns: int
+    session_start_monotonic_time_ns: int
 
 
 @dataclass
@@ -912,6 +914,27 @@ def _build_shared_calibration_notes(
     }
 
 
+def _build_session_time_window_notes(
+    *,
+    start_host_time_ns: int,
+    start_monotonic_time_ns: int,
+    end_host_time_ns: int | None = None,
+    end_monotonic_time_ns: int | None = None,
+) -> dict[str, object]:
+    duration_ns = None
+    if end_host_time_ns is not None:
+        duration_ns = max(0, int(end_host_time_ns) - int(start_host_time_ns))
+    elif end_monotonic_time_ns is not None:
+        duration_ns = max(0, int(end_monotonic_time_ns) - int(start_monotonic_time_ns))
+    return {
+        "start_host_time_ns": int(start_host_time_ns),
+        "end_host_time_ns": int(end_host_time_ns) if end_host_time_ns is not None else None,
+        "start_monotonic_time_ns": int(start_monotonic_time_ns),
+        "end_monotonic_time_ns": int(end_monotonic_time_ns) if end_monotonic_time_ns is not None else None,
+        "duration_ns": duration_ns,
+    }
+
+
 def _create_session_info(
     *,
     config: RecorderConfig,
@@ -924,6 +947,7 @@ def _create_session_info(
     record_run_id: str | None = None,
     shared_calibration: dict[str, object] | None = None,
     session_index: int | None = None,
+    session_time_window: dict[str, object] | None = None,
 ) -> SessionInfo:
     notes = {
         "entrypoint": "scripts/sdk_record.py",
@@ -939,6 +963,8 @@ def _create_session_info(
                 "discarded": False,
             }
         )
+    if session_time_window is not None:
+        notes["session_time_window"] = _json_clone(session_time_window)
     return create_session_info(
         config.output_root,
         task_name=task_name if task_name is not None else config.task_name,
@@ -1064,7 +1090,12 @@ def _complete_stopped_session(
         "写盘诊断(关闭前): %s",
         json.dumps(_to_jsonable(pre_close_writer_diagnostics), ensure_ascii=False),
     )
-    session.writer.close()
+    try:
+        session.writer.close()
+    except Exception:
+        if session.session_info.output_dir.exists():
+            shutil.rmtree(session.session_info.output_dir, ignore_errors=True)
+        raise
     session.writer.manifest = session.writer._build_manifest()
     session.writer._write_manifest()
     final_writer_diagnostics = session.writer.get_diagnostics()
@@ -1103,6 +1134,8 @@ def _start_interactive_session(
 ) -> RecordingSession:
     _drain_sensor_queues(registry)
     baseline_status = _capture_sensor_status_snapshot(registry)
+    start_wall_time_ns = time.time_ns()
+    start_monotonic_time_ns = time.perf_counter_ns()
     session_info = _create_session_info(
         config=config,
         config_path=config_path,
@@ -1114,12 +1147,14 @@ def _start_interactive_session(
         record_run_id=record_run_id,
         shared_calibration=shared_calibration,
         session_index=session_index,
+        session_time_window=_build_session_time_window_notes(
+            start_host_time_ns=start_wall_time_ns,
+            start_monotonic_time_ns=start_monotonic_time_ns,
+        ),
     )
     logger = _create_session_logger(session_info)
     logger.info("交互式 session 创建完成: index=%d, dir=%s", session_index, session_info.output_dir)
     writer = SessionWriter(session_info, async_writes=True)
-    start_wall_time_ns = time.time_ns()
-    start_monotonic_time_ns = time.perf_counter_ns()
     print("")
     print(f"开始录制 session #{session_index}: {session_info.session_id}")
     print(f"输出目录: {session_info.output_dir}")
@@ -1141,6 +1176,8 @@ def _start_interactive_session(
             sensor_name: _status_counter(status, "queue_depth")
             for sensor_name, status in baseline_status.items()
         },
+        session_start_host_time_ns=start_wall_time_ns,
+        session_start_monotonic_time_ns=start_monotonic_time_ns,
     )
 
 
@@ -1150,12 +1187,19 @@ def _begin_stopping_session(
     registry: SensorRegistry,
     finalize_executor: ThreadPoolExecutor,
     stop_reason: str,
+    stop_requested_host_time_ns: int,
     stop_requested_monotonic_time_ns: int,
     compensator: GravityCompensator | None,
     ft_sensor_name: str | None,
     imu_sensor_name: str | None,
     align_interval_ns: int,
 ) -> StoppingSession:
+    session.writer.set_session_time_window(
+        start_host_time_ns=session.session_start_host_time_ns,
+        end_host_time_ns=stop_requested_host_time_ns,
+        start_monotonic_time_ns=session.session_start_monotonic_time_ns,
+        end_monotonic_time_ns=stop_requested_monotonic_time_ns,
+    )
     pre_stop_status = _capture_sensor_status_snapshot(registry)
     _update_session_queue_peaks(session, pre_stop_status)
     _record_iteration(
@@ -1219,10 +1263,28 @@ def _run_noninteractive(
         registry.stop_all()
         return 1
 
+    start_wall_time_ns = time.time_ns()
+    start_monotonic_time_ns = time.perf_counter_ns()
+    end_monotonic_time_ns = (
+        start_monotonic_time_ns + int(round(config.duration_sec * 1_000_000_000.0))
+        if config.duration_sec > 0
+        else None
+    )
+    end_wall_time_ns = (
+        start_wall_time_ns + int(round(config.duration_sec * 1_000_000_000.0))
+        if config.duration_sec > 0
+        else None
+    )
     session_info = _create_session_info(
         config=config,
         config_path=config_path,
         registry=registry,
+        session_time_window=_build_session_time_window_notes(
+            start_host_time_ns=start_wall_time_ns,
+            start_monotonic_time_ns=start_monotonic_time_ns,
+            end_host_time_ns=end_wall_time_ns,
+            end_monotonic_time_ns=end_monotonic_time_ns,
+        ),
     )
     logger = _create_session_logger(session_info)
     logger.info("SDK 录制启动，数据源=%s", config.sensor_source)
@@ -1271,16 +1333,9 @@ def _run_noninteractive(
         print("录制时长: 持续运行，按 Ctrl+C 停止")
 
     loop_interval = 1.0 / config.align_rate_hz if config.align_rate_hz > 0 else 0.05
-    start_wall_time_ns = time.time_ns()
-    start_monotonic_time_ns = time.perf_counter_ns()
     next_aligned_time_ns = start_wall_time_ns
     next_aligned_monotonic_time_ns = start_monotonic_time_ns
     align_interval_ns = max(1, int(round(1_000_000_000.0 / max(config.align_rate_hz, 1e-6))))
-    end_monotonic_time_ns = (
-        start_monotonic_time_ns + int(round(config.duration_sec * 1_000_000_000.0))
-        if config.duration_sec > 0
-        else None
-    )
 
     try:
         _write_session_annotation(
@@ -1462,14 +1517,15 @@ def _run_interactive(
                 exit_after_stopping_reason = "signal_interrupt"
                 exit_after_stopping_code = 0
                 if active_session is not None and stopping_session is None:
+                    stop_requested_host_time_ns = time.time_ns()
                     stop_requested_monotonic_time_ns = time.perf_counter_ns()
                     print("\n停止中，正在收尾写盘，请稍候...")
-                    key_source.drain_pending_input()
                     stopping_session = _begin_stopping_session(
                         session=active_session,
                         registry=registry,
                         finalize_executor=finalize_executor,
                         stop_reason="signal_interrupt",
+                        stop_requested_host_time_ns=stop_requested_host_time_ns,
                         stop_requested_monotonic_time_ns=stop_requested_monotonic_time_ns,
                         compensator=compensator,
                         ft_sensor_name=ft_sensor_name,
@@ -1497,14 +1553,15 @@ def _run_interactive(
                 print(message)
                 run_logger.error(message)
                 if active_session is not None and stopping_session is None:
+                    stop_requested_host_time_ns = time.time_ns()
                     stop_requested_monotonic_time_ns = time.perf_counter_ns()
                     print("\n停止中，正在收尾写盘，请稍候...")
-                    key_source.drain_pending_input()
                     stopping_session = _begin_stopping_session(
                         session=active_session,
                         registry=registry,
                         finalize_executor=finalize_executor,
                         stop_reason="sensor_failure",
+                        stop_requested_host_time_ns=stop_requested_host_time_ns,
                         stop_requested_monotonic_time_ns=stop_requested_monotonic_time_ns,
                         compensator=compensator,
                         ft_sensor_name=ft_sensor_name,
@@ -1571,14 +1628,15 @@ def _run_interactive(
                 exit_after_stopping_reason = "ctrl_c"
                 exit_after_stopping_code = 0
                 if active_session is not None and stopping_session is None:
+                    stop_requested_host_time_ns = time.time_ns()
                     stop_requested_monotonic_time_ns = time.perf_counter_ns()
                     print("\n停止中，正在收尾写盘，请稍候...")
-                    key_source.drain_pending_input()
                     stopping_session = _begin_stopping_session(
                         session=active_session,
                         registry=registry,
                         finalize_executor=finalize_executor,
                         stop_reason="ctrl_c",
+                        stop_requested_host_time_ns=stop_requested_host_time_ns,
                         stop_requested_monotonic_time_ns=stop_requested_monotonic_time_ns,
                         compensator=compensator,
                         ft_sensor_name=ft_sensor_name,
@@ -1684,14 +1742,15 @@ def _run_interactive(
                     print("\n已取消本次 session 准备。按空格重新填写 task name。")
             elif state == STATE_RECORDING and active_session is not None:
                 if action == KEY_SPACE:
+                    stop_requested_host_time_ns = time.time_ns()
                     stop_requested_monotonic_time_ns = time.perf_counter_ns()
                     print("\n停止中，正在收尾写盘，请稍候...")
-                    key_source.drain_pending_input()
                     stopping_session = _begin_stopping_session(
                         session=active_session,
                         registry=registry,
                         finalize_executor=finalize_executor,
                         stop_reason="operator_stop",
+                        stop_requested_host_time_ns=stop_requested_host_time_ns,
                         stop_requested_monotonic_time_ns=stop_requested_monotonic_time_ns,
                         compensator=compensator,
                         ft_sensor_name=ft_sensor_name,

@@ -53,7 +53,7 @@ class SessionWriterTest(unittest.TestCase):
             config={"align_rate_hz": 30},
         )
         writer = SessionWriter(session)
-        writer.write_sensor_frame(
+        realsense_frames = [
             SensorFrame(
                 sensor_name="realsense",
                 sensor_type="realsense_rgbd",
@@ -77,9 +77,7 @@ class SessionWriterTest(unittest.TestCase):
                     ],
                 },
                 metadata={"stream": "rgbd"},
-            )
-        )
-        writer.write_sensor_frame(
+            ),
             SensorFrame(
                 sensor_name="realsense",
                 sensor_type="realsense_rgbd",
@@ -103,8 +101,20 @@ class SessionWriterTest(unittest.TestCase):
                     ],
                 },
                 metadata={"stream": "rgbd"},
+            ),
+        ]
+        for frame in realsense_frames:
+            writer.write_sensor_frame(frame)
+        for index, frame in enumerate(realsense_frames):
+            writer.write_aligned_frame(
+                AlignedFrame(
+                    sequence_id=index,
+                    aligned_time=float(frame.time.aligned_time or frame.time.host_time or 0.0),
+                    frames={"realsense": frame},
+                    missing_sensors=[],
+                    age_by_sensor={"realsense": 0.0},
+                )
             )
-        )
         writer.close()
         return session.output_dir
 
@@ -501,6 +511,110 @@ class SessionWriterTest(unittest.TestCase):
             self.assertGreater(quadrant_means["blue"][2], quadrant_means["blue"][0])
             self.assertGreater(quadrant_means["blue"][2], quadrant_means["blue"][1])
 
+    def test_camera_media_duration_follows_frame_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session = create_session_info(
+                tmp_dir,
+                task_name="camera_vfr",
+                sensors={"camera": {"sensor_type": "camera_sensor", "modality": "rgb", "fps": 30}},
+                config={"align_rate_hz": 30},
+                notes={
+                    "session_time_window": {
+                        "start_host_time_ns": 1_000_000_000,
+                        "end_host_time_ns": 1_300_000_000,
+                        "start_monotonic_time_ns": 2_000_000_000,
+                        "end_monotonic_time_ns": 2_300_000_000,
+                        "duration_ns": 300_000_000,
+                    }
+                },
+            )
+            writer = SessionWriter(session)
+            for frame_id, host_time in enumerate((1.0, 1.1, 1.26), start=1):
+                writer.write_sensor_frame(
+                    SensorFrame(
+                        sensor_name="camera",
+                        sensor_type="camera_sensor",
+                        modality="rgb",
+                        frame_id=frame_id,
+                        time=FrameTime(
+                            host_time=host_time,
+                            monotonic_time=2.0 + (host_time - 1.0),
+                        ),
+                        payload={"color": np.full((16, 16, 3), frame_id * 32, dtype=np.uint8)},
+                    )
+                )
+            writer.close()
+
+            sensor_log = session.output_dir / "streams" / "camera" / "camera_vfr_rgb_01.jsonl"
+            records = [json.loads(line) for line in sensor_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(len(records), 3)
+            durations = [record["payload"]["color"]["media_duration_ns"] for record in records]
+            self.assertEqual(durations, [100_000_000, 160_000_000, 40_000_000])
+            offsets = [record["payload"]["color"]["session_offset_ns"] for record in records]
+            self.assertEqual(offsets, [0, 100_000_000, 260_000_000])
+
+            media_path = session.output_dir / records[0]["payload"]["color"]["path"]
+            container = av.open(str(media_path))
+            try:
+                video_stream = next(stream for stream in container.streams if stream.type == "video")
+                duration_sec = float(video_stream.duration * video_stream.time_base)
+                self.assertAlmostEqual(duration_sec, 0.3, places=4)
+            finally:
+                container.close()
+
+            reader = SessionReader(session.output_dir)
+            summary = reader.summary()
+            self.assertEqual(summary["media_timing_mode"], "timestamp_driven")
+            self.assertEqual(summary["session_time_window"]["duration_ns"], 300_000_000)
+
+    def test_writer_trims_frames_outside_session_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session = create_session_info(
+                tmp_dir,
+                task_name="trimmed_session",
+                sensors={"ft": {"sensor_type": "ft_sensor", "modality": "force_torque"}},
+                config={"align_rate_hz": 30},
+                notes={
+                    "session_time_window": {
+                        "start_host_time_ns": 1_000_000_000,
+                        "end_host_time_ns": 1_200_000_000,
+                        "start_monotonic_time_ns": 2_000_000_000,
+                        "end_monotonic_time_ns": 2_200_000_000,
+                        "duration_ns": 200_000_000,
+                    }
+                },
+            )
+            writer = SessionWriter(session)
+            for frame_id, host_time in enumerate((0.95, 1.05, 1.25), start=1):
+                writer.write_sensor_frame(
+                    SensorFrame(
+                        sensor_name="ft",
+                        sensor_type="ft_sensor",
+                        modality="force_torque",
+                        frame_id=frame_id,
+                        time=FrameTime(
+                            host_time=host_time,
+                            monotonic_time=2.0 + (host_time - 1.0),
+                        ),
+                        payload={"force": np.array([1.0, 2.0, 3.0], dtype=np.float64)},
+                    )
+                )
+            writer.close()
+
+            sensor_log = session.output_dir / "streams" / "ft" / "trimmed_session_force_torque_01.jsonl"
+            records = [json.loads(line) for line in sensor_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["frame_id"], 2)
+
+            reader = SessionReader(session.output_dir)
+            summary = reader.summary()
+            trim = summary["trim_diagnostics"]["sensor_counts"]["ft"]
+            self.assertEqual(trim["dropped_before_window"], 1)
+            self.assertEqual(trim["dropped_after_window"], 1)
+            sensor_summary = summary["sensor_time_summary"]["ft"]
+            self.assertEqual(sensor_summary["kept_frame_count"], 1)
+            self.assertEqual(sensor_summary["first_kept_host_time_ns"], 1_050_000_000)
+
     def test_microphone_audio_round_trip_uses_camera_media_track(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             session = create_session_info(
@@ -844,7 +958,7 @@ class SessionWriterTest(unittest.TestCase):
                 "import json, pathlib; "
                 "manifest = json.loads(pathlib.Path(r'{bundle_manifest}').read_text(encoding='utf-8')); "
                 "payload = {"
-                "'timestamp': 3.5, "
+                "'timestamp': 1.0, "
                 "'position': [1.0, 2.0, 3.0], "
                 "'quaternion': [1.0, 0.0, 0.0, 0.0], "
                 "'tracking_state': 'OK', "
@@ -877,11 +991,22 @@ class SessionWriterTest(unittest.TestCase):
             trajectory_frames = list(reader.iter_trajectory_frames())
             self.assertEqual(len(trajectory_frames), 1)
             self.assertEqual(trajectory_frames[0].metadata["imu_rows"], 2)
+            self.assertEqual(trajectory_frames[0].time.device_time_ns, 1_000_000_000)
+            self.assertEqual(trajectory_frames[0].time.host_time_ns, 1_000_000_000)
+            self.assertEqual(trajectory_frames[0].time.aligned_time_ns, 1_000_000_000)
+            self.assertEqual(trajectory_frames[0].metadata["source_time_semantics"], "trajectory_result_timestamp")
+            self.assertTrue(trajectory_frames[0].metadata["time_alignment"]["matched_exactly"])
 
             manifest_payload = json.loads((Path(session_dir) / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest_payload["notes"]["orbslam3_mode"], "stereo_inertial")
             self.assertEqual(manifest_payload["notes"]["trajectory_source"], "orbslam3")
             self.assertEqual(manifest_payload["notes"]["orbslam3_bundle"], str(bundle_dir))
+            alignment_summary = manifest_payload["notes"]["trajectory_time_alignment_summary"]
+            self.assertEqual(alignment_summary["matched_exact_count"], 1)
+            self.assertEqual(alignment_summary["matched_tolerance_count"], 0)
+            self.assertEqual(alignment_summary["unmatched_count"], 0)
+            self.assertEqual(alignment_summary["matched_ratio"], 1.0)
+            self.assertEqual(manifest_payload["notes"]["trajectory_source_time_semantics"], "trajectory_result_timestamp")
 
     @unittest.skipIf(cv2 is None, "未安装 opencv-python")
     def test_sdk_process_trajectory_cli_supports_config_env(self) -> None:
@@ -892,7 +1017,7 @@ class SessionWriterTest(unittest.TestCase):
             script = (
                 "import json, os, pathlib; "
                 "payload = {"
-                "'timestamp': 4.5, "
+                "'timestamp': 1.1, "
                 "'position': [4.0, 5.0, 6.0], "
                 "'quaternion': [1.0, 0.0, 0.0, 0.0], "
                 "'tracking_state': os.environ['ORB_TEST_FLAG']"
@@ -936,6 +1061,8 @@ class SessionWriterTest(unittest.TestCase):
             self.assertEqual(len(trajectory_frames), 1)
             self.assertEqual(trajectory_frames[0].source, "orbslam3_config")
             self.assertEqual(trajectory_frames[0].tracking_state, "CONFIG_OK")
+            self.assertEqual(trajectory_frames[0].time.device_time_ns, 1_100_000_000)
+            self.assertEqual(trajectory_frames[0].time.aligned_time_ns, 1_100_000_000)
 
             manifest_payload = json.loads((Path(session_dir) / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest_payload["notes"]["trajectory_source"], "orbslam3_config")
@@ -993,11 +1120,89 @@ class SessionWriterTest(unittest.TestCase):
             self.assertEqual(trajectory_frames[0].source, "orbslam3_stereo_wrapper")
             self.assertEqual(trajectory_frames[0].position, [1.0, 2.0, 3.0])
             self.assertEqual(trajectory_frames[0].metadata["trajectory_format"], "euroc_final")
+            self.assertEqual(trajectory_frames[0].time.device_time_ns, 1_000_000_000)
+            self.assertEqual(trajectory_frames[1].time.device_time_ns, 1_100_000_000)
+            self.assertEqual(
+                trajectory_frames[0].metadata["source_time_semantics"],
+                "realsense_device_time_from_orbslam3_bundle",
+            )
 
             manifest_payload = json.loads((Path(session_dir) / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest_payload["notes"]["orbslam3_mode"], "stereo_inertial")
             self.assertEqual(manifest_payload["notes"]["trajectory_source"], "orbslam3_stereo_wrapper")
             self.assertEqual(manifest_payload["notes"]["orbslam3_bundle"], str(bundle_dir))
+            self.assertEqual(
+                manifest_payload["notes"]["trajectory_source_time_semantics"],
+                "realsense_device_time_from_orbslam3_bundle",
+            )
+
+    @unittest.skipIf(cv2 is None, "未安装 opencv-python")
+    def test_sdk_process_trajectory_cli_accepts_small_device_time_jitter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_orbslam3_session(tmp_dir)
+            script = (
+                "import json, pathlib; "
+                "payload = {"
+                "'timestamp': 1.1015, "
+                "'position': [7.0, 8.0, 9.0], "
+                "'quaternion': [1.0, 0.0, 0.0, 0.0], "
+                "'tracking_state': 'OK'"
+                "}; "
+                "pathlib.Path(r'{output_jsonl}').write_text(json.dumps(payload, ensure_ascii=False) + '\\n', encoding='utf-8')"
+            )
+            result = __import__("subprocess").run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve().parents[1] / "scripts" / "sdk_process_trajectory.py"),
+                    str(session_dir),
+                    "--command",
+                    f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=str(Path(__file__).resolve().parents[1]),
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            trajectory_frames = list(SessionReader(session_dir).iter_trajectory_frames())
+            self.assertEqual(len(trajectory_frames), 1)
+            self.assertEqual(trajectory_frames[0].time.device_time_ns, 1_101_500_000)
+            self.assertEqual(trajectory_frames[0].time.host_time_ns, 1_100_000_000)
+            self.assertEqual(trajectory_frames[0].time.aligned_time_ns, 1_100_000_000)
+            self.assertFalse(trajectory_frames[0].metadata["time_alignment"]["matched_exactly"])
+            self.assertEqual(trajectory_frames[0].metadata["time_alignment"]["match_error_ns"], 1_500_000)
+
+    @unittest.skipIf(cv2 is None, "未安装 opencv-python")
+    def test_sdk_process_trajectory_cli_fails_when_device_time_cannot_be_rebound(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_orbslam3_session(tmp_dir)
+            script = (
+                "import json, pathlib; "
+                "payload = {"
+                "'timestamp': 1.5, "
+                "'position': [1.0, 2.0, 3.0], "
+                "'quaternion': [1.0, 0.0, 0.0, 0.0], "
+                "'tracking_state': 'OK'"
+                "}; "
+                "pathlib.Path(r'{output_jsonl}').write_text(json.dumps(payload, ensure_ascii=False) + '\\n', encoding='utf-8')"
+            )
+            result = __import__("subprocess").run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve().parents[1] / "scripts" / "sdk_process_trajectory.py"),
+                    str(session_dir),
+                    "--command",
+                    f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=str(Path(__file__).resolve().parents[1]),
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("轨迹未能可靠挂到 session 统一时间轴", result.stderr)
 
     @unittest.skipIf(cv2 is None, "未安装 opencv-python")
     def test_sdk_process_trajectory_cli_supports_record_config_trajectory_section(self) -> None:
@@ -1008,7 +1213,7 @@ class SessionWriterTest(unittest.TestCase):
             script = (
                 "import json, pathlib; "
                 "payload = {"
-                "'timestamp': 6.5, "
+                "'timestamp': 1.0, "
                 "'position': [6.0, 5.0, 4.0], "
                 "'quaternion': [1.0, 0.0, 0.0, 0.0], "
                 "'tracking_state': 'FROM_RECORD_CONFIG'"
@@ -1069,7 +1274,7 @@ class SessionWriterTest(unittest.TestCase):
             second_script = (
                 "import json, pathlib; "
                 "payload = {"
-                "'timestamp': 2.0, "
+                "'timestamp': 1.1, "
                 "'position': [2.0, 2.0, 2.0], "
                 "'quaternion': [1.0, 0.0, 0.0, 0.0], "
                 "'tracking_state': 'SECOND'"

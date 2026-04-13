@@ -291,11 +291,20 @@ pick_place/
   "shape": [480, 640, 3],
   "dtype": "uint8",
   "media_frame_index": 123,
+  "media_time_ns": 1712811045100000000,
+  "media_duration_ns": 33333333,
+  "session_offset_ns": 100000000,
   "media_kind": "mp4",
   "fps": 30,
   "channel_order": "rgb"
 }
 ```
+
+说明：
+
+- `media_time_ns` / `media_duration_ns` / `session_offset_ns` 是时间真源
+- `media_frame_index` 仍可用于按序号解码
+- `fps` 仅表示请求/编码上下文，不能再用来推导 session 时长
 
 ### 7.3 `mp4_audio`
 
@@ -311,11 +320,19 @@ pick_place/
   "dtype": "int16",
   "sample_start": 245760,
   "sample_count": 1024,
+  "media_time_ns": 1712811045200000000,
+  "media_duration_ns": 21333333,
+  "session_offset_ns": 200000000,
   "media_kind": "mp4",
   "sample_rate": 48000,
   "channels": 1
 }
 ```
+
+说明：
+
+- `sample_start` / `sample_count` 仍保留给 reader 解码音频切片
+- 时长判定优先依赖 `media_time_ns` / `media_duration_ns`
 
 ### 7.4 `png` / `npy`
 
@@ -563,6 +580,11 @@ pick_place/
 
 - 没有跑 `scripts/sdk_process_trajectory.py` 的 session，不应假设这个文件可用
 - 即使文件存在，也不应假设每一帧都可用于训练或控制，通常还要结合 `tracking_state`
+- 新版轨迹记录同时保留三类时间语义：
+  - `time.device_time_ns`：ORB-SLAM3 / RealSense 源 device-time
+  - `time.host_time_ns`：回绑后的真实 session host-time
+  - `time.aligned_time_ns`：回绑后的统一 aligned 时间锚点
+- 下游做多模态对齐时，应优先信任 `aligned_time_ns`，而不是假设 `host_time_ns == device_time_ns`
 
 ## 11. `annotations/`：人工标注真源
 
@@ -800,5 +822,6 @@ print(depth.shape, depth.dtype)
 - 用 `manifest.json` 了解 session 结构
 - 用 `aligned/frames.jsonl` 做多模态主时间轴
 - 用 `streams/<sensor>/*.jsonl` 看原始流
+- 用 `trajectory.time.aligned_time_ns` 消费离线轨迹，并把 `device_time_ns` 只当作回绑审计字段
 - 用 `SessionReader` 解码 `mp4_frame` / `mp4_audio` / `png` / `npy`
 - 把 `trajectory/`、`annotations/`、`quality/`、`exports/` 都视为“附加层”，不要和原始采集真源混淆

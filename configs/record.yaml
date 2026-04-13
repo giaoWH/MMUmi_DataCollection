@@ -7,8 +7,6 @@
 #   python scripts/sdk_process_trajectory.py <session_dir> --config configs/record.yaml
 
 output_root: /mnt/m2ssd/umi-data/sessions
-# interactive=false 时必须显式提供 task_name，作为 stream 文件命名前缀。
-# task_name: pick_place
 task_name_batch_size: 5
 sensor_source: real
 align_rate_hz: 30.0
@@ -25,13 +23,13 @@ enable_camera: true
 enable_gelsight: true
 ft:
   name: ft
-  port: /dev/ttyACM2
+  port: /dev/ttyACM0
   baudrate: 115200
   calibration_duration: 3.0
   enable_torque: true
 imu:
   name: imu
-  port: /dev/ttyUSB1
+  port: /dev/ttyUSB0
   baudrate: 115200
 realsense:
   name: realsense
@@ -67,7 +65,7 @@ realsense:
     pointcloud_colored: false
 motors:
   name: motors
-  port: /dev/ttyACM3
+  port: /dev/ttyACM1
   baudrate: 115200
   calibration_duration: 3.0
   enable_motor_1: false
@@ -89,7 +87,7 @@ camera:
   frame_queue_size: 128
 gelsight:
   name: gelsight
-  device_index: 9
+  device_index: 8
   width: 320
   height: 240
   fps: 25

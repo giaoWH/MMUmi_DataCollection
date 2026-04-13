@@ -66,6 +66,12 @@ class SessionReader:
             "sensor_names": self.sensor_names(),
             "aligned_path": self.manifest.aligned_path,
             "trajectory_path": self.manifest.trajectory_path,
+            "session_time_window": self.manifest.notes.get("session_time_window"),
+            "sensor_time_summary": self.manifest.notes.get("sensor_time_summary"),
+            "trim_diagnostics": self.manifest.notes.get("trim_diagnostics"),
+            "media_timing_mode": self.manifest.notes.get("media_timing_mode"),
+            "trajectory_source_time_semantics": self.manifest.notes.get("trajectory_source_time_semantics"),
+            "trajectory_time_alignment_summary": self.manifest.notes.get("trajectory_time_alignment_summary"),
         }
         if self.has_annotations():
             payload["annotation_summary"] = self.annotation_summary()

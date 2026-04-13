@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover
 
 
 _VIDEO_CACHE_SIZE = 32
+_VIDEO_TIME_BASE_DEN = 90_000
 
 
 def ensure_av_available() -> None:
@@ -78,26 +79,36 @@ class MediaStreamWriter:
         fps: float,
         expected_audio: PlannedAudioStream | None = None,
         encoding_config: MediaEncodingConfig | None = None,
+        session_start_ns: int | None = None,
     ) -> None:
         ensure_av_available()
         self.output_path = output_path
         self.fps = max(1, int(round(fps or 30.0)))
         self.expected_audio = expected_audio
         self.encoding_config = encoding_config or MediaEncodingConfig()
+        self.session_start_ns = session_start_ns
         self._container: Any | None = None
         self._video_stream: Any | None = None
         self._audio_stream: Any | None = None
         self._video_frame_count = 0
         self._audio_sample_count = 0
         self._pending_audio_chunks: list[np.ndarray] = []
+        self._pending_audio_starts: list[int] = []
         self._pending_audio_shapes: list[tuple[int, ...]] = []
         self._pending_audio_dtypes: list[np.dtype] = []
+        self._last_video_duration_ticks: int = max(1, int(round(_VIDEO_TIME_BASE_DEN / self.fps)))
+
+    def update_session_start_ns(self, session_start_ns: int | None) -> None:
+        if session_start_ns is not None:
+            self.session_start_ns = int(session_start_ns)
 
     def write_video_frame(
         self,
         value: np.ndarray,
         *,
         channel_order: str | None,
+        frame_time_ns: int | None,
+        frame_duration_ns: int | None,
     ) -> dict[str, Any]:
         array = np.asarray(value)
         if array.dtype != np.uint8 or array.ndim not in {2, 3}:
@@ -117,11 +128,19 @@ class MediaStreamWriter:
             np.ascontiguousarray(array),
             format=_video_input_format(array, channel_order=channel_order),
         )
-        frame.pts = index
-        frame.time_base = Fraction(1, self.fps)
+        pts, duration_ticks, time_base = self._video_timing(
+            frame_time_ns=frame_time_ns,
+            frame_duration_ns=frame_duration_ns,
+            fallback_index=index,
+        )
+        frame.pts = pts
+        frame.time_base = time_base
         for packet in self._video_stream.encode(frame):
+            packet.duration = duration_ticks
             self._container.mux(packet)
         self._video_frame_count += 1
+        self._last_video_duration_ticks = duration_ticks
+        session_offset_ns = self._session_offset_ns(frame_time_ns)
         return {
             "path": str(self.output_path),
             "storage": "mp4_frame",
@@ -130,22 +149,27 @@ class MediaStreamWriter:
             "media_frame_index": index,
             "media_kind": "mp4",
             "fps": self.fps,
+            "media_time_ns": frame_time_ns,
+            "media_duration_ns": frame_duration_ns,
+            "session_offset_ns": session_offset_ns,
             **({"channel_order": channel_order} if channel_order is not None else {}),
         }
 
-    def write_audio_samples(self, value: np.ndarray) -> dict[str, Any]:
+    def write_audio_samples(self, value: np.ndarray, *, chunk_time_ns: int | None) -> dict[str, Any]:
         array = _normalize_audio_array(value)
-        sample_start = self._audio_sample_count
+        sample_start = self._audio_sample_start(chunk_time_ns, fallback=self._audio_sample_count)
         sample_count = int(array.shape[0])
         original = np.asarray(value)
         if self._container is None:
             self._pending_audio_chunks.append(array.copy())
+            self._pending_audio_starts.append(sample_start)
             self._pending_audio_shapes.append(tuple(original.shape))
             self._pending_audio_dtypes.append(original.dtype)
         else:
             self._ensure_audio_stream()
             self._mux_audio_chunk(array, sample_start)
-        self._audio_sample_count += sample_count
+        self._audio_sample_count = max(self._audio_sample_count, sample_start + sample_count)
+        media_duration_ns = int(round(sample_count * 1_000_000_000.0 / self._audio_sample_rate))
         return {
             "path": str(self.output_path),
             "storage": "mp4_audio",
@@ -154,8 +178,11 @@ class MediaStreamWriter:
             "sample_start": sample_start,
             "sample_count": sample_count,
             "media_kind": "mp4",
-            "sample_rate": self.expected_audio.sample_rate if self.expected_audio is not None else 48000,
+            "sample_rate": self._audio_sample_rate,
             "channels": array.shape[1],
+            "media_time_ns": chunk_time_ns,
+            "media_duration_ns": media_duration_ns,
+            "session_offset_ns": self._session_offset_ns(chunk_time_ns),
         }
 
     def close(self) -> None:
@@ -165,6 +192,7 @@ class MediaStreamWriter:
             return
         if self._video_stream is not None:
             for packet in self._video_stream.encode():
+                packet.duration = self._last_video_duration_ticks
                 self._container.mux(packet)
         if self._audio_stream is not None:
             for packet in self._audio_stream.encode():
@@ -174,6 +202,7 @@ class MediaStreamWriter:
         self._video_stream = None
         self._audio_stream = None
         self._pending_audio_chunks = []
+        self._pending_audio_starts = []
         self._pending_audio_shapes = []
         self._pending_audio_dtypes = []
 
@@ -199,9 +228,10 @@ class MediaStreamWriter:
                 encoding_config=self.encoding_config,
             )
             pending_chunks = list(self._pending_audio_chunks)
+            pending_starts = list(self._pending_audio_starts)
             self._pending_audio_chunks = []
-            for index, chunk in enumerate(pending_chunks):
-                start = sum(item.shape[0] for item in pending_chunks[:index])
+            self._pending_audio_starts = []
+            for chunk, start in zip(pending_chunks, pending_starts):
                 self._mux_audio_chunk(chunk, start)
 
     def _ensure_audio_stream(self) -> None:
@@ -220,11 +250,47 @@ class MediaStreamWriter:
             format="s16",
             layout=layout,
         )
-        audio_frame.sample_rate = self.expected_audio.sample_rate if self.expected_audio is not None else 48000
+        audio_frame.sample_rate = self._audio_sample_rate
         audio_frame.pts = sample_start
         audio_frame.time_base = Fraction(1, audio_frame.sample_rate)
         for packet in self._audio_stream.encode(audio_frame):
             self._container.mux(packet)
+
+    @property
+    def _audio_sample_rate(self) -> int:
+        return self.expected_audio.sample_rate if self.expected_audio is not None else 48000
+
+    def _session_offset_ns(self, timestamp_ns: int | None) -> int | None:
+        if timestamp_ns is None or self.session_start_ns is None:
+            return None
+        return int(timestamp_ns) - int(self.session_start_ns)
+
+    def _audio_sample_start(self, chunk_time_ns: int | None, *, fallback: int) -> int:
+        offset_ns = self._session_offset_ns(chunk_time_ns)
+        if offset_ns is None:
+            return int(fallback)
+        return max(0, int(round(offset_ns * self._audio_sample_rate / 1_000_000_000.0)))
+
+    def _video_timing(
+        self,
+        *,
+        frame_time_ns: int | None,
+        frame_duration_ns: int | None,
+        fallback_index: int,
+    ) -> tuple[int, int, Fraction]:
+        time_base = Fraction(1, _VIDEO_TIME_BASE_DEN)
+        nominal_duration_ns = int(round(1_000_000_000.0 / max(self.fps, 1)))
+        effective_duration_ns = int(frame_duration_ns) if frame_duration_ns is not None else nominal_duration_ns
+        if frame_time_ns is None:
+            pts = fallback_index * max(1, int(round(_VIDEO_TIME_BASE_DEN / max(self.fps, 1))))
+        else:
+            offset_ns = self._session_offset_ns(frame_time_ns)
+            if offset_ns is None:
+                pts = int(round(frame_time_ns * _VIDEO_TIME_BASE_DEN / 1_000_000_000.0))
+            else:
+                pts = int(round(offset_ns * _VIDEO_TIME_BASE_DEN / 1_000_000_000.0))
+        duration_ticks = max(1, int(round(effective_duration_ns * _VIDEO_TIME_BASE_DEN / 1_000_000_000.0)))
+        return pts, duration_ticks, time_base
 
 
 class MediaArtifactReader:
@@ -341,15 +407,22 @@ def _add_video_stream(
         codec_candidates.append("mpeg4")
     for codec_name in codec_candidates:
         try:
-            stream = container.add_stream(codec_name, rate=fps)
+            stream = container.add_stream(codec_name, rate=_VIDEO_TIME_BASE_DEN)
             stream.width = width
             stream.height = height
             stream.pix_fmt = pixel_format
+            stream.time_base = Fraction(1, _VIDEO_TIME_BASE_DEN)
+            if hasattr(stream, "codec_context"):
+                try:
+                    stream.codec_context.max_b_frames = 0
+                except Exception:
+                    pass
             if codec_name == encoding_config.video_codec and hasattr(stream, "options"):
                 stream.options = {
                     "crf": encoding_config.video_crf,
                     "preset": encoding_config.video_preset,
                     "profile": encoding_config.video_profile,
+                    "bf": "0",
                 }
             return stream
         except Exception as exc:  # pragma: no cover

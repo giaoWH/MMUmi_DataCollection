@@ -47,6 +47,13 @@ class LeRobotEpisodeFragment:
     split: str | None = None
 
 
+@dataclass(frozen=True)
+class TrajectoryIndex:
+    by_aligned_time_ns: dict[int, TrajectoryFrame]
+    by_device_time_ns: dict[int, TrajectoryFrame]
+    by_host_time_ns: dict[int, TrajectoryFrame]
+
+
 def count_lerobot_eligible_rows(reader: SessionReader) -> int:
     frame_index = _build_frame_index(reader)
     aligned_records = list(reader.iter_aligned_records())
@@ -769,37 +776,91 @@ def _collect_lerobot_action_samples(
     return samples
 
 
-def _build_trajectory_index(trajectory_frames: list[TrajectoryFrame]) -> dict[int, TrajectoryFrame]:
-    index: dict[int, TrajectoryFrame] = {}
+def _build_trajectory_index(trajectory_frames: list[TrajectoryFrame]) -> TrajectoryIndex:
+    by_aligned_time_ns: dict[int, TrajectoryFrame] = {}
+    by_device_time_ns: dict[int, TrajectoryFrame] = {}
+    by_host_time_ns: dict[int, TrajectoryFrame] = {}
     for frame in trajectory_frames:
-        timestamp_ns = frame.time.host_time_ns
-        if timestamp_ns is None:
-            timestamp_ns = seconds_to_ns(frame.time.host_time)
-        if timestamp_ns is None:
-            continue
-        index[int(timestamp_ns)] = frame
-    return index
+        aligned_time_ns = frame.time.aligned_time_ns
+        if aligned_time_ns is None:
+            aligned_time_ns = seconds_to_ns(frame.time.aligned_time)
+        if aligned_time_ns is not None:
+            by_aligned_time_ns[int(aligned_time_ns)] = frame
+
+        device_time_ns = frame.time.device_time_ns
+        if device_time_ns is None:
+            device_time_ns = seconds_to_ns(frame.time.device_time)
+        if device_time_ns is not None:
+            by_device_time_ns[int(device_time_ns)] = frame
+
+        host_time_ns = frame.time.host_time_ns
+        if host_time_ns is None:
+            host_time_ns = seconds_to_ns(frame.time.host_time)
+        if host_time_ns is not None:
+            by_host_time_ns[int(host_time_ns)] = frame
+
+    return TrajectoryIndex(
+        by_aligned_time_ns=by_aligned_time_ns,
+        by_device_time_ns=by_device_time_ns,
+        by_host_time_ns=by_host_time_ns,
+    )
 
 
 def _resolve_record_trajectory(
     record: dict[str, Any],
-    trajectory_index: dict[int, TrajectoryFrame],
+    trajectory_index: TrajectoryIndex,
 ) -> TrajectoryFrame | None:
+    aligned_time_ns = _record_time_ns(record, "aligned_time_ns", "aligned_time")
+    if aligned_time_ns is not None:
+        trajectory = trajectory_index.by_aligned_time_ns.get(int(aligned_time_ns))
+        if trajectory is not None:
+            return trajectory
+
     record_frames = record.get("frames", {})
     if not isinstance(record_frames, dict):
         return None
     realsense_info = record_frames.get("realsense")
     if not isinstance(realsense_info, dict):
         return None
-    timestamp_ns = realsense_info.get("device_time_ns")
-    if timestamp_ns is None:
-        raw_timestamp = realsense_info.get("device_time")
-        if raw_timestamp is None:
+    device_time_ns = _value_to_ns(
+        realsense_info.get("device_time_ns"),
+        realsense_info.get("device_time"),
+    )
+    if device_time_ns is not None:
+        trajectory = trajectory_index.by_device_time_ns.get(int(device_time_ns))
+        if trajectory is not None:
+            return trajectory
+        trajectory = trajectory_index.by_host_time_ns.get(int(device_time_ns))
+        if trajectory is not None:
+            return trajectory
+
+    host_time_ns = _value_to_ns(
+        realsense_info.get("host_time_ns"),
+        realsense_info.get("host_time"),
+    )
+    if host_time_ns is not None:
+        trajectory = trajectory_index.by_host_time_ns.get(int(host_time_ns))
+        if trajectory is not None:
+            return trajectory
+    return None
+
+
+def _record_time_ns(record: dict[str, Any], ns_key: str, seconds_key: str) -> int | None:
+    return _value_to_ns(record.get(ns_key), record.get(seconds_key))
+
+
+def _value_to_ns(ns_value: Any, seconds_value: Any) -> int | None:
+    if ns_value is not None:
+        try:
+            return int(ns_value)
+        except (TypeError, ValueError):
             return None
-        timestamp_ns = seconds_to_ns(float(raw_timestamp))
-    if timestamp_ns is None:
+    if seconds_value is None:
         return None
-    return trajectory_index.get(int(timestamp_ns))
+    try:
+        return seconds_to_ns(float(seconds_value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _resolve_gripper_position(

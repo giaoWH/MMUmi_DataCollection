@@ -163,7 +163,7 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 
 - 从 session 导出 ORB-SLAM3 所需 bundle
 - 调用外部 ORB-SLAM3 命令
-- 将轨迹结果回写到 session
+- 将轨迹结果重新绑定到 session 统一时间轴后写回 session
 
 在媒体化存储实验里，这一层继续维持既有输入输出契约：
 
@@ -172,6 +172,13 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - `realsense.depth` 继续直接读取无损数组
 
 这个环节固定为独立离线执行，不再由录制脚本在结束后自动触发。
+
+当前 `process_trajectory` 的时间契约已经明确为：
+
+- 保留 ORB-SLAM3 源结果的 `device_time_ns`
+- 回填真实 session `host_time_ns`
+- 回填统一 `aligned_time_ns`
+- 把回绑质量摘要写入 `manifest/meta.notes.trajectory_time_alignment_summary`
 
 ### `export`
 
@@ -668,6 +675,9 @@ python scripts/sdk_record.py
 - 传感器 ready 后，主循环先持续 drain 各路缓存
 - 这一阶段不会创建正式时间轴上的 session 数据
 - 正式录制时长会从丢弃窗口结束后才开始计时
+- 新 session 会显式记录 `session_time_window`
+- 所有模态只允许写入这个统一时间窗内的数据
+- 视频和音频媒体按真实时间戳写入，不再按目标 `fps` / `sample_rate` 反推 session 时长
 
 这个能力主要用于避免：
 

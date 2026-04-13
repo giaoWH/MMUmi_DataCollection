@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from sdk.exporters.lerobot_exporter import (
+    TrajectoryIndex,
     _build_frame_index,
     _build_trajectory_index,
     _relative_quaternion,
@@ -157,7 +158,7 @@ def write_trajectory_qc_report(result: TrajectoryQcResult) -> Path:
 def _build_step_results(
     *,
     aligned_records: list[dict[str, Any]],
-    trajectory_index: dict[int, Any],
+    trajectory_index: TrajectoryIndex,
     frame_index: dict[str, dict[int, Any]],
     thresholds: TrajectoryQcThresholds,
 ) -> list[dict[str, Any]]:
@@ -294,14 +295,21 @@ def _rotation_delta_deg(current: list[float], target: list[float]) -> float:
 
 
 def _trajectory_is_monotonic(trajectory_frames: list[Any]) -> bool:
-    last_time: float | None = None
+    last_time_ns: int | None = None
     for frame in trajectory_frames:
-        timestamp = frame.time.host_time
-        if timestamp is None or not math.isfinite(timestamp):
+        timestamp_ns = frame.time.aligned_time_ns
+        if timestamp_ns is None:
+            timestamp_ns = frame.time.host_time_ns
+        if timestamp_ns is None:
+            timestamp = frame.time.aligned_time
+            if timestamp is None:
+                timestamp = frame.time.host_time
+            if timestamp is None or not math.isfinite(timestamp):
+                return False
+            timestamp_ns = int(round(float(timestamp) * 1_000_000_000))
+        if last_time_ns is not None and int(timestamp_ns) < last_time_ns:
             return False
-        if last_time is not None and timestamp < last_time:
-            return False
-        last_time = timestamp
+        last_time_ns = int(timestamp_ns)
     return True
 
 

@@ -89,7 +89,7 @@ def convert_euroc_trajectory_to_jsonl(
                 "trajectory_format": "euroc_final",
                 "coordinate_frame": "orbslam3_world",
                 "pose_reference": "imu_body",
-                "time_semantics": "trajectory_result_timestamp",
+                "time_semantics": "realsense_device_time_from_orbslam3_bundle",
             },
         }
         records.append(json.dumps(payload, ensure_ascii=False))

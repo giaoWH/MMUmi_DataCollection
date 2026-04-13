@@ -25,6 +25,9 @@ class TrajectoryQcTest(unittest.TestCase):
         trajectory_write_order: list[int] | None = None,
         missing_trajectory_indices: set[int] | None = None,
         missing_gripper_indices: set[int] | None = None,
+        trajectory_host_times: list[float] | None = None,
+        trajectory_device_times: list[float] | None = None,
+        trajectory_aligned_times: list[float] | None = None,
     ) -> Path:
         aligned_times = aligned_times or [1.0, 1.1, 1.2, 1.3]
         positions = positions or [
@@ -38,6 +41,9 @@ class TrajectoryQcTest(unittest.TestCase):
         trajectory_write_order = trajectory_write_order or list(range(len(aligned_times)))
         missing_trajectory_indices = missing_trajectory_indices or set()
         missing_gripper_indices = missing_gripper_indices or set()
+        trajectory_host_times = trajectory_host_times or aligned_times
+        trajectory_device_times = trajectory_device_times or aligned_times
+        trajectory_aligned_times = trajectory_aligned_times or aligned_times
 
         session = create_session_info(
             output_root,
@@ -108,9 +114,10 @@ class TrajectoryQcTest(unittest.TestCase):
                     source="orbslam3",
                     frame_id=index + 1,
                     time=FrameTime(
-                        host_time=aligned_time,
-                        monotonic_time=aligned_time,
-                        aligned_time=aligned_time,
+                        host_time=trajectory_host_times[index],
+                        monotonic_time=trajectory_host_times[index],
+                        device_time=trajectory_device_times[index],
+                        aligned_time=trajectory_aligned_times[index],
                     ),
                     position=positions[index],
                     quaternion=[1.0, 0.0, 0.0, 0.0],
@@ -219,6 +226,21 @@ class TrajectoryQcTest(unittest.TestCase):
             self.assertEqual(len(warned_steps), 1)
             self.assertIn("translation_delta_exceeds_threshold", warned_steps[0]["flags"])
             self.assertIn("translation_speed_exceeds_threshold", warned_steps[0]["flags"])
+
+    def test_run_trajectory_qc_prefers_aligned_and_device_time_over_legacy_host_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = self._create_session(
+                tmp_dir,
+                trajectory_host_times=[10.0, 10.1, 10.2, 10.3],
+                trajectory_device_times=[1.0, 1.1, 1.2, 1.3],
+                trajectory_aligned_times=[1.0, 1.1, 1.2, 1.3],
+            )
+
+            result = run_trajectory_qc(session_dir)
+
+            self.assertEqual(result.session_status, "pass")
+            self.assertEqual(result.report["summary"]["coverage_ratio"], 1.0)
+            self.assertNotIn("non_monotonic_trajectory", result.report["session_flags"])
 
     def test_sdk_qc_trajectory_cli_writes_report_and_sdk_inspect_reads_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

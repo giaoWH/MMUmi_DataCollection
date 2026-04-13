@@ -166,6 +166,16 @@ ORB-SLAM3 外部程序或 wrapper 脚本最终必须输出 JSONL。
 
 当前 `sdk/perception/orbslam3/command_runner.py` 已对上述字段做基本校验。
 
+补充说明：
+
+- wrapper 输出 JSONL 中的 `timestamp` 表示 ORB-SLAM3 源结果时间戳，默认保留 bundle / RealSense device-time 语义
+- `scripts/sdk_process_trajectory.py` 不会直接把这个 `timestamp` 原样当作最终 session `host_time`
+- 轨迹写回 `trajectory/frames.jsonl` 前，SDK 会把每个轨迹点重新绑定到：
+  - `time.device_time_ns`
+  - `time.host_time_ns`
+  - `time.aligned_time_ns`
+- 回绑规则是“精确 device-time 优先，随后在小容差内最近邻回退”；结果摘要会写入 session `notes.trajectory_time_alignment_summary`
+
 当前 `imu.csv` 的表头为：
 
 ```text

@@ -87,9 +87,12 @@ action = [
 
 1. 人手持 RealSense 做 demonstration，SDK 同步录制多模态数据。
 2. 录制结束后，在 PC 端对该 session 运行 `scripts/sdk_process_trajectory.py`。
-3. ORB-SLAM3 根据 RealSense bundle 生成轨迹，输出每个轨迹点的 `position + quaternion`。
-4. 导出 LeRobot 时，以相邻两个 `aligned` step 为单位，分别查找这两个 step 对应的轨迹帧。
-5. 轨迹匹配依赖 `aligned.frames.realsense.device_time_ns` 与 `trajectory.time.host_time_ns/device_time` 的时间对应关系。
+3. ORB-SLAM3 根据 RealSense bundle 生成轨迹，wrapper 输出的源时间戳保留 RealSense device-time 语义。
+4. `sdk_process_trajectory.py` 会把轨迹点重新绑定回 session：
+   - 保留 `trajectory.time.device_time_ns`
+   - 回填真实 `trajectory.time.host_time_ns`
+   - 回填统一 `trajectory.time.aligned_time_ns`
+5. 导出 LeRobot 时，以相邻两个 `aligned` step 为单位，优先按 `trajectory.time.aligned_time_ns` 查找轨迹帧；必要时再回退到 `device_time_ns` 做兼容匹配。
 6. 机器人末端 action 定义为：
    - `Δp = p(t+1) - p(t)`
    - `Δq = q(t+1) * inverse(q(t))`
@@ -397,10 +400,11 @@ aligned_time[k] = start_time + k / align_rate_hz
 
 action 构造不是简单按索引对齐 trajectory，而是：
 
-- 先从 `aligned` 记录里读取 `realsense.device_time_ns`
-- 再去 `trajectory` 中查找相同时间戳的轨迹帧
+- 新 session 优先使用 `aligned_time_ns` 作为轨迹主锚点
+- `trajectory.time.device_time_ns` 保留为回绑溯源字段
+- 旧 session 仍可回退到 `realsense.device_time_ns -> trajectory.host_time_ns/device_time_ns` 的兼容路径
 
-因此 trajectory 是“借助 RealSense 时间戳”绑定回 aligned step 的。
+因此当前约定下，trajectory 已经显式挂到统一时间网格；RealSense device-time 只作为回绑与审计信息保留。
 
 ## 7. 缺失处理
 
@@ -478,6 +482,9 @@ session_xxx/
 
 - 当前若启用 `microphone`，必须同时启用 `camera`，因为音频被复用到 `camera` 的主视频容器中
 - `*.jsonl` 永远是索引层，真正的图像/音频数据可能在 MP4 或 artifact 文件里
+- session 时长真源是 `manifest/meta.notes.session_time_window`
+- `camera.fps` / `gelsight.fps` / `realsense.*.fps` 是设备请求值，不再用于推导媒体时长
+- `mp4_frame` / `mp4_audio` 的时间语义由 `media_time_ns` 和 `media_duration_ns` 决定
 
 ### 8.3 LeRobot 导出格式
 

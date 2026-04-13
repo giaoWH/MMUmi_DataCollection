@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 
 from sdk.constants import SDK_SCHEMA_VERSION
-from sdk.core.frame import AlignedFrame, SensorFrame
+from sdk.core.frame import AlignedFrame, SensorFrame, ns_to_seconds
 from sdk.core.frame import TrajectoryFrame
 from sdk.core.session import SessionInfo
 from sdk.session_naming import stream_artifact_stem, stream_frames_path
@@ -23,6 +23,11 @@ from sdk.storage.media_io import (
     media_role_for_sensor,
 )
 from sdk.storage.schema import SessionManifest, StreamManifest, manifest_path_for
+
+try:
+    import av
+except ImportError:  # pragma: no cover
+    av = None
 
 try:
     import cv2
@@ -68,6 +73,12 @@ class SessionWriter:
         self._write_latency_samples = 0
         self._max_write_latency_sec = 0.0
         self._media_writers: dict[Path, MediaStreamWriter] = {}
+        self._pending_video_frames: dict[str, SensorFrame] = {}
+        self._sensor_time_summary: dict[str, dict[str, Any]] = {}
+        self._trim_diagnostics: dict[str, Any] = {
+            "sensor_counts": {},
+        }
+        self._session_window = self._extract_session_window()
         self._media_encoding_config = self._build_media_encoding_config()
         self.manifest = self._build_manifest()
         self._initialize_media_writers()
@@ -122,6 +133,16 @@ class SessionWriter:
         writer._write_latency_samples = 0
         writer._max_write_latency_sec = 0.0
         writer._media_writers = {}
+        writer._pending_video_frames = {}
+        writer._sensor_time_summary = {}
+        writer._trim_diagnostics = {"sensor_counts": {}}
+        writer._session_window = {
+            "start_host_time_ns": None,
+            "end_host_time_ns": None,
+            "start_monotonic_time_ns": None,
+            "end_monotonic_time_ns": None,
+            "duration_ns": None,
+        }
         writer._media_encoding_config = MediaEncodingConfig()
         writer.manifest = manifest
         writer._prepare_existing_layout()
@@ -155,9 +176,13 @@ class SessionWriter:
             return
         self._closed = True
         self._finish_async_writes()
+        self._flush_pending_video_frames()
         self._close_media_writers()
         if self.session_info is not None:
+            self._finalize_timing_notes()
+            self._validate_session_time_alignment()
             self.session_info.notes["writer_diagnostics"] = self.get_diagnostics()
+            self.manifest = self._build_manifest()
             self._write_meta()
             self._write_manifest()
         self._close_jsonl_handles()
@@ -191,9 +216,122 @@ class SessionWriter:
                 "max_sec": self._max_write_latency_sec,
             },
             "error": str(self._writer_error) if self._writer_error is not None else None,
+            "trim_diagnostics": self._to_jsonable(self._trim_diagnostics),
         }
 
-    def _write_sensor_frame_sync(self, frame: SensorFrame) -> None:
+    def _extract_session_window(self) -> dict[str, int | None]:
+        if self.session_info is None:
+            return {
+                "start_host_time_ns": None,
+                "end_host_time_ns": None,
+                "start_monotonic_time_ns": None,
+                "end_monotonic_time_ns": None,
+                "duration_ns": None,
+            }
+        raw = dict(self.session_info.notes.get("session_time_window", {}) or {})
+        window = {
+            "start_host_time_ns": self._to_int_or_none(raw.get("start_host_time_ns")),
+            "end_host_time_ns": self._to_int_or_none(raw.get("end_host_time_ns")),
+            "start_monotonic_time_ns": self._to_int_or_none(raw.get("start_monotonic_time_ns")),
+            "end_monotonic_time_ns": self._to_int_or_none(raw.get("end_monotonic_time_ns")),
+            "duration_ns": self._to_int_or_none(raw.get("duration_ns")),
+        }
+        if window["duration_ns"] is None:
+            if window["start_host_time_ns"] is not None and window["end_host_time_ns"] is not None:
+                window["duration_ns"] = max(0, window["end_host_time_ns"] - window["start_host_time_ns"])
+            elif (
+                window["start_monotonic_time_ns"] is not None
+                and window["end_monotonic_time_ns"] is not None
+            ):
+                window["duration_ns"] = max(
+                    0,
+                    window["end_monotonic_time_ns"] - window["start_monotonic_time_ns"],
+                )
+        return window
+
+    def _to_int_or_none(self, value: object) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def set_session_time_window(
+        self,
+        *,
+        start_host_time_ns: int | None = None,
+        end_host_time_ns: int | None = None,
+        start_monotonic_time_ns: int | None = None,
+        end_monotonic_time_ns: int | None = None,
+    ) -> None:
+        notes_window = self._extract_session_window()
+        updated = {
+            "start_host_time_ns": (
+                int(start_host_time_ns)
+                if start_host_time_ns is not None
+                else notes_window.get("start_host_time_ns")
+            ),
+            "end_host_time_ns": (
+                int(end_host_time_ns)
+                if end_host_time_ns is not None
+                else notes_window.get("end_host_time_ns")
+            ),
+            "start_monotonic_time_ns": (
+                int(start_monotonic_time_ns)
+                if start_monotonic_time_ns is not None
+                else notes_window.get("start_monotonic_time_ns")
+            ),
+            "end_monotonic_time_ns": (
+                int(end_monotonic_time_ns)
+                if end_monotonic_time_ns is not None
+                else notes_window.get("end_monotonic_time_ns")
+            ),
+        }
+        if (
+            updated["start_host_time_ns"] is not None
+            and updated["end_host_time_ns"] is not None
+        ):
+            updated["duration_ns"] = max(
+                0,
+                int(updated["end_host_time_ns"]) - int(updated["start_host_time_ns"]),
+            )
+        elif (
+            updated["start_monotonic_time_ns"] is not None
+            and updated["end_monotonic_time_ns"] is not None
+        ):
+            updated["duration_ns"] = max(
+                0,
+                int(updated["end_monotonic_time_ns"]) - int(updated["start_monotonic_time_ns"]),
+            )
+        else:
+            updated["duration_ns"] = notes_window.get("duration_ns")
+        self._session_window = updated
+        if self.session_info is not None:
+            self.session_info.notes["session_time_window"] = self._to_jsonable(updated)
+        for writer in self._media_writers.values():
+            writer.update_session_start_ns(updated.get("start_host_time_ns"))
+
+    def _write_sensor_frame_sync(self, frame: SensorFrame) -> int:
+        if not self._should_keep_sensor_frame(frame):
+            return 0
+        if self._sensor_frame_has_video_media(frame):
+            pending = self._pending_video_frames.get(frame.sensor_name)
+            self._pending_video_frames[frame.sensor_name] = frame
+            if pending is None:
+                return 0
+            return self._flush_sensor_frame_sync(
+                pending,
+                media_end_time_ns=self._frame_host_time_ns(frame),
+            )
+        return self._flush_sensor_frame_sync(frame)
+
+    def _flush_sensor_frame_sync(
+        self,
+        frame: SensorFrame,
+        *,
+        media_end_time_ns: int | None = None,
+    ) -> int:
         self._sync_stream_metadata_from_frame(frame)
         sensor_dir = self._ensure_sensor_dir(frame.sensor_name)
         record = {
@@ -216,11 +354,14 @@ class SessionWriter:
                 frame=frame,
                 frame_id=frame.frame_id,
                 payload=frame.payload,
+                media_end_time_ns=media_end_time_ns,
             ),
             "metadata": self._to_jsonable(frame.metadata),
         }
         stream = self.manifest.sensors[frame.sensor_name]
         self._append_jsonl(self.base_dir / stream.frames_path, record)
+        self._update_sensor_time_summary(frame)
+        return 1
 
     def _sync_stream_metadata_from_frame(self, frame: SensorFrame) -> None:
         self._merge_stream_metadata(frame.sensor_name, frame.metadata)
@@ -264,6 +405,133 @@ class SessionWriter:
             )
         if self.session_info is not None and sensor_name in self.session_info.sensors:
             self.session_info.sensors[sensor_name].update(self._to_jsonable(metadata))
+
+    def _should_keep_sensor_frame(self, frame: SensorFrame) -> bool:
+        window = self._session_window
+        frame_time_ns, start_ns, end_ns = self._frame_window_bounds(frame)
+        if frame_time_ns is None:
+            return True
+        sensor_trim = self._trim_diagnostics["sensor_counts"].setdefault(
+            frame.sensor_name,
+            {
+                "dropped_before_window": 0,
+                "dropped_after_window": 0,
+            },
+        )
+        if start_ns is not None and frame_time_ns < start_ns:
+            sensor_trim["dropped_before_window"] += 1
+            return False
+        if end_ns is not None and frame_time_ns > end_ns:
+            sensor_trim["dropped_after_window"] += 1
+            return False
+        if window.get("start_host_time_ns") is not None and frame.time.host_time_ns is not None:
+            host_time_ns = int(frame.time.host_time_ns)
+            if host_time_ns < int(window["start_host_time_ns"]):
+                sensor_trim["dropped_before_window"] += 1
+                return False
+        if window.get("end_host_time_ns") is not None and frame.time.host_time_ns is not None:
+            host_time_ns = int(frame.time.host_time_ns)
+            if host_time_ns > int(window["end_host_time_ns"]):
+                sensor_trim["dropped_after_window"] += 1
+                return False
+        return True
+
+    def _frame_window_bounds(self, frame: SensorFrame) -> tuple[int | None, int | None, int | None]:
+        window = self._session_window
+        if frame.time.monotonic_time_ns is not None:
+            return (
+                int(frame.time.monotonic_time_ns),
+                window.get("start_monotonic_time_ns"),
+                window.get("end_monotonic_time_ns"),
+            )
+        if frame.time.host_time_ns is not None:
+            return (
+                int(frame.time.host_time_ns),
+                window.get("start_host_time_ns"),
+                window.get("end_host_time_ns"),
+            )
+        return None, None, None
+
+    def _sensor_frame_has_video_media(self, frame: SensorFrame) -> bool:
+        return any(
+            isinstance(value, np.ndarray)
+            and self._should_store_visual_in_media(frame.sensor_name, frame.modality, key, value)
+            for key, value in frame.payload.items()
+        )
+
+    def _update_sensor_time_summary(self, frame: SensorFrame) -> None:
+        summary = self._sensor_time_summary.setdefault(
+            frame.sensor_name,
+            {
+                "kept_frame_count": 0,
+                "first_kept_host_time_ns": None,
+                "last_kept_host_time_ns": None,
+                "first_kept_monotonic_time_ns": None,
+                "last_kept_monotonic_time_ns": None,
+                "dropped_before_window": 0,
+                "dropped_after_window": 0,
+            },
+        )
+        summary["kept_frame_count"] += 1
+        if frame.time.host_time_ns is not None:
+            host_ns = int(frame.time.host_time_ns)
+            if summary["first_kept_host_time_ns"] is None:
+                summary["first_kept_host_time_ns"] = host_ns
+            summary["last_kept_host_time_ns"] = host_ns
+        if frame.time.monotonic_time_ns is not None:
+            mono_ns = int(frame.time.monotonic_time_ns)
+            if summary["first_kept_monotonic_time_ns"] is None:
+                summary["first_kept_monotonic_time_ns"] = mono_ns
+            summary["last_kept_monotonic_time_ns"] = mono_ns
+
+    def _flush_pending_video_frames(self) -> None:
+        if not self._pending_video_frames:
+            return
+        final_end_host_ns = self._session_window.get("end_host_time_ns")
+        pending = list(self._pending_video_frames.items())
+        self._pending_video_frames = {}
+        for sensor_name, frame in pending:
+            media_end_time_ns = final_end_host_ns
+            if media_end_time_ns is None:
+                nominal_duration_ns = int(
+                    round(
+                        1_000_000_000.0
+                        / max(float(frame.metadata.get("fps", self.session_info.config.get("align_rate_hz", 30.0) or 30.0)), 1.0)
+                    )
+                )
+                frame_host_ns = self._frame_host_time_ns(frame)
+                if frame_host_ns is not None:
+                    media_end_time_ns = frame_host_ns + nominal_duration_ns
+            self._written_counts["sensor"] += self._flush_sensor_frame_sync(
+                frame,
+                media_end_time_ns=media_end_time_ns,
+            )
+            trim = self._trim_diagnostics["sensor_counts"].get(sensor_name)
+            if trim is None:
+                continue
+
+    def _frame_host_time_ns(self, frame: SensorFrame) -> int | None:
+        return int(frame.time.host_time_ns) if frame.time.host_time_ns is not None else None
+
+    def _frame_media_duration_ns(
+        self,
+        frame_time_ns: int | None,
+        media_end_time_ns: int | None,
+        *,
+        sensor_name: str,
+    ) -> int | None:
+        if frame_time_ns is not None and media_end_time_ns is not None:
+            return max(1, int(media_end_time_ns) - int(frame_time_ns))
+        stream = self.manifest.sensors.get(sensor_name)
+        fps = None
+        if stream is not None:
+            fps = stream.metadata.get("fps")
+        if fps in (None, 0):
+            fps = self.session_info.config.get("align_rate_hz", 30.0) if self.session_info is not None else 30.0
+        try:
+            return max(1, int(round(1_000_000_000.0 / max(float(fps), 1.0))))
+        except (TypeError, ValueError):
+            return None
 
     def _build_media_encoding_config(self) -> MediaEncodingConfig:
         media_config = {}
@@ -453,6 +721,7 @@ class SessionWriter:
                 fps=float(stream.metadata.get("fps", self.session_info.config.get("align_rate_hz", 30.0) or 30.0)),
                 expected_audio=(planned_audio if stream.media_role == "primary_av" else None),
                 encoding_config=self._media_encoding_config,
+                session_start_ns=self._session_window.get("start_host_time_ns"),
             )
             self._merge_stream_metadata(
                 stream.sensor_name,
@@ -489,16 +758,19 @@ class SessionWriter:
     def _process_write(self, kind: str, payload: SensorFrame | AlignedFrame | TrajectoryFrame) -> None:
         started_at = time.perf_counter()
         self._collect_completed_artifact_futures(wait=False)
+        written_count = 0
         if kind == "sensor":
-            self._write_sensor_frame_sync(payload)
+            written_count = self._write_sensor_frame_sync(payload)
         elif kind == "aligned":
             self._write_aligned_frame_sync(payload)
+            written_count = 1
         elif kind == "trajectory":
             self._write_trajectory_frame_sync(payload)
+            written_count = 1
         else:  # pragma: no cover
             raise ValueError(f"不支持的写入类型: {kind}")
         latency_sec = time.perf_counter() - started_at
-        self._written_counts[kind] += 1
+        self._written_counts[kind] += written_count
         self._write_latency_samples += 1
         self._write_latency_total_sec += latency_sec
         self._max_write_latency_sec = max(self._max_write_latency_sec, latency_sec)
@@ -545,6 +817,7 @@ class SessionWriter:
         frame: SensorFrame,
         frame_id: int,
         payload: dict[str, Any],
+        media_end_time_ns: int | None = None,
     ) -> dict[str, Any]:
         return {
             key: self._serialize_value(
@@ -552,9 +825,11 @@ class SessionWriter:
                 frame.sensor_name,
                 frame.sensor_type,
                 frame.modality,
+                frame.time,
                 frame_id,
                 key,
                 value,
+                media_end_time_ns=media_end_time_ns,
             )
             for key, value in payload.items()
         }
@@ -565,14 +840,17 @@ class SessionWriter:
         sensor_name: str,
         sensor_type: str,
         modality: str,
+        frame_time,
         frame_id: int,
         key: str,
         value: Any,
+        *,
+        media_end_time_ns: int | None = None,
     ) -> Any:
         if isinstance(value, np.ndarray):
             if value.ndim <= 1:
                 if self._should_store_audio_in_media(sensor_name, modality, key):
-                    return self._store_audio_in_media(value)
+                    return self._store_audio_in_media(value, chunk_time_ns=frame_time.host_time_ns)
                 return value.tolist()
             if self._should_store_visual_in_media(sensor_name, modality, key, value):
                 return self._store_visual_in_media(
@@ -581,6 +859,12 @@ class SessionWriter:
                     modality,
                     key,
                     value,
+                    frame_time_ns=frame_time.host_time_ns,
+                    frame_duration_ns=self._frame_media_duration_ns(
+                        frame_time.host_time_ns,
+                        media_end_time_ns,
+                        sensor_name=sensor_name,
+                    ),
                 )
             return self._store_array(
                 sensor_dir,
@@ -599,15 +883,27 @@ class SessionWriter:
                     sensor_name,
                     sensor_type,
                     modality,
+                    frame_time,
                     frame_id,
                     child_key,
                     child_value,
+                    media_end_time_ns=media_end_time_ns,
                 )
                 for child_key, child_value in value.items()
             }
         if isinstance(value, (list, tuple)):
             return [
-                self._serialize_value(sensor_dir, sensor_name, sensor_type, modality, frame_id, key, item)
+                self._serialize_value(
+                    sensor_dir,
+                    sensor_name,
+                    sensor_type,
+                    modality,
+                    frame_time,
+                    frame_id,
+                    key,
+                    item,
+                    media_end_time_ns=media_end_time_ns,
+                )
                 for item in value
             ]
         return value
@@ -645,6 +941,9 @@ class SessionWriter:
         modality: str,
         key: str,
         value: np.ndarray,
+        *,
+        frame_time_ns: int | None,
+        frame_duration_ns: int | None,
     ) -> dict[str, Any]:
         stream = self.manifest.sensors.get(sensor_name)
         if stream is None or not stream.media_path:
@@ -659,17 +958,19 @@ class SessionWriter:
                 key=key,
                 value=value,
             ),
+            frame_time_ns=frame_time_ns,
+            frame_duration_ns=frame_duration_ns,
         )
         reference["path"] = str(media_path.relative_to(self.base_dir))
         return reference
 
-    def _store_audio_in_media(self, value: np.ndarray) -> dict[str, Any]:
+    def _store_audio_in_media(self, value: np.ndarray, *, chunk_time_ns: int | None) -> dict[str, Any]:
         camera_stream = self.manifest.sensors.get("camera")
         if camera_stream is None or not camera_stream.media_path:
             raise RuntimeError("camera 主视频不存在，无法写入音轨")
         media_path = self.base_dir / camera_stream.media_path
         media_writer = self._media_writers[media_path]
-        reference = media_writer.write_audio_samples(value)
+        reference = media_writer.write_audio_samples(value, chunk_time_ns=chunk_time_ns)
         reference["path"] = str(media_path.relative_to(self.base_dir))
         return reference
 
@@ -804,6 +1105,103 @@ class SessionWriter:
         if modality in {"rgb", "visuotactile"} and sensor_type not in {"realsense", "fake_realsense"}:
             return "rgb"
         return None
+
+    def _finalize_timing_notes(self) -> None:
+        if self.session_info is None:
+            return
+        sensor_time_summary: dict[str, dict[str, Any]] = {}
+        for sensor_name in self.manifest.sensors:
+            summary = dict(self._sensor_time_summary.get(sensor_name, {}))
+            trim = self._trim_diagnostics["sensor_counts"].get(sensor_name, {})
+            summary.setdefault("kept_frame_count", 0)
+            summary["dropped_before_window"] = int(trim.get("dropped_before_window", 0))
+            summary["dropped_after_window"] = int(trim.get("dropped_after_window", 0))
+            for bound in (
+                "first_kept_host_time_ns",
+                "last_kept_host_time_ns",
+                "first_kept_monotonic_time_ns",
+                "last_kept_monotonic_time_ns",
+            ):
+                if bound in summary:
+                    summary[f"{bound[:-3]}"] = ns_to_seconds(summary[bound])
+            sensor_time_summary[sensor_name] = summary
+        self.session_info.notes["session_time_window"] = self._to_jsonable(self._session_window)
+        self.session_info.notes["sensor_time_summary"] = self._to_jsonable(sensor_time_summary)
+        self.session_info.notes["trim_diagnostics"] = self._to_jsonable(self._trim_diagnostics)
+        self.session_info.notes["media_timing_mode"] = "timestamp_driven"
+
+    def _validate_session_time_alignment(self) -> None:
+        if self.session_info is None:
+            return
+        start_host_ns = self._session_window.get("start_host_time_ns")
+        end_host_ns = self._session_window.get("end_host_time_ns")
+        duration_ns = self._session_window.get("duration_ns")
+        if start_host_ns is None or end_host_ns is None or duration_ns is None or duration_ns <= 0:
+            return
+        errors: list[str] = []
+        for sensor_name in self.manifest.sensors:
+            summary = self.session_info.notes.get("sensor_time_summary", {}).get(sensor_name, {})
+            kept = int(summary.get("kept_frame_count", 0) or 0)
+            if kept <= 0:
+                errors.append(f"{sensor_name}: session 时间窗内没有保留数据")
+                continue
+            first_host_ns = self._to_int_or_none(summary.get("first_kept_host_time_ns"))
+            last_host_ns = self._to_int_or_none(summary.get("last_kept_host_time_ns"))
+            if first_host_ns is not None and first_host_ns < start_host_ns:
+                errors.append(f"{sensor_name}: 首帧早于 session_start")
+            if last_host_ns is not None and last_host_ns > end_host_ns:
+                errors.append(f"{sensor_name}: 末帧晚于 session_end")
+        for stream in self.manifest.sensors.values():
+            if not stream.media_path:
+                continue
+            media_path = self.base_dir / stream.media_path
+            if not media_path.exists():
+                errors.append(f"{stream.sensor_name}: 媒体文件不存在 {media_path}")
+                continue
+            duration_error = self._probe_media_duration_error_ns(media_path, expected_duration_ns=duration_ns)
+            if duration_error is None:
+                continue
+            if abs(duration_error) > self._media_duration_tolerance_ns(media_path):
+                errors.append(
+                    f"{stream.sensor_name}: 媒体时长与 session 不一致，偏差 {duration_error}ns"
+                )
+        if errors:
+            raise RuntimeError("session 时间对齐校验失败: " + "; ".join(errors))
+
+    def _probe_media_duration_error_ns(self, media_path: Path, *, expected_duration_ns: int) -> int | None:
+        if av is None:
+            return None
+        container = av.open(str(media_path))
+        try:
+            stream_durations_ns: list[int] = []
+            for stream in container.streams:
+                if stream.type not in {"video", "audio"}:
+                    continue
+                if stream.duration is None or stream.time_base is None:
+                    continue
+                stream_durations_ns.append(
+                    int(round(float(stream.duration * stream.time_base) * 1_000_000_000.0))
+                )
+            if not stream_durations_ns:
+                return None
+            return max(stream_durations_ns) - int(expected_duration_ns)
+        finally:
+            container.close()
+
+    def _media_duration_tolerance_ns(self, media_path: Path) -> int:
+        if av is None:
+            return 0
+        container = av.open(str(media_path))
+        try:
+            tolerances: list[int] = []
+            for stream in container.streams:
+                if stream.type == "video" and stream.time_base is not None:
+                    tolerances.append(max(1, int(round(float(stream.time_base) * 1_000_000_000.0))))
+                if stream.type == "audio" and getattr(stream, "sample_rate", None):
+                    tolerances.append(max(1, int(round(1_000_000_000.0 / int(stream.sample_rate)))))
+            return max(tolerances) if tolerances else 1_000
+        finally:
+            container.close()
 
     def _close_media_writers(self) -> None:
         for media_writer in self._media_writers.values():
