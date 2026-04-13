@@ -8,10 +8,11 @@ import numpy as np
 
 from sdk.constants import SDK_SCHEMA_VERSION
 from sdk.core.session import infer_session_layout
-from sdk.session_naming import stream_frames_path
+from sdk.session_naming import stream_frames_path, stream_simplified_frames_path
 from sdk.core.frame import FrameTime, SensorFrame, TrajectoryFrame
 from sdk.storage.media_io import MediaArtifactReader, media_path_for_sensor, media_role_for_sensor
 from sdk.storage.schema import SessionManifest, manifest_path_for
+from sdk.storage.simplified_stream import should_write_simplified_stream
 from sdk.time_utils import format_wall_time
 
 try:
@@ -70,6 +71,7 @@ class SessionReader:
             "sensor_time_summary": self.manifest.notes.get("sensor_time_summary"),
             "trim_diagnostics": self.manifest.notes.get("trim_diagnostics"),
             "media_timing_mode": self.manifest.notes.get("media_timing_mode"),
+            "session_time_validation": self.manifest.notes.get("session_time_validation"),
             "trajectory_source_time_semantics": self.manifest.notes.get("trajectory_source_time_semantics"),
             "trajectory_time_alignment_summary": self.manifest.notes.get("trajectory_time_alignment_summary"),
         }
@@ -261,6 +263,11 @@ class SessionReader:
                 "sensor_type": metadata.get("sensor_type", sensor_name),
                 "modality": modality,
                 "frames_path": stream_frames_path(sensor_name, modality, task_slug, item_name),
+                "simplified_frames_path": (
+                    stream_simplified_frames_path(sensor_name, modality, task_slug, item_name)
+                    if should_write_simplified_stream(sensor_name)
+                    else None
+                ),
                 "artifacts_dir": f"streams/{sensor_name}/artifacts",
                 "storage_mode": (
                     "indexed_media"

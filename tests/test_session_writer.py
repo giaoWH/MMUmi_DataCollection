@@ -310,9 +310,11 @@ class SessionWriterTest(unittest.TestCase):
             meta_path = session.output_dir / "meta.json"
             manifest_path = session.output_dir / "manifest.json"
             sensor_log = session.output_dir / "streams" / "realsense" / "realsense_capture_rgbd_01.jsonl"
+            simplified_sensor_log = session.output_dir / "streams" / "realsense" / "realsense_capture_rgbd_01_s.jsonl"
             self.assertTrue(meta_path.exists())
             self.assertTrue(manifest_path.exists())
             self.assertTrue(sensor_log.exists())
+            self.assertTrue(simplified_sensor_log.exists())
 
             payload = json.loads(meta_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["session_id"], "realsense_capture__01")
@@ -325,6 +327,10 @@ class SessionWriterTest(unittest.TestCase):
             self.assertEqual(
                 manifest_payload["sensors"]["realsense"]["frames_path"],
                 "streams/realsense/realsense_capture_rgbd_01.jsonl",
+            )
+            self.assertEqual(
+                manifest_payload["sensors"]["realsense"]["simplified_frames_path"],
+                "streams/realsense/realsense_capture_rgbd_01_s.jsonl",
             )
             self.assertEqual(
                 manifest_payload["sensors"]["realsense"]["media_path"],
@@ -348,6 +354,16 @@ class SessionWriterTest(unittest.TestCase):
 
             depth_path = Path(session.output_dir) / record["payload"]["depth"]["path"]
             self.assertTrue(depth_path.exists())
+            simplified_record = json.loads(simplified_sensor_log.read_text(encoding="utf-8").strip())
+            self.assertEqual(
+                simplified_record,
+                {
+                    "host_time": "1970-01-01-08-00-01-000",
+                    "payload": {
+                        "depth_path": "streams/realsense/artifacts/realsense_capture_rgbd_01_000001_depth.npy",
+                    },
+                },
+            )
 
             reader = SessionReader(session.output_dir)
             loaded_frame = next(reader.iter_sensor_frames("realsense", load_payload=True))
@@ -377,6 +393,50 @@ class SessionWriterTest(unittest.TestCase):
             trajectory = list(reader.iter_trajectory_frames())
             self.assertEqual(len(trajectory), 1)
             self.assertEqual(trajectory[0].source, "orbslam3")
+
+    def test_writer_generates_simplified_jsonl_for_ft(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session = create_session_info(
+                tmp_dir,
+                task_name="ft_capture",
+                sensors={"ft": {"sensor_type": "ft_sensor", "modality": "force_torque"}},
+                config={"align_rate_hz": 30},
+            )
+            writer = SessionWriter(session)
+            writer.write_sensor_frame(
+                SensorFrame(
+                    sensor_name="ft",
+                    sensor_type="ft_sensor",
+                    modality="force_torque",
+                    frame_id=1,
+                    time=FrameTime(host_time=1.234, monotonic_time=2.0),
+                    payload={
+                        "force": np.array([1.0, 2.0, 3.0], dtype=np.float64),
+                        "torque": np.array([0.1, 0.2, 0.3], dtype=np.float64),
+                    },
+                )
+            )
+            writer.close()
+
+            manifest_payload = json.loads((session.output_dir / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                manifest_payload["sensors"]["ft"]["simplified_frames_path"],
+                "streams/ft/ft_capture_force_torque_01_s.jsonl",
+            )
+
+            simplified_sensor_log = session.output_dir / "streams" / "ft" / "ft_capture_force_torque_01_s.jsonl"
+            self.assertTrue(simplified_sensor_log.exists())
+            simplified_record = json.loads(simplified_sensor_log.read_text(encoding="utf-8").strip())
+            self.assertEqual(
+                simplified_record,
+                {
+                    "host_time": "1970-01-01-08-00-01-234",
+                    "payload": {
+                        "force": [1.0, 2.0, 3.0],
+                        "torque": [0.1, 0.2, 0.3],
+                    },
+                },
+            )
 
     def test_create_session_info_rejects_invalid_task_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -614,6 +674,53 @@ class SessionWriterTest(unittest.TestCase):
             sensor_summary = summary["sensor_time_summary"]["ft"]
             self.assertEqual(sensor_summary["kept_frame_count"], 1)
             self.assertEqual(sensor_summary["first_kept_host_time_ns"], 1_050_000_000)
+
+    def test_realsense_without_color_media_does_not_fail_session_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session = create_session_info(
+                tmp_dir,
+                task_name="realsense_depth_only",
+                sensors={"realsense": {"sensor_type": "realsense", "modality": "rgbd"}},
+                config={"align_rate_hz": 30},
+                notes={
+                    "session_time_window": {
+                        "start_host_time_ns": 1_000_000_000,
+                        "end_host_time_ns": 1_200_000_000,
+                        "start_monotonic_time_ns": 2_000_000_000,
+                        "end_monotonic_time_ns": 2_200_000_000,
+                        "duration_ns": 200_000_000,
+                    }
+                },
+            )
+            writer = SessionWriter(session)
+            writer.write_sensor_frame(
+                SensorFrame(
+                    sensor_name="realsense",
+                    sensor_type="realsense",
+                    modality="rgbd",
+                    frame_id=1,
+                    time=FrameTime(host_time=1.0, monotonic_time=2.0, device_time=1.0),
+                    payload={"depth": np.full((4, 4), 1000, dtype=np.uint16)},
+                )
+            )
+            writer.write_sensor_frame(
+                SensorFrame(
+                    sensor_name="realsense",
+                    sensor_type="realsense",
+                    modality="rgbd",
+                    frame_id=2,
+                    time=FrameTime(host_time=1.1, monotonic_time=2.1, device_time=1.1),
+                    payload={"depth": np.full((4, 4), 1010, dtype=np.uint16)},
+                )
+            )
+            writer.close()
+
+            media_path = session.output_dir / "streams" / "realsense" / "realsense_depth_only_rgbd_01.mp4"
+            self.assertFalse(media_path.exists())
+            summary = SessionReader(session.output_dir).summary()
+            self.assertEqual(summary["session_time_validation"]["mode"], "best_effort")
+            self.assertEqual(summary["session_time_validation"]["tolerance_ns"], 100_000_000)
+            self.assertEqual(summary["session_time_validation"]["warnings"], [])
 
     def test_microphone_audio_round_trip_uses_camera_media_track(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

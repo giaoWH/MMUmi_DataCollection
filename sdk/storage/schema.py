@@ -13,6 +13,7 @@ class StreamManifest:
     sensor_type: str
     modality: str
     frames_path: str
+    simplified_frames_path: str | None
     artifacts_dir: str
     storage_mode: str = "artifact_stream"
     media_path: str | None = None
@@ -25,6 +26,7 @@ class StreamManifest:
             "sensor_type": self.sensor_type,
             "modality": self.modality,
             "frames_path": self.frames_path,
+            "simplified_frames_path": self.simplified_frames_path,
             "artifacts_dir": self.artifacts_dir,
             "storage_mode": self.storage_mode,
             "media_path": self.media_path,
@@ -39,6 +41,7 @@ class StreamManifest:
             sensor_type=payload["sensor_type"],
             modality=payload["modality"],
             frames_path=payload["frames_path"],
+            simplified_frames_path=payload.get("simplified_frames_path"),
             artifacts_dir=payload["artifacts_dir"],
             storage_mode=payload.get("storage_mode", "artifact_stream"),
             media_path=payload.get("media_path"),

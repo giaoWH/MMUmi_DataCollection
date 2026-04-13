@@ -93,6 +93,10 @@ def stream_frames_path(sensor_name: str, modality: str, task_slug: str, seq: str
     return f"streams/{sensor_name}/{stream_file_stem(task_slug, modality, seq)}.jsonl"
 
 
+def stream_simplified_frames_path(sensor_name: str, modality: str, task_slug: str, seq: str | int = 1) -> str:
+    return f"streams/{sensor_name}/{stream_file_stem(task_slug, modality, seq)}_s.jsonl"
+
+
 def stream_media_path(sensor_name: str, modality: str, task_slug: str, seq: str | int = 1) -> str | None:
     if modality not in {"rgb", "rgbd", "visuotactile"}:
         return None

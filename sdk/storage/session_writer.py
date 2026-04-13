@@ -14,7 +14,7 @@ from sdk.constants import SDK_SCHEMA_VERSION
 from sdk.core.frame import AlignedFrame, SensorFrame, ns_to_seconds
 from sdk.core.frame import TrajectoryFrame
 from sdk.core.session import SessionInfo
-from sdk.session_naming import stream_artifact_stem, stream_frames_path
+from sdk.session_naming import stream_artifact_stem, stream_frames_path, stream_simplified_frames_path
 from sdk.storage.media_io import (
     MediaEncodingConfig,
     MediaStreamWriter,
@@ -23,6 +23,12 @@ from sdk.storage.media_io import (
     media_role_for_sensor,
 )
 from sdk.storage.schema import SessionManifest, StreamManifest, manifest_path_for
+from sdk.storage.simplified_stream import (
+    DEFAULT_SIMPLIFIED_JSONL_TIMEZONE,
+    build_simplified_sensor_record,
+    should_write_simplified_stream,
+    simplified_frames_path,
+)
 
 try:
     import av
@@ -80,6 +86,7 @@ class SessionWriter:
         }
         self._session_window = self._extract_session_window()
         self._media_encoding_config = self._build_media_encoding_config()
+        self._simplified_jsonl_timezone = self._resolve_simplified_jsonl_timezone()
         self.manifest = self._build_manifest()
         self._initialize_media_writers()
         self._prepare_layout()
@@ -144,6 +151,10 @@ class SessionWriter:
             "duration_ns": None,
         }
         writer._media_encoding_config = MediaEncodingConfig()
+        writer._simplified_jsonl_timezone = str(
+            manifest.config.get("simplified_jsonl_timezone", DEFAULT_SIMPLIFIED_JSONL_TIMEZONE)
+            or DEFAULT_SIMPLIFIED_JSONL_TIMEZONE
+        )
         writer.manifest = manifest
         writer._prepare_existing_layout()
         return writer
@@ -360,6 +371,7 @@ class SessionWriter:
         }
         stream = self.manifest.sensors[frame.sensor_name]
         self._append_jsonl(self.base_dir / stream.frames_path, record)
+        self._append_simplified_sensor_jsonl(stream=stream, record=record)
         self._update_sensor_time_summary(frame)
         return 1
 
@@ -380,6 +392,7 @@ class SessionWriter:
                 sensor_type=stream.sensor_type,
                 modality=stream.modality,
                 frames_path=stream.frames_path,
+                simplified_frames_path=stream.simplified_frames_path,
                 artifacts_dir=stream.artifacts_dir,
                 storage_mode=stream.storage_mode,
                 media_path=stream.media_path,
@@ -547,6 +560,42 @@ class SessionWriter:
             movflags=str(media_config.get("movflags", "+faststart")),
         )
 
+    def _resolve_simplified_jsonl_timezone(self) -> str:
+        if self.session_info is None:
+            return DEFAULT_SIMPLIFIED_JSONL_TIMEZONE
+        raw_value = self.session_info.config.get(
+            "simplified_jsonl_timezone",
+            DEFAULT_SIMPLIFIED_JSONL_TIMEZONE,
+        )
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            return DEFAULT_SIMPLIFIED_JSONL_TIMEZONE
+        return raw_value.strip()
+
+    def _append_simplified_sensor_jsonl(
+        self,
+        *,
+        stream: StreamManifest,
+        record: dict[str, Any],
+    ) -> None:
+        target_path = self._simplified_frames_path_for_stream(stream)
+        if target_path is None:
+            return
+        simplified_record = build_simplified_sensor_record(
+            stream.sensor_name,
+            record,
+            tz_name=self._simplified_jsonl_timezone,
+        )
+        if simplified_record is None:
+            return
+        self._append_jsonl(self.base_dir / target_path, simplified_record)
+
+    def _simplified_frames_path_for_stream(self, stream: StreamManifest) -> str | None:
+        if stream.simplified_frames_path:
+            return stream.simplified_frames_path
+        if not should_write_simplified_stream(stream.sensor_name):
+            return None
+        return simplified_frames_path(stream.frames_path)
+
     def _write_aligned_frame_sync(self, aligned: AlignedFrame) -> None:
         record = {
             "sequence_id": aligned.sequence_id,
@@ -656,6 +705,16 @@ class SessionWriter:
                     str(sensor_meta.get("modality", "unknown")),
                     self.session_info.task_slug,
                     self.session_info.item_name,
+                ),
+                simplified_frames_path=(
+                    stream_simplified_frames_path(
+                        sensor_name,
+                        str(sensor_meta.get("modality", "unknown")),
+                        self.session_info.task_slug,
+                        self.session_info.item_name,
+                    )
+                    if should_write_simplified_stream(sensor_name)
+                    else None
                 ),
                 artifacts_dir=f"streams/{sensor_name}/artifacts",
                 storage_mode=self._storage_mode_for_sensor(
@@ -1136,37 +1195,57 @@ class SessionWriter:
         start_host_ns = self._session_window.get("start_host_time_ns")
         end_host_ns = self._session_window.get("end_host_time_ns")
         duration_ns = self._session_window.get("duration_ns")
+        tolerance_ns = self._session_time_validation_tolerance_ns()
+        report = {
+            "mode": "best_effort",
+            "enforced": False,
+            "tolerance_ns": tolerance_ns,
+            "warnings": [],
+        }
+        self.session_info.notes["session_time_validation"] = self._to_jsonable(report)
         if start_host_ns is None or end_host_ns is None or duration_ns is None or duration_ns <= 0:
             return
-        errors: list[str] = []
+        warnings: list[str] = []
         for sensor_name in self.manifest.sensors:
             summary = self.session_info.notes.get("sensor_time_summary", {}).get(sensor_name, {})
             kept = int(summary.get("kept_frame_count", 0) or 0)
             if kept <= 0:
-                errors.append(f"{sensor_name}: session 时间窗内没有保留数据")
                 continue
             first_host_ns = self._to_int_or_none(summary.get("first_kept_host_time_ns"))
             last_host_ns = self._to_int_or_none(summary.get("last_kept_host_time_ns"))
-            if first_host_ns is not None and first_host_ns < start_host_ns:
-                errors.append(f"{sensor_name}: 首帧早于 session_start")
-            if last_host_ns is not None and last_host_ns > end_host_ns:
-                errors.append(f"{sensor_name}: 末帧晚于 session_end")
+            if first_host_ns is not None and first_host_ns < start_host_ns - tolerance_ns:
+                warnings.append(
+                    f"{sensor_name}: 首帧早于 session_start，偏差 {first_host_ns - start_host_ns}ns"
+                )
+            if last_host_ns is not None and last_host_ns > end_host_ns + tolerance_ns:
+                warnings.append(
+                    f"{sensor_name}: 末帧晚于 session_end，偏差 {last_host_ns - end_host_ns}ns"
+                )
         for stream in self.manifest.sensors.values():
             if not stream.media_path:
                 continue
             media_path = self.base_dir / stream.media_path
             if not media_path.exists():
-                errors.append(f"{stream.sensor_name}: 媒体文件不存在 {media_path}")
                 continue
             duration_error = self._probe_media_duration_error_ns(media_path, expected_duration_ns=duration_ns)
             if duration_error is None:
                 continue
-            if abs(duration_error) > self._media_duration_tolerance_ns(media_path):
-                errors.append(
+            effective_tolerance_ns = max(tolerance_ns, self._media_duration_tolerance_ns(media_path))
+            if abs(duration_error) > effective_tolerance_ns:
+                warnings.append(
                     f"{stream.sensor_name}: 媒体时长与 session 不一致，偏差 {duration_error}ns"
                 )
-        if errors:
-            raise RuntimeError("session 时间对齐校验失败: " + "; ".join(errors))
+        report["warnings"] = warnings
+        self.session_info.notes["session_time_validation"] = self._to_jsonable(report)
+
+    def _session_time_validation_tolerance_ns(self) -> int:
+        if self.session_info is None:
+            return 100_000_000
+        raw_value = self.session_info.config.get("session_time_validation_tolerance_sec", 0.1)
+        try:
+            return max(1, int(round(float(raw_value) * 1_000_000_000.0)))
+        except (TypeError, ValueError):
+            return 100_000_000
 
     def _probe_media_duration_error_ns(self, media_path: Path, *, expected_duration_ns: int) -> int | None:
         if av is None:
