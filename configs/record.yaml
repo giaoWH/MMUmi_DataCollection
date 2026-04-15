@@ -6,7 +6,7 @@
 # Offline trajectory processing on PC:
 #   python scripts/sdk_process_trajectory.py <session_dir> --config configs/record.yaml
 
-output_root: /mnt/m2ssd/umi-data/sessions
+output_root: /mnt/m2disk2/umi-data/umi-data/sessions
 task_name_batch_size: 5
 sensor_source: real
 align_rate_hz: 30.0
