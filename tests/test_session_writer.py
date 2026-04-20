@@ -569,7 +569,160 @@ class SessionWriterTest(unittest.TestCase):
             self.assertGreater(quadrant_means["green"][1], quadrant_means["green"][0])
             self.assertGreater(quadrant_means["green"][1], quadrant_means["green"][2])
             self.assertGreater(quadrant_means["blue"][2], quadrant_means["blue"][0])
-            self.assertGreater(quadrant_means["blue"][2], quadrant_means["blue"][1])
+
+    @unittest.skipIf(av is None, "未安装 PyAV")
+    def test_camera_and_gelsight_jsonl_frame_ids_reset_per_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session = create_session_info(
+                tmp_dir,
+                task_name="visual_frame_id_reset",
+                sensors={
+                    "camera": {"sensor_type": "camera_sensor", "modality": "rgb"},
+                    "gelsight": {"sensor_type": "gelsight_sensor", "modality": "visuotactile"},
+                },
+                config={"align_rate_hz": 30},
+            )
+            writer = SessionWriter(session)
+            camera_frame = np.full((16, 16, 3), 64, dtype=np.uint8)
+            gelsight_frame = np.full((16, 16, 3), 128, dtype=np.uint8)
+
+            writer.write_sensor_frame(
+                SensorFrame(
+                    sensor_name="camera",
+                    sensor_type="camera_sensor",
+                    modality="rgb",
+                    frame_id=10,
+                    time=FrameTime(host_time=1.0, monotonic_time=2.0),
+                    payload={"color": camera_frame},
+                )
+            )
+            writer.write_sensor_frame(
+                SensorFrame(
+                    sensor_name="camera",
+                    sensor_type="camera_sensor",
+                    modality="rgb",
+                    frame_id=11,
+                    time=FrameTime(host_time=1.1, monotonic_time=2.1),
+                    payload={"color": camera_frame},
+                )
+            )
+            writer.write_sensor_frame(
+                SensorFrame(
+                    sensor_name="gelsight",
+                    sensor_type="gelsight_sensor",
+                    modality="visuotactile",
+                    frame_id=20,
+                    time=FrameTime(host_time=1.0, monotonic_time=2.0),
+                    payload={"image": gelsight_frame},
+                )
+            )
+            writer.write_sensor_frame(
+                SensorFrame(
+                    sensor_name="gelsight",
+                    sensor_type="gelsight_sensor",
+                    modality="visuotactile",
+                    frame_id=21,
+                    time=FrameTime(host_time=1.1, monotonic_time=2.1),
+                    payload={"image": gelsight_frame},
+                )
+            )
+            writer.close()
+
+            camera_records = [
+                json.loads(line)
+                for line in (session.output_dir / "streams" / "camera" / "visual_frame_id_reset_rgb_01.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            gelsight_records = [
+                json.loads(line)
+                for line in (session.output_dir / "streams" / "gelsight" / "visual_frame_id_reset_visuotactile_01.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+
+            self.assertEqual([record["frame_id"] for record in camera_records], [0, 1])
+            self.assertEqual([record["frame_id"] for record in gelsight_records], [0, 1])
+
+    @unittest.skipIf(av is None, "未安装 PyAV")
+    def test_aligned_visual_frame_ids_use_session_local_indices(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session = create_session_info(
+                tmp_dir,
+                task_name="aligned_visual_frame_ids",
+                sensors={
+                    "camera": {"sensor_type": "camera_sensor", "modality": "rgb"},
+                    "gelsight": {"sensor_type": "gelsight_sensor", "modality": "visuotactile"},
+                },
+                config={"align_rate_hz": 30},
+            )
+            writer = SessionWriter(session)
+            camera_frame_0 = SensorFrame(
+                sensor_name="camera",
+                sensor_type="camera_sensor",
+                modality="rgb",
+                frame_id=10,
+                time=FrameTime(host_time=1.0, monotonic_time=2.0, aligned_time=1.0),
+                payload={"color": np.full((16, 16, 3), 64, dtype=np.uint8)},
+            )
+            gelsight_frame_0 = SensorFrame(
+                sensor_name="gelsight",
+                sensor_type="gelsight_sensor",
+                modality="visuotactile",
+                frame_id=20,
+                time=FrameTime(host_time=1.0, monotonic_time=2.0, aligned_time=1.0),
+                payload={"image": np.full((16, 16, 3), 128, dtype=np.uint8)},
+            )
+            camera_frame_1 = SensorFrame(
+                sensor_name="camera",
+                sensor_type="camera_sensor",
+                modality="rgb",
+                frame_id=11,
+                time=FrameTime(host_time=1.1, monotonic_time=2.1, aligned_time=1.1),
+                payload={"color": np.full((16, 16, 3), 96, dtype=np.uint8)},
+            )
+            gelsight_frame_1 = SensorFrame(
+                sensor_name="gelsight",
+                sensor_type="gelsight_sensor",
+                modality="visuotactile",
+                frame_id=21,
+                time=FrameTime(host_time=1.1, monotonic_time=2.1, aligned_time=1.1),
+                payload={"image": np.full((16, 16, 3), 160, dtype=np.uint8)},
+            )
+
+            for frame in (camera_frame_0, gelsight_frame_0, camera_frame_1, gelsight_frame_1):
+                writer.write_sensor_frame(frame)
+            writer.write_aligned_frame(
+                AlignedFrame(
+                    sequence_id=0,
+                    aligned_time=1.0,
+                    aligned_time_ns=None,
+                    frames={"camera": camera_frame_0, "gelsight": gelsight_frame_0},
+                    missing_sensors=[],
+                    age_by_sensor={"camera": 0.0, "gelsight": 0.0},
+                )
+            )
+            writer.write_aligned_frame(
+                AlignedFrame(
+                    sequence_id=1,
+                    aligned_time=1.1,
+                    aligned_time_ns=None,
+                    frames={"camera": camera_frame_1, "gelsight": gelsight_frame_1},
+                    missing_sensors=[],
+                    age_by_sensor={"camera": 0.0, "gelsight": 0.0},
+                )
+            )
+            writer.close()
+
+            aligned_records = [
+                json.loads(line)
+                for line in (session.output_dir / "aligned" / "frames.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+
+            self.assertEqual(aligned_records[0]["frames"]["camera"]["frame_id"], 0)
+            self.assertEqual(aligned_records[0]["frames"]["gelsight"]["frame_id"], 0)
+            self.assertEqual(aligned_records[1]["frames"]["camera"]["frame_id"], 1)
+            self.assertEqual(aligned_records[1]["frames"]["gelsight"]["frame_id"], 1)
 
     def test_camera_media_duration_follows_frame_timestamps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

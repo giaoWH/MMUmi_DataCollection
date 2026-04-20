@@ -30,6 +30,7 @@ from sdk.logging import build_logger
 from sdk.perception import OrbSlam3SessionProcessConfig
 from sdk.processors import GravityCompensationConfig, GravityCompensator
 from sdk.session_naming import format_item_name, normalize_task_slug
+from scripts.sdk_extract_camera_audio import extract_camera_audio_to_wavs, summarize_extraction_results
 from sdk.sensors.fake import (
     FakeCameraAdapter,
     FakeCameraConfig,
@@ -1096,6 +1097,36 @@ def _complete_stopped_session(
         if session.session_info.output_dir.exists():
             shutil.rmtree(session.session_info.output_dir, ignore_errors=True)
         raise
+    if "microphone" in session.session_info.sensors:
+        try:
+            audio_export_results = extract_camera_audio_to_wavs(session.session_info.output_dir, overwrite=True)
+            audio_export_summary = summarize_extraction_results(audio_export_results)
+            session.session_info.notes["microphone_wav_export"] = {
+                "status": "ok",
+                "summary": audio_export_summary,
+                "outputs": [
+                    {
+                        "mp4_path": str(result.mp4_path),
+                        "wav_path": str(result.wav_path),
+                        "status": result.status,
+                        **({"sample_rate": result.sample_rate} if result.sample_rate is not None else {}),
+                        **({"channels": result.channels} if result.channels is not None else {}),
+                        **({"sample_count": result.sample_count} if result.sample_count else {}),
+                        **({"detail": result.detail} if result.detail else {}),
+                    }
+                    for result in audio_export_results
+                ],
+            }
+            session.logger.info(
+                "microphone wav 导出完成: %s",
+                json.dumps(session.session_info.notes["microphone_wav_export"], ensure_ascii=False),
+            )
+        except Exception as exc:
+            session.session_info.notes["microphone_wav_export"] = {
+                "status": "error",
+                "detail": str(exc),
+            }
+            session.logger.exception("microphone wav 导出失败: %s", exc)
     session.writer.manifest = session.writer._build_manifest()
     session.writer._write_manifest()
     final_writer_diagnostics = session.writer.get_diagnostics()

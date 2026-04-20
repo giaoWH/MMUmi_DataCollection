@@ -30,9 +30,20 @@ class ExtractionResult:
     detail: str | None = None
 
 
+def summarize_extraction_results(results: list[ExtractionResult]) -> dict[str, int]:
+    return {
+        "total": len(results),
+        "written": sum(result.status == "written" for result in results),
+        "skip_exists": sum(result.status == "skip_exists" for result in results),
+        "skip_no_audio": sum(result.status == "skip_no_audio" for result in results),
+        "dry_run": sum(result.status == "dry_run" for result in results),
+        "errors": sum(result.status == "error" for result in results),
+    }
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="递归扫描 sessions 目录，把 streams/camera/*.mp4 的音轨抽取为同名 WAV 文件。",
+        description="递归扫描 sessions 目录，把 streams/camera/*.mp4 的音轨抽取到 streams/microphone/ 同名 WAV 文件。",
     )
     parser.add_argument(
         "input_path",
@@ -73,6 +84,14 @@ def _discover_camera_mp4s(input_path: Path) -> list[Path]:
     paths = set(input_path.glob("**/streams/camera/*.mp4"))
     paths.update(input_path.glob("**/stream/camera/*.mp4"))
     return sorted(path.resolve() for path in paths)
+
+
+def _target_wav_path_for_camera_mp4(mp4_path: Path) -> Path:
+    camera_dir = mp4_path.parent
+    if camera_dir.name != "camera":
+        raise ValueError(f"无法从非 camera 目录推断 microphone 输出路径: {mp4_path}")
+    microphone_dir = camera_dir.parent / "microphone"
+    return microphone_dir / f"{mp4_path.stem}.wav"
 
 
 def _coerce_to_int16(samples: np.ndarray) -> np.ndarray:
@@ -190,27 +209,22 @@ def _extract_audio_to_wav(mp4_path: Path, wav_path: Path, *, overwrite: bool, dr
         container.close()
 
 
-def main() -> int:
-    args = _parse_args()
-    try:
-        mp4_paths = _discover_camera_mp4s(args.input_path.expanduser().resolve())
-    except Exception as exc:
-        print(f"[error] {exc}", file=sys.stderr)
-        return 1
-
-    if not mp4_paths:
-        print("没有找到 streams/camera/*.mp4 或 stream/camera/*.mp4 文件。")
-        return 0
-
+def extract_camera_audio_to_wavs(
+    input_path: Path,
+    *,
+    overwrite: bool = False,
+    dry_run: bool = False,
+) -> list[ExtractionResult]:
+    mp4_paths = _discover_camera_mp4s(input_path.expanduser().resolve())
     results: list[ExtractionResult] = []
     for mp4_path in mp4_paths:
-        wav_path = mp4_path.with_suffix(".wav")
+        wav_path = _target_wav_path_for_camera_mp4(mp4_path)
         try:
             result = _extract_audio_to_wav(
                 mp4_path,
                 wav_path,
-                overwrite=args.overwrite,
-                dry_run=args.dry_run,
+                overwrite=overwrite,
+                dry_run=dry_run,
             )
         except Exception as exc:
             result = ExtractionResult(
@@ -220,7 +234,26 @@ def main() -> int:
                 detail=str(exc),
             )
         results.append(result)
+    return results
 
+
+def main() -> int:
+    args = _parse_args()
+    try:
+        results = extract_camera_audio_to_wavs(
+            args.input_path,
+            overwrite=args.overwrite,
+            dry_run=args.dry_run,
+        )
+    except Exception as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        return 1
+
+    if not results:
+        print("没有找到 streams/camera/*.mp4 或 stream/camera/*.mp4 文件。")
+        return 0
+
+    for result in results:
         if result.status == "written":
             print(
                 f"[written] {result.wav_path} | rate={result.sample_rate}Hz channels={result.channels} "
@@ -235,21 +268,17 @@ def main() -> int:
         else:
             print(f"[error] {result.mp4_path} | {result.detail}", file=sys.stderr)
 
-    written = sum(result.status == "written" for result in results)
-    skipped_exists = sum(result.status == "skip_exists" for result in results)
-    skipped_no_audio = sum(result.status == "skip_no_audio" for result in results)
-    dry_run_count = sum(result.status == "dry_run" for result in results)
-    errors = sum(result.status == "error" for result in results)
+    summary = summarize_extraction_results(results)
     print(
         "summary:"
-        f" total={len(results)}"
-        f" written={written}"
-        f" skip_exists={skipped_exists}"
-        f" skip_no_audio={skipped_no_audio}"
-        f" dry_run={dry_run_count}"
-        f" errors={errors}"
+        f" total={summary['total']}"
+        f" written={summary['written']}"
+        f" skip_exists={summary['skip_exists']}"
+        f" skip_no_audio={summary['skip_no_audio']}"
+        f" dry_run={summary['dry_run']}"
+        f" errors={summary['errors']}"
     )
-    return 1 if errors else 0
+    return 1 if summary["errors"] else 0
 
 
 if __name__ == "__main__":

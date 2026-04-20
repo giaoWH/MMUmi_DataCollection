@@ -80,6 +80,8 @@ class SessionWriter:
         self._max_write_latency_sec = 0.0
         self._media_writers: dict[Path, MediaStreamWriter] = {}
         self._pending_video_frames: dict[str, SensorFrame] = {}
+        self._session_frame_id_counters: dict[str, int] = {}
+        self._session_frame_id_overrides: dict[str, dict[int, int]] = {}
         self._sensor_time_summary: dict[str, dict[str, Any]] = {}
         self._trim_diagnostics: dict[str, Any] = {
             "sensor_counts": {},
@@ -141,6 +143,8 @@ class SessionWriter:
         writer._max_write_latency_sec = 0.0
         writer._media_writers = {}
         writer._pending_video_frames = {}
+        writer._session_frame_id_counters = {}
+        writer._session_frame_id_overrides = {}
         writer._sensor_time_summary = {}
         writer._trim_diagnostics = {"sensor_counts": {}}
         writer._session_window = {
@@ -326,6 +330,7 @@ class SessionWriter:
     def _write_sensor_frame_sync(self, frame: SensorFrame) -> int:
         if not self._should_keep_sensor_frame(frame):
             return 0
+        self._ensure_record_frame_id(frame)
         if self._sensor_frame_has_video_media(frame):
             pending = self._pending_video_frames.get(frame.sensor_name)
             self._pending_video_frames[frame.sensor_name] = frame
@@ -345,11 +350,12 @@ class SessionWriter:
     ) -> int:
         self._sync_stream_metadata_from_frame(frame)
         sensor_dir = self._ensure_sensor_dir(frame.sensor_name)
+        record_frame_id = self._record_frame_id(frame)
         record = {
             "sensor_name": frame.sensor_name,
             "sensor_type": frame.sensor_type,
             "modality": frame.modality,
-            "frame_id": frame.frame_id,
+            "frame_id": record_frame_id,
             "time": {
                 "host_time": frame.time.host_time,
                 "host_time_ns": frame.time.host_time_ns,
@@ -363,7 +369,7 @@ class SessionWriter:
             "payload": self._serialize_payload(
                 sensor_dir=sensor_dir,
                 frame=frame,
-                frame_id=frame.frame_id,
+                frame_id=record_frame_id,
                 payload=frame.payload,
                 media_end_time_ns=media_end_time_ns,
             ),
@@ -374,6 +380,23 @@ class SessionWriter:
         self._append_simplified_sensor_jsonl(stream=stream, record=record)
         self._update_sensor_time_summary(frame)
         return 1
+
+    def _record_frame_id(self, frame: SensorFrame) -> int:
+        if frame.sensor_name in {"camera", "gelsight"}:
+            return self._ensure_record_frame_id(frame)
+        return frame.frame_id
+
+    def _ensure_record_frame_id(self, frame: SensorFrame) -> int:
+        if frame.sensor_name not in {"camera", "gelsight"}:
+            return frame.frame_id
+        overrides = self._session_frame_id_overrides.setdefault(frame.sensor_name, {})
+        existing = overrides.get(frame.frame_id)
+        if existing is not None:
+            return existing
+        next_frame_id = self._session_frame_id_counters.get(frame.sensor_name, 0)
+        self._session_frame_id_counters[frame.sensor_name] = next_frame_id + 1
+        overrides[frame.frame_id] = next_frame_id
+        return next_frame_id
 
     def _sync_stream_metadata_from_frame(self, frame: SensorFrame) -> None:
         self._merge_stream_metadata(frame.sensor_name, frame.metadata)
@@ -605,7 +628,7 @@ class SessionWriter:
             "age_by_sensor": aligned.age_by_sensor,
             "frames": {
                 name: {
-                    "frame_id": frame.frame_id,
+                    "frame_id": self._record_frame_id(frame),
                     "host_time": frame.time.host_time,
                     "host_time_ns": frame.time.host_time_ns,
                     "monotonic_time": frame.time.monotonic_time,

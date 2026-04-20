@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts import sdk_record
+from scripts.sdk_extract_camera_audio import ExtractionResult
 from sdk.annotations import AnnotationField, AnnotationSchema
 from sdk.core import SensorRegistry
 from sdk.sensors.base import SensorAdapter
@@ -228,6 +229,68 @@ class InteractiveRecordTest(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(self._list_session_dirs(output_root), [])
+
+    def test_complete_stopped_session_exports_microphone_wav_when_microphone_enabled(self) -> None:
+        session = unittest.mock.MagicMock()
+        session.session_index = 1
+        session.session_info = unittest.mock.MagicMock()
+        session.session_info.notes = {}
+        session.session_info.sensors = {"microphone": {"sensor_type": "microphone_sensor"}}
+        session.session_info.output_dir = Path("/tmp/fake-session")
+        session.writer = unittest.mock.MagicMock()
+        session.writer.get_diagnostics.side_effect = [{"phase": "pre"}, {"phase": "post"}]
+        session.writer._build_manifest.return_value = {"manifest": True}
+        session.logger = unittest.mock.MagicMock()
+
+        with patch.object(
+            sdk_record,
+            "extract_camera_audio_to_wavs",
+            return_value=[
+                ExtractionResult(
+                    mp4_path=Path("/tmp/fake-session/streams/camera/sample.mp4"),
+                    wav_path=Path("/tmp/fake-session/streams/microphone/sample.wav"),
+                    status="written",
+                    sample_rate=48000,
+                    channels=1,
+                    sample_count=1024,
+                )
+            ],
+        ):
+            stopped = sdk_record._complete_stopped_session(
+                session=session,
+                sensor_runtime_status_snapshot={},
+                session_sensor_stats={},
+                stop_reason="operator_stop",
+            )
+
+        self.assertEqual(stopped.session_index, 1)
+        session.writer.close.assert_called_once()
+        session.writer._write_manifest.assert_called_once()
+        self.assertEqual(session.session_info.notes["microphone_wav_export"]["status"], "ok")
+        self.assertEqual(session.session_info.notes["microphone_wav_export"]["summary"]["written"], 1)
+
+    def test_complete_stopped_session_skips_microphone_wav_export_when_microphone_disabled(self) -> None:
+        session = unittest.mock.MagicMock()
+        session.session_index = 1
+        session.session_info = unittest.mock.MagicMock()
+        session.session_info.notes = {}
+        session.session_info.sensors = {"camera": {"sensor_type": "camera_sensor"}}
+        session.session_info.output_dir = Path("/tmp/fake-session")
+        session.writer = unittest.mock.MagicMock()
+        session.writer.get_diagnostics.side_effect = [{"phase": "pre"}, {"phase": "post"}]
+        session.writer._build_manifest.return_value = {"manifest": True}
+        session.logger = unittest.mock.MagicMock()
+
+        with patch.object(sdk_record, "extract_camera_audio_to_wavs") as export_mock:
+            sdk_record._complete_stopped_session(
+                session=session,
+                sensor_runtime_status_snapshot={},
+                session_sensor_stats={},
+                stop_reason="operator_stop",
+            )
+
+        export_mock.assert_not_called()
+        self.assertNotIn("microphone_wav_export", session.session_info.notes)
 
     def test_interactive_mode_fails_fast_without_tty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
