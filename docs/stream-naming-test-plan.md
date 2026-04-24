@@ -4,6 +4,11 @@
 
 本文用于补齐本次 `session stream / artifact` 命名重构后尚未在当前环境执行的测试工作。
 
+说明：
+
+- 本文中的“未完成测试原因”主要记录当次重构落地时的执行背景
+- 当前仓库的依赖声明请以 `environment.yml` 与 `requirements.txt` 为准
+
 本次重构涉及：
 
 - `streams/<sensor>/` 下 `jsonl` 文件命名改为 `<task_slug>_<modality>_<seq>.jsonl`
@@ -13,7 +18,7 @@
 - `SessionReader` / `SessionWriter` 全面改为依赖 manifest 中的 `frames_path` / `media_path`
 - `sdk_record.py` 非交互式录制要求显式提供 `task_name`
 - annotation schema 必须存在 `session.task_name`
-- schema 版本升级到 `2.1.0`
+- schema 版本升级到 `2.2.0`
 
 本文目标是保证以下链路在新命名规则下全部可运行：
 
@@ -27,10 +32,9 @@
 
 ## 2. 当前未完成的测试原因
 
-当前环境未能完成完整测试，原因如下：
+当次重构落地时的执行环境未能完成完整测试，原因如下：
 
-- 未安装 `numpy`
-- 未安装 `pytest`
+- 当时基础测试依赖尚未装齐，例如 `numpy`、`pytest`
 - 部分导出链路依赖额外库，例如 `pyarrow`、`h5py`、`opencv-python`、`av`
 - `rosbag2` 验证需要 ROS 2 环境
 
@@ -58,9 +62,9 @@
 建议准备以下环境：
 
 ```bash
+conda env update -f environment.yml --prune
 conda activate umi_sdk
-python -m pip install pytest numpy
-python -m pip install pyarrow h5py opencv-python av
+python -m pip install -r requirements.txt
 ```
 
 若需完整覆盖：
@@ -432,6 +436,11 @@ python -m pytest tests/test_sdk_record_interactive.py -q
 
 - `rgbd_inertial`
 - `stereo_inertial`
+
+说明：
+
+- 当前仓库内置的官方离线轨迹处理链路固定为 `stereo_inertial`
+- `rgbd_inertial` 在这里主要验证 bundle exporter 与外部命令模板接入兼容性
 
 通过标准：
 

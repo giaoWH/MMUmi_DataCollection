@@ -39,3 +39,4 @@ gelsight_test_frame*.jpg
 ThirdParty/
 configs/record.yaml.bak
 configs/record.yaml.bak
+.codex

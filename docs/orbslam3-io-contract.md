@@ -14,19 +14,19 @@
 
 ---
 
-## 2. 当前支持的输入模式
+## 2. 当前支持范围
 
-当前 SDK 软件侧已支持：
-
-- `rgbd_inertial`
-- `stereo`
-- `stereo_inertial`
-
-当前 ORB-SLAM3 软件链默认以 RealSense 作为输入来源，因此当前推荐优先使用：
+当前 SDK 的 ORB-SLAM3 bundle exporter 已支持：
 
 - `rgbd_inertial`
 - `stereo`
 - `stereo_inertial`
+
+当前仓库内置的官方离线轨迹处理链路当前只支持：
+
+- `stereo_inertial`
+
+若需在当前仓库中处理 `rgbd_inertial` 或 `stereo`，仍可通过外部命令模板接入。
 
 ---
 

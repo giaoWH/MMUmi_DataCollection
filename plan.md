@@ -1,6 +1,6 @@
 # SDK 执行计划
 
-更新时间：2026-03-21
+更新时间：2026-04-24
 
 ## 1. 项目目标
 
@@ -32,7 +32,8 @@
 - 默认编辑 `configs/record.yaml`
 - 首次安装或重新接线时可选运行 `scripts/sdk_discover_ports.py`
 - 正式录制统一通过 `scripts/sdk_record.py`
-- 轨迹可通过 `enable_trajectory` 决定是否在录制结束后自动解算
+- 轨迹统一通过 `scripts/sdk_process_trajectory.py` 在 PC 端离线解算
+- `enable_trajectory` 配置已废弃，录制结束后不会自动解算轨迹
 
 需要特别说明的边界：
 
@@ -42,7 +43,9 @@
 - `realsense` 作为一个设备接入，但设备内部可按配置录制 `color`、`depth`、`ir1`、`ir2`、`imu_samples`
 - RealSense 可选派生结果包括 `aligned_depth_to_color` 与 `pointcloud`
 - 项目中的独立 IMU 当前主要用于 FT 重力补偿
-- `rgbd_inertial` / `stereo_inertial` 当前使用 D435i 板载 IMU 作为 SLAM 惯性输入
+- ORB-SLAM3 bundle 导出层支持 `rgbd_inertial` / `stereo` / `stereo_inertial`
+- 当前仓库内置的官方离线轨迹处理链路固定为 `stereo_inertial`
+- `stereo_inertial` 当前使用 D435i 板载 IMU 作为 SLAM 惯性输入
 
 ---
 
@@ -65,7 +68,7 @@ record -> inspect -> process_trajectory -> export -> validate
 - FT 静态校准与重力补偿
 - RealSense 多流录制与低层 bring-up
 - ORB-SLAM3 软件侧接入
-- 录制结束后按配置自动执行轨迹解算
+- PC 端离线轨迹解算链路
 - 多格式导出
 - fake 模式下的闭环验证
 
@@ -233,7 +236,7 @@ sensor adapters
 1. 编辑 `configs/record.yaml`
 2. 首次安装时按需运行 `scripts/sdk_discover_ports.py`
 3. 运行 `scripts/sdk_record.py`
-4. 如果 `enable_trajectory=true`，则在录制结束后自动执行 ORB-SLAM3 后处理
+4. 将 session 拷贝到 PC 后运行 `scripts/sdk_process_trajectory.py <session_dir> --config configs/record.yaml`
 
 当前配置职责划分：
 
@@ -245,7 +248,7 @@ sensor adapters
 
 - `sdk_record.py` 的 CLI 当前主要直接覆盖传感器启停、端口、分辨率、帧率等常用录制参数
 - `trajectory.mode` / `trajectory.command` / `trajectory.output_mode` 当前属于 `record.yaml` 配置字段，而不是 `sdk_record.py` 的独立 CLI 参数
-- `enable_trajectory` 可通过 CLI 开关控制，但启用后仍需要由配置文件提供 `trajectory.command`
+- `enable_trajectory` 已废弃；即使配置为 `true`，`sdk_record.py` 也只会给出警告，不会在录制结束后自动执行轨迹处理
 
 ### 6.2 ready / 校准等待
 
@@ -313,7 +316,7 @@ session_xxx/
 - 多维数组 payload 会落为 `png` 或 `npy`
 - 标量与小向量直接保存在 `frames.jsonl`
 - RealSense 的图像、红外、深度和点云会按 payload 类型分别落盘
-- `trajectory/frames.jsonl` 只有在启用自动轨迹解算，或之后手动执行 `sdk_process_trajectory.py` 后才会写入实际轨迹结果
+- `trajectory/frames.jsonl` 只有在手动执行 `sdk_process_trajectory.py` 后才会写入实际轨迹结果
 
 ---
 
@@ -323,17 +326,18 @@ session_xxx/
 
 已完成内容：
 
-- bundle 导出
+- ORB-SLAM3 bundle 导出
 - 外部命令调用
 - JSONL 轨迹写回
-- `rgbd_inertial` / `stereo` / `stereo_inertial` 模式支持
+- bundle 导出层支持 `rgbd_inertial` / `stereo` / `stereo_inertial`
 - `record.yaml` 中 `trajectory` 段配置复用
-- 录制结束后按 `enable_trajectory` 自动后处理
+- 默认官方离线轨迹处理链路
 
 当前边界：
 
 - 默认视觉数据来自 RealSense
-- `rgbd_inertial` 与 `stereo_inertial` 当前都使用 D435i 板载 IMU
+- 当前官方离线轨迹处理仅支持 `stereo_inertial`
+- `stereo_inertial` 当前使用 D435i 板载 IMU
 - 普通 camera 与 GelSight 都是独立录制模态，可与 RealSense 同时存在，但当前没有作为 ORB-SLAM3 默认输入链路
 - 当前仓库已内置 `stereo_inertial` wrapper、样例配置与本地 ORB-SLAM3 C++ runner
 - 第一版内置 wrapper 仅覆盖 `stereo_inertial`
@@ -387,9 +391,9 @@ session_xxx/
 - `scripts/sdk_record.py` 能生成规范 session
 - `scripts/sdk_record.py` 能在统一入口下按配置启用 FT / IMU / RealSense / Motors / Microphone / Camera / GelSight
 - `scripts/sdk_record.py --sensor-source fake` 能在无真机条件下生成多模态 session
-- RealSense 已支持多流录制与 `trajectory.mode` 三种模式
+- RealSense 已支持多流录制，且 ORB-SLAM3 bundle 导出支持 `trajectory.mode` 三种模式
 - `scripts/sdk_process_trajectory.py` 能导出 ORB-SLAM3 bundle 并写回轨迹
-- `enable_trajectory=true` 时录制结束后会自动执行同一套轨迹写回逻辑
+- 当前官方离线轨迹处理链路固定为 `stereo_inertial`
 - `scripts/sdk_export.py` 能导出多种格式
 - `scripts/sdk_validate_export.py` 能执行导出产物的结构级 / 数量级一致性校验
 - 新增模态时不需要改动核心主循环
@@ -409,4 +413,4 @@ session_xxx/
 
 ## 13. 一句话判断
 
-**当前项目已经是一套可运行的统一多模态采集 SDK。FT / 独立 IMU / RealSense / Motors / Microphone / Camera / GelSight 都已进入录制体系；采集默认由 `configs/record.yaml` 驱动，RealSense 已支持多流录制，离线轨迹已支持 `rgbd_inertial`、`stereo`、`stereo_inertial` 三种模式。**
+**当前项目已经是一套可运行的统一多模态采集 SDK。FT / 独立 IMU / RealSense / Motors / Microphone / Camera / GelSight 都已进入录制体系；采集默认由 `configs/record.yaml` 驱动，RealSense 已支持多流录制，ORB-SLAM3 bundle 导出支持 `rgbd_inertial`、`stereo`、`stereo_inertial` 三种模式，而当前仓库内置的官方离线轨迹处理链路固定为 `stereo_inertial`。**
