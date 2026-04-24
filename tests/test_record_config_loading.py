@@ -79,6 +79,7 @@ class RecorderConfigLoadingTest(unittest.TestCase):
         config, _loaded_path = sdk_record.parse_args([])
 
         self.assertEqual(config.task_name_batch_size, 5)
+        self.assertEqual(config.device_role, "collector")
 
     def test_parse_args_loads_task_name_batch_size(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -89,6 +90,36 @@ class RecorderConfigLoadingTest(unittest.TestCase):
 
         self.assertEqual(loaded_path, config_path.resolve())
         self.assertEqual(config.task_name_batch_size, 7)
+
+    def test_parse_args_loads_end_effector_network_uplink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "record.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "device_role: end_effector",
+                        "network_uplink:",
+                        "  enabled: true",
+                        "  host: 192.168.10.2",
+                        "  port: 9876",
+                        "  reconnect_interval_sec: 0.2",
+                        "  send_timeout_sec: 0.3",
+                        "  poll_interval_sec: 0.004",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config, loaded_path = sdk_record.parse_args(["--config", str(config_path)])
+
+        self.assertEqual(loaded_path, config_path.resolve())
+        self.assertEqual(config.device_role, "end_effector")
+        self.assertTrue(config.network_uplink.enabled)
+        self.assertEqual(config.network_uplink.host, "192.168.10.2")
+        self.assertEqual(config.network_uplink.port, 9876)
+        self.assertEqual(config.network_uplink.reconnect_interval_sec, 0.2)
+        self.assertEqual(config.network_uplink.send_timeout_sec, 0.3)
+        self.assertEqual(config.network_uplink.poll_interval_sec, 0.004)
 
     def test_main_fails_fast_without_noninteractive_task_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

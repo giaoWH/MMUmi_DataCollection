@@ -84,3 +84,22 @@ class SensorRegistryExtensionsTest(unittest.TestCase):
             self.assertIn("motor_2", seen_frames["motors"].payload)
         finally:
             registry.stop_all()
+
+    def test_end_effector_registry_can_skip_motors(self) -> None:
+        config = RecorderConfig(
+            sensor_source="fake",
+            duration_sec=0.0,
+            enable_ft=True,
+            enable_imu=True,
+            enable_realsense=False,
+            enable_motors=True,
+            enable_microphone=False,
+            enable_camera=True,
+            enable_gelsight=False,
+        )
+        registry = build_registry(config, SystemClock(), skip_motors=True)
+
+        self.assertIn("ft", registry.sensors)
+        self.assertIn("imu", registry.sensors)
+        self.assertIn("camera", registry.sensors)
+        self.assertNotIn("motors", registry.sensors)

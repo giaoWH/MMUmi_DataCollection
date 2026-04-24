@@ -63,6 +63,7 @@ from sdk.sensors.legacy import (
 )
 from sdk.sensors.realsense import RealSenseConfig, RealSenseRGBDAdapter
 from sdk.storage import SessionWriter
+from sdk.transport import LatestFrameStore, NetworkUplinkConfig, TcpLatestFrameSender
 
 DEFAULT_RECORD_CONFIG_CANDIDATES = (
     REPO_ROOT / "configs" / "record.yaml",
@@ -87,6 +88,7 @@ STATE_EXITING = "exiting"
 
 @dataclass(frozen=True)
 class RecorderConfig:
+    device_role: str = "collector"
     output_root: str = "sessions"
     task_name: str = ""
     task_name_batch_size: int = 5
@@ -111,6 +113,7 @@ class RecorderConfig:
     microphone: MicrophoneSensorConfig = MicrophoneSensorConfig()
     camera: CameraSensorConfig = CameraSensorConfig()
     gelsight: GelSightSensorConfig = GelSightSensorConfig()
+    network_uplink: NetworkUplinkConfig = NetworkUplinkConfig()
     gravity_compensation: GravityCompensationConfig = GravityCompensationConfig()
     trajectory: OrbSlam3SessionProcessConfig = OrbSlam3SessionProcessConfig()
 
@@ -298,7 +301,7 @@ def _handle_signal(_sig: int, _frame: object) -> None:
     is_running = False
 
 
-def build_registry(config: RecorderConfig, clock: SystemClock) -> SensorRegistry:
+def build_registry(config: RecorderConfig, clock: SystemClock, *, skip_motors: bool = False) -> SensorRegistry:
     registry = SensorRegistry()
     if config.sensor_source == "fake":
         if config.enable_ft:
@@ -332,7 +335,11 @@ def build_registry(config: RecorderConfig, clock: SystemClock) -> SensorRegistry
                     clock,
                 )
             )
-        if config.enable_motors and (config.motors.enable_motor_1 or config.motors.enable_motor_2):
+        if (
+            not skip_motors
+            and config.enable_motors
+            and (config.motors.enable_motor_1 or config.motors.enable_motor_2)
+        ):
             registry.register(
                 FakeMotorsAdapter(
                     FakeMotorsConfig(
@@ -388,7 +395,7 @@ def build_registry(config: RecorderConfig, clock: SystemClock) -> SensorRegistry
         registry.register(LegacyIMUAdapter(config.imu, clock))
     if config.enable_realsense:
         registry.register(RealSenseRGBDAdapter(config.realsense, clock))
-    if config.enable_motors and (config.motors.enable_motor_1 or config.motors.enable_motor_2):
+    if not skip_motors and config.enable_motors and (config.motors.enable_motor_1 or config.motors.enable_motor_2):
         registry.register(LegacyMotorsAdapter(config.motors, clock))
     if config.enable_microphone:
         registry.register(LegacyMicrophoneAdapter(config.microphone, clock))
@@ -708,6 +715,7 @@ def _set_nested_value(payload: dict[str, object], path: tuple[str, ...], value: 
 def _build_cli_overrides(args: argparse.Namespace) -> dict[str, object]:
     overrides: dict[str, object] = {}
     mapping = {
+        "device_role": ("device_role",),
         "output_root": ("output_root",),
         "task_name": ("task_name",),
         "task_name_batch_size": ("task_name_batch_size",),
@@ -742,6 +750,8 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict[str, object]:
         "realsense_width": ("realsense", "width"),
         "realsense_height": ("realsense", "height"),
         "realsense_fps": ("realsense", "fps"),
+        "network_uplink_host": ("network_uplink", "host"),
+        "network_uplink_port": ("network_uplink", "port"),
     }
 
     for attr_name, path in mapping.items():
@@ -765,6 +775,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
         "--config",
         help="录制配置文件路径；未提供时会自动尝试 configs/record.yaml",
     )
+    parser.add_argument("--device-role", choices=["collector", "end_effector"])
     parser.add_argument("--output-root")
     parser.add_argument("--task-name")
     parser.add_argument("--task-name-batch-size", dest="task_name_batch_size", type=int)
@@ -799,6 +810,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
     parser.add_argument("--realsense-width", dest="realsense_width", type=int)
     parser.add_argument("--realsense-height", dest="realsense_height", type=int)
     parser.add_argument("--realsense-fps", dest="realsense_fps", type=int)
+    parser.add_argument("--network-uplink-host", dest="network_uplink_host")
+    parser.add_argument("--network-uplink-port", dest="network_uplink_port", type=int)
     args = parser.parse_args(argv)
 
     config_path = _resolve_record_config_path(getattr(args, "config", None))
@@ -811,6 +824,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
     gelsight_payload.pop("flip_horizontal", None)
 
     config = RecorderConfig(
+        device_role=payload.get("device_role", "collector"),
         output_root=payload["output_root"],
         task_name=payload.get("task_name", ""),
         task_name_batch_size=max(1, int(payload.get("task_name_batch_size", 5))),
@@ -835,6 +849,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
         microphone=MicrophoneSensorConfig(**payload.get("microphone", {})),
         camera=CameraSensorConfig(**payload.get("camera", {})),
         gelsight=GelSightSensorConfig(**gelsight_payload),
+        network_uplink=NetworkUplinkConfig(**payload.get("network_uplink", {})),
         gravity_compensation=GravityCompensationConfig(**payload.get("gravity_compensation", {})),
         trajectory=OrbSlam3SessionProcessConfig(**payload.get("trajectory", {})),
     )
@@ -1258,6 +1273,118 @@ def _begin_stopping_session(
         stop_requested_monotonic_time_ns=stop_requested_monotonic_time_ns,
         finalize_future=finalize_future,
     )
+
+
+def _run_end_effector(
+    *,
+    config: RecorderConfig,
+    config_path: Path | None,
+) -> int:
+    if not config.network_uplink.enabled:
+        print("末端执行器模式要求 network_uplink.enabled=true")
+        return 1
+    if config.network_uplink.mode != "per_sensor_latest_raw_frame":
+        print(f"不支持的 network_uplink.mode: {config.network_uplink.mode}")
+        return 1
+
+    clock = SystemClock()
+    registry = build_registry(config, clock, skip_motors=True)
+    latest_store = LatestFrameStore()
+    sender = TcpLatestFrameSender(latest_store, config.network_uplink)
+    run_logger = build_logger("sdk.end_effector.run", include_stream=False)
+
+    print("=== SDK 末端执行器 TCP latest 模式启动中 ===")
+    if config_path is not None:
+        print(f"配置文件: {config_path}")
+    print(f"数据源: {config.sensor_source}")
+    print(f"TCP 上位机: {config.network_uplink.host}:{config.network_uplink.port}")
+    if config.enable_motors:
+        print("末端执行器模式已跳过 motors 传感器")
+
+    registry_started = False
+    sender_started = False
+    frame_update_counts = {sensor_name: 0 for sensor_name in registry.sensors}
+    loop_count = 0
+    last_status_print_at = time.perf_counter()
+    start_monotonic = time.perf_counter()
+    deadline = (
+        start_monotonic + float(config.duration_sec)
+        if config.duration_sec > 0
+        else None
+    )
+    poll_interval_sec = max(0.0, float(config.network_uplink.poll_interval_sec))
+
+    try:
+        registry.start_all()
+        registry_started = True
+        print("等待传感器就绪...")
+        while is_running:
+            if registry.wait_until_ready(timeout=0.2):
+                break
+        if not is_running:
+            print("末端执行器模式在传感器就绪前被中断")
+            return 1
+
+        if config.startup_discard_sec > 0:
+            discard_sec = max(0.0, config.startup_discard_sec)
+            print(f"丢弃启动阶段数据: {discard_sec:.1f} 秒")
+            discarded_counts = discard_startup_frames(registry, discard_sec=discard_sec)
+            run_logger.info("启动阶段数据丢弃完成: %s", json.dumps(discarded_counts, ensure_ascii=False))
+            if not is_running:
+                print("末端执行器模式在启动阶段数据丢弃期间被中断")
+                return 1
+
+        sender.start()
+        sender_started = True
+        print("TCP latest 发送线程已启动")
+        if not registry.sensors:
+            print("警告: 当前没有启用的非 motor 传感器")
+
+        while is_running:
+            loop_start = time.perf_counter()
+            for sensor_name, sensor in registry.sensors.items():
+                frames = sensor.read_available_frames()
+                if not frames:
+                    continue
+                latest_frame = frames[-1]
+                latest_store.update(latest_frame)
+                frame_update_counts[sensor_name] = frame_update_counts.get(sensor_name, 0) + 1
+
+            loop_count += 1
+            now = time.perf_counter()
+            if now - last_status_print_at >= 2.0:
+                diagnostics = sender.diagnostics()
+                print(
+                    "\r[EndEffector] "
+                    f"updates={sum(frame_update_counts.values())} "
+                    f"sent={diagnostics.get('sent_frames')} "
+                    f"connected={diagnostics.get('connected')} "
+                    f"last={diagnostics.get('last_sent_sensor')}:{diagnostics.get('last_sent_frame_id')}   ",
+                    end="",
+                )
+                last_status_print_at = now
+
+            if deadline is not None and now >= deadline:
+                break
+
+            elapsed = time.perf_counter() - loop_start
+            time.sleep(max(0.0, poll_interval_sec - elapsed))
+    finally:
+        print("\n正在停止末端执行器模式...")
+        if sender_started:
+            sender.stop()
+        if registry_started:
+            registry.stop_all()
+        diagnostics = sender.diagnostics()
+        run_logger.info("末端执行器发送诊断: %s", json.dumps(_to_jsonable(diagnostics), ensure_ascii=False))
+        run_logger.info("末端执行器 frame 更新计数: %s", json.dumps(frame_update_counts, ensure_ascii=False))
+        print("发送诊断:")
+        print(json.dumps(_to_jsonable(diagnostics), ensure_ascii=False, indent=2))
+        print("frame 更新计数:")
+        print(json.dumps(frame_update_counts, ensure_ascii=False, indent=2))
+
+    print("完成。")
+    return 0
 
 
 def _run_noninteractive(
@@ -1862,6 +1989,15 @@ def main(argv: list[str] | None = None, *, key_source: KeySource | None = None) 
     signal.signal(signal.SIGTERM, _handle_signal)
 
     config, config_path = parse_args(argv)
+    if config.device_role == "end_effector":
+        try:
+            return _run_end_effector(config=config, config_path=config_path)
+        except RuntimeError as exc:
+            print(f"末端执行器模式启动失败: {exc}")
+            return 1
+    if config.device_role != "collector":
+        print(f"不支持的 device_role: {config.device_role}")
+        return 1
     if config.interactive:
         try:
             return _run_interactive(config=config, config_path=config_path, key_source=key_source)
