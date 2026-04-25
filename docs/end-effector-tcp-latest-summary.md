@@ -11,6 +11,10 @@
   - `device_role: collector | end_effector`
   - 默认仍为 `collector`，原录制路径保持不变。
   - `end_effector` 模式优先于 `interactive` 分流。
+- `configs/record.yaml` 已加入保守默认配置:
+  - `device_role: collector`
+  - `network_uplink.enabled: false`
+  - 需要启用末端模式时，将二者改为 `end_effector` 和 `true`。
 - 新增 TCP latest 上行配置:
   - `network_uplink.enabled`
   - `network_uplink.host`
@@ -41,6 +45,8 @@
   - 增加 `device_role` / `network_uplink` 配置解析。
   - `build_registry(..., skip_motors=True)` 支持末端模式跳过 motors。
   - 增加 `_run_end_effector()`，实现 TCP latest 采集发送主循环。
+- `configs/record.yaml`
+  - 增加 `device_role` 和 `network_uplink` 默认配置块，默认仍保持采集器模式。
 - `sdk/transport/tcp_latest.py`
   - 增加 `NetworkUplinkConfig`、`LatestFrameStore`、`TcpLatestFrameSender`。
   - 增加 length-prefixed pickle 编码和读取函数。
@@ -54,7 +60,7 @@
 ## 配置示例
 
 ```yaml
-device_role: end_effector
+device_role: end_effector  # 默认配置文件中为 collector
 sensor_source: real
 interactive: true  # end_effector 模式会优先分流，因此不会进入交互录制
 duration_sec: 0.0
@@ -69,7 +75,7 @@ enable_camera: false
 enable_gelsight: false
 
 network_uplink:
-  enabled: true
+  enabled: true  # 默认配置文件中为 false
   host: 192.168.10.2
   port: 8765
   mode: per_sensor_latest_raw_frame

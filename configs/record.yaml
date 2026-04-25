@@ -8,6 +8,7 @@
 
 # output_root: /mnt/m2disk2/umi-data/umi-data/sessions
 
+device_role: collector
 output_root: ~/Desktop/umi_data
 task_name_batch_size: 5
 sensor_source: real
@@ -16,6 +17,14 @@ duration_sec: 10.0
 interactive: true
 startup_discard_sec: 1
 max_frame_age: 0.2
+network_uplink:
+  enabled: false
+  host: 192.168.10.2
+  port: 8765
+  mode: per_sensor_latest_raw_frame
+  reconnect_interval_sec: 1.0
+  send_timeout_sec: 2.0
+  poll_interval_sec: 0.005
 enable_ft: true
 enable_imu: true
 enable_realsense: true
