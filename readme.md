@@ -14,10 +14,16 @@ UMI Data Collection SDK
 record -> inspect -> process_trajectory -> export -> validate
 ```
 
-对于“树莓派采集、PC 标注、PC 导出”的具身学习数据整理场景，当前推荐工作流已经扩展为：
+对于”树莓派采集、PC 标注、PC 导出”的具身学习数据整理场景，当前推荐工作流已经扩展为：
 
 ```text
 record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
+```
+
+对于”树莓派作为末端执行器实时上行”的场景，推荐工作流为：
+
+```text
+PC starts receiver -> Pi runs end_effector mode -> PC receives latest frames in memory
 ```
 
 其中当前闭环里的两个能力边界需要明确：
@@ -25,7 +31,7 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - `inspect` 当前输出 session 基础摘要，时间字段默认按墙上时间展示
 - `validate` 当前主要执行导出产物的结构级 / 数量级一致性校验，不做逐字段、逐 payload 的深度比对
 
-当前推荐使用方式已经切换到“配置文件优先”：
+当前推荐使用方式已经切换到”配置文件优先”：
 
 1. 编辑 `configs/record.yaml`
 2. 首次安装时按需运行 `python scripts/sdk_discover_ports.py`
@@ -36,6 +42,13 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 7. 运行 `python scripts/sdk_process_trajectory.py <session_dir> --config configs/record.yaml`
 8. 在 PC 上运行 `python scripts/sdk_annotate.py <session_dir>`
 9. 在 PC 上运行 `python scripts/sdk_export.py <session_dir> --format lerobot`
+
+末端执行器模式的推荐使用方式：
+
+1. 网线连接树莓派和 PC，配置同一网段静态 IP
+2. 在 PC 上运行 `python scripts/sdk_network_receiver.py --host 0.0.0.0 --port 8765`
+3. 在树莓派上编辑 `configs/record.yaml`，设置 `device_role: end_effector` 和 `network_uplink.enabled: true`
+4. 在树莓派上运行 `python scripts/sdk_record.py --config configs/record.yaml`
 
 ## Session 存储格式（实验版 v2）
 
@@ -96,8 +109,18 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - 标注工具、导出器、ORB-SLAM3 bundle 仍通过 Reader 读取 payload，而不直接操作 MP4
 - 因此上层业务代码仍然按 `frame_id` / `aligned sequence_id` 工作
 
-录制配置当前还支持一部分“模态内细粒度开关”：
+录制配置当前还支持一部分”模态内细粒度开关”：
 
+- `device_role`
+  - 控制设备运行模式：`collector`（默认，标准采集）或 `end_effector`（末端执行器 TCP 上行）
+- `network_uplink.enabled`
+  - 是否启用 TCP 上行，默认 `false`
+- `network_uplink.host` / `network_uplink.port`
+  - 上位机 IP 和监听端口
+- `network_uplink.mode`
+  - 上行模式，当前固定为 `per_sensor_latest_raw_frame`
+- `network_uplink.reconnect_interval_sec` / `send_timeout_sec` / `poll_interval_sec`
+  - 控制断线重连、发送超时和轮询间隔
 - `ft.enable_torque`
   - 关闭后只保存 `force[3]`
 - `motors.enable_motor_1`
@@ -115,6 +138,10 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
   - 这段数据不会进入 session，也不计入 `duration_sec`
 - `realsense.frame_queue_size` / `camera.frame_queue_size` / `gelsight.frame_queue_size`
   - 控制视觉链路的本地缓存队列深度，用于降低主循环瞬时抖动带来的帧覆盖风险
+- `gravity_compensation.enabled` / `mass` / `com` / `stabilization_sec` / `calibration_duration_sec` / `minimum_samples`
+  - 控制 FT 传感器重力补偿的启停与参数
+- `trajectory_qc.enabled` / `thresholds`
+  - 控制轨迹质量检查的启停与各项阈值
 
 ## 当前支持的传感器
 
@@ -164,6 +191,78 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
   - 关键能力回归测试
 
 RealSense、普通 RGB 相机和 GelSight 是三条独立的视觉/视触觉接入链路，可以同时接入并同步录制。当前 ORB-SLAM3 默认使用 RealSense 作为输入来源；普通 RGB 相机和 GelSight 当前仍主要作为独立录制模态，而不是 ORB-SLAM3 默认输入主链。
+
+## 末端执行器 TCP Latest 模式
+
+当前 SDK 已支持 `end_effector` 设备角色，用于树莓派作为末端执行器通过 TCP 实时向上位机发送传感器数据。
+
+### 设备角色
+
+`configs/record.yaml` 中的 `device_role` 控制运行模式：
+
+- `collector`（默认）：标准采集模式，录制 session 到本地磁盘
+- `end_effector`：末端执行器模式，通过 TCP 实时上行数据，不写本地 session
+
+### 运行行为
+
+`end_effector` 模式下：
+
+- 树莓派作为 TCP client 主动连接上位机
+- 跳过 motors 注册（电机由机械臂独立控制）
+- 启动其余 enabled sensors 并等待 ready
+- 不创建 `SessionWriter`，不创建 session 目录，不写盘，不做 aligned frame
+- 主循环 drain 每路 sensor 队列，只把最后一帧写入该 sensor 的 latest slot
+- TCP 断开时继续采集并覆盖 latest slot，重连后只发送当前最新帧，不补发历史
+
+### TCP 协议
+
+- 每条消息为 `8-byte big-endian payload_length + pickle.dumps(SensorFrame, protocol=pickle.HIGHEST_PROTOCOL)`
+- 不做 ACK、不做应用层重传、不做显式 chunk
+- 写慢或断线时不堆积历史；重连后只发送每路当前 latest frame
+- `pickle` 只能用于可信网线直连或可信局域网，不能暴露给不可信网络
+
+### network_uplink 配置
+
+`configs/record.yaml` 中的 `network_uplink` 配置块：
+
+- `enabled`：是否启用 TCP 上行，默认 `false`
+- `host`：上位机 IP 地址
+- `port`：上位机监听端口，默认 `8765`
+- `mode`：上行模式，当前固定为 `per_sensor_latest_raw_frame`
+- `reconnect_interval_sec`：断线重连间隔，默认 `1.0`
+- `send_timeout_sec`：发送超时，默认 `2.0`
+- `poll_interval_sec`：无新帧时的轮询间隔，默认 `0.005`
+
+### PC 端 receiver
+
+上位机使用 `scripts/sdk_network_receiver.py` 接收数据：
+
+```bash
+python scripts/sdk_network_receiver.py --host 0.0.0.0 --port 8765
+```
+
+v1 receiver 只维护内存 latest frame 并打印诊断统计，不写 session。
+
+### 命令行覆盖
+
+可以临时覆盖配置文件中的上位机地址：
+
+```bash
+python scripts/sdk_record.py \
+  --config configs/record.yaml \
+  --device-role end_effector \
+  --network-uplink-host 192.168.10.2 \
+  --network-uplink-port 8765
+```
+
+注意：`network_uplink.enabled` 仍需要在配置文件中为 `true`。
+
+### 已知限制
+
+- `pickle` 只能用于可信网线直连或可信局域网，不能暴露给不可信网络
+- v1 receiver 不落盘，只维护内存 latest frame 和打印诊断
+- TCP 发送 `sendall()` 在内核缓冲写慢时可能阻塞到 `send_timeout_sec`；采集主循环仍独立运行并继续覆盖 latest slot
+- TCP 是可靠字节流，连接中途断开时正在发送的消息可能被 receiver 丢弃；重连后不会补发历史
 
 ## 当前已经具备的能力
 
@@ -435,6 +534,67 @@ python scripts/sdk_annotate.py /abs/path/to/session_xxx --schema configs/annotat
 - 带有 `other` 选项的 `enum` / `multi_enum` 字段会要求输入自定义标签；最终落盘的是手动输入内容，而不是字面值 `other`
 - `Save` / `New` / `Delete` 按钮具备处理中与成功/失败反馈，便于操作员确认点击已生效
 
+### 9. 轨迹质量检查（Trajectory QC）
+
+当前 SDK 已支持轨迹质量检查能力，用于在轨迹解算后自动评估轨迹质量是否满足下游训练要求。
+
+`configs/record.yaml` 中的 `trajectory_qc` 配置块：
+
+- `enabled`：是否启用轨迹 QC，默认 `true`
+- `output_dir`：QC 报告输出目录，默认 `quality`
+- `output_filename`：QC 报告文件名，默认 `trajectory_qc.json`
+- `thresholds`：各项质量阈值
+  - `min_trajectory_coverage_ratio`：最小轨迹覆盖率，默认 `0.95`
+  - `min_action_eligible_ratio`：最小 action 合格率，默认 `0.9`
+  - `max_fail_step_ratio`：最大失败步比例，默认 `0.1`
+  - `max_translation_delta_m`：最大平移增量（米），默认 `0.15`
+  - `max_rotation_delta_deg`：最大旋转增量（度），默认 `45.0`
+  - `max_translation_speed_mps`：最大平移速度（m/s），默认 `1.0`
+  - `max_rotation_speed_degps`：最大旋转速度（deg/s），默认 `360.0`
+  - `max_translation_accel_mps2`：最大平移加速度（m/s²），默认 `10.0`
+  - `max_rotation_accel_degps2`：最大旋转加速度（deg/s²），默认 `2000.0`
+
+PC 端独立运行入口：
+
+```bash
+python scripts/sdk_qc_trajectory.py <session_dir> --config configs/record.yaml
+```
+
+### 10. 音频抽取
+
+当前 SDK 支持从录制的 MP4 视频中抽取音频轨道，保存为独立 WAV 文件到 `microphone` 目录。
+
+使用入口：
+
+```bash
+python scripts/sdk_extract_camera_audio.py <session_dir>
+```
+
+依赖 `PyAV`（`pip install av`）。
+
+### 11. JSONL 简化
+
+当前 SDK 提供 JSONL 简化工具，用于将 session 中的 `frames.jsonl` 精简为只保留关键字段的简化版本，减少存储占用。
+
+使用入口：
+
+```bash
+python scripts/sdk_simplify_jsonl.py <sessions_root>
+```
+
+### 12. 重力补偿配置
+
+`configs/record.yaml` 中的 `gravity_compensation` 配置块控制 FT 传感器的重力补偿行为：
+
+- `enabled`：是否启用重力补偿，默认 `false`
+- `mass`：末端负载质量（kg），默认 `0.25`
+- `com`：质心偏移 `[x, y, z]`，默认 `[0.0, 0.0, 0.0]`
+- `stabilization_sec`：校准前稳定等待时间，默认 `2.0`
+- `calibration_duration_sec`：校准采样时长，默认 `3.0`
+- `minimum_samples`：最小校准样本数，默认 `10`
+
+注意：重力补偿依赖独立串口 IMU 的姿态输入，而不是 D435i 板载 IMU。当前 `sdk_record.py` 的传感器清零逻辑（`run_static_calibration`）与重力补偿的 bias 校准可能存在潜在冲突，需要集成测试验证。
+
 ## 目录结构
 
 ```text
@@ -446,7 +606,12 @@ UMI_DataCollection/
 ├── docs/
 │   ├── session-data-layout.md
 │   ├── orbslam3-io-contract.md
-│   └── project-overview.md
+│   ├── project-overview.md
+│   ├── action-observation-schema.md
+│   ├── end-effector-tcp-latest-summary.md
+│   ├── end-effector-tcp-latest-usage.md
+│   ├── feature_status_report.md
+│   └── stream-naming-test-plan.md
 ├── plan.md
 ├── scripts/
 │   ├── sdk_annotate.py
@@ -456,6 +621,10 @@ UMI_DataCollection/
 │   ├── sdk_inspect.py
 │   ├── sdk_export.py
 │   ├── sdk_process_trajectory.py
+│   ├── sdk_qc_trajectory.py
+│   ├── sdk_extract_camera_audio.py
+│   ├── sdk_simplify_jsonl.py
+│   ├── sdk_network_receiver.py
 │   ├── orbslam3_wrapper.py
 │   └── sdk_validate_export.py
 ├── sdk/
@@ -465,7 +634,9 @@ UMI_DataCollection/
 │   ├── processors/
 │   ├── perception/
 │   ├── storage/
-│   └── exporters/
+│   ├── exporters/
+│   ├── quality/
+│   └── transport/
 ├── sensors/
 │   ├── common/
 │   │   ├── base_sensor.py
@@ -502,6 +673,10 @@ UMI_DataCollection/
   - 面向使用者的标准入口
 - `sdk/annotations/`
   - session 标注 schema、落盘和本地 Web 标注服务
+- `sdk/quality/`
+  - 轨迹质量检查
+- `sdk/transport/`
+  - TCP 上行传输（末端执行器模式）
 - `sensors/`
   - 底层设备实现、单设备调试工具，以及 `common/` 下的公共采集基类
 - `docs/`
@@ -542,6 +717,7 @@ python -m pip install -r requirements.txt
 - RealSense 采集：安装 Intel RealSense SDK / `librealsense`，并在 Python 环境里提供 `pyrealsense2`
 - 图像处理、PNG artifact 读取、ORB-SLAM3 bundle 导出：`pip install opencv-python`
 - 麦克风真机采集：需要 `pyaudio`
+- 音频抽取（从 MP4 提取音轨）：需要 `PyAV`（`pip install av`）
 - HDF5 导出：`pip install h5py`
 - ROS Bag 2 导出：需要真实 ROS 2 环境
 - PC 端本地 Web 标注器不依赖额外前端技术栈，默认使用 Python 标准库启动本地 HTTP 服务并调用浏览器
