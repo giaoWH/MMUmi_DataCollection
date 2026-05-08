@@ -13,7 +13,7 @@ import sys
 import termios
 import time
 import tty
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -301,15 +301,38 @@ def _handle_signal(_sig: int, _frame: object) -> None:
     is_running = False
 
 
+def _effective_ft_config(config: RecorderConfig) -> FTSensorConfig:
+    if config.enable_ft and config.gravity_compensation.enabled:
+        return replace(config.ft, skip_calibration=True)
+    return config.ft
+
+
+def _should_skip_ft_zero_calibration(config: RecorderConfig) -> bool:
+    return bool(config.enable_ft and config.gravity_compensation.enabled)
+
+
+def _print_ft_zero_calibration_notice(
+    config: RecorderConfig,
+    logger: logging.Logger | None = None,
+) -> None:
+    if not _should_skip_ft_zero_calibration(config):
+        return
+    message = "重力补偿已启用：FT 传感器零点校准已跳过，将由 GravityCompensator 统一处理零漂和重力。"
+    print(message)
+    if logger is not None:
+        logger.info(message)
+
+
 def build_registry(config: RecorderConfig, clock: SystemClock, *, skip_motors: bool = False) -> SensorRegistry:
     registry = SensorRegistry()
+    ft_config = _effective_ft_config(config)
     if config.sensor_source == "fake":
         if config.enable_ft:
             registry.register(
                 FakeFTAdapter(
                     FakeFTSensorConfig(
-                        name=config.ft.name,
-                        enable_torque=config.ft.enable_torque,
+                        name=ft_config.name,
+                        enable_torque=ft_config.enable_torque,
                     ),
                     clock,
                 )
@@ -390,7 +413,7 @@ def build_registry(config: RecorderConfig, clock: SystemClock, *, skip_motors: b
         return registry
 
     if config.enable_ft:
-        registry.register(LegacyFTAdapter(config.ft, clock))
+        registry.register(LegacyFTAdapter(ft_config, clock))
     if config.enable_imu:
         registry.register(LegacyIMUAdapter(config.imu, clock))
     if config.enable_realsense:
@@ -1421,34 +1444,17 @@ def _run_noninteractive(
         registry.stop_all()
         return 1
 
-    start_wall_time_ns = time.time_ns()
-    start_monotonic_time_ns = time.perf_counter_ns()
-    end_monotonic_time_ns = (
-        start_monotonic_time_ns + int(round(config.duration_sec * 1_000_000_000.0))
-        if config.duration_sec > 0
-        else None
-    )
-    end_wall_time_ns = (
-        start_wall_time_ns + int(round(config.duration_sec * 1_000_000_000.0))
-        if config.duration_sec > 0
-        else None
-    )
     session_info = _create_session_info(
         config=config,
         config_path=config_path,
         registry=registry,
-        session_time_window=_build_session_time_window_notes(
-            start_host_time_ns=start_wall_time_ns,
-            start_monotonic_time_ns=start_monotonic_time_ns,
-            end_host_time_ns=end_wall_time_ns,
-            end_monotonic_time_ns=end_monotonic_time_ns,
-        ),
     )
     logger = _create_session_logger(session_info)
     logger.info("SDK 录制启动，数据源=%s", config.sensor_source)
     if config_path is not None:
         logger.info("加载配置文件: %s", config_path)
     _warn_deprecated_trajectory(config, logger)
+    _print_ft_zero_calibration_notice(config, logger)
     compensator, calibration_notes = run_static_calibration(registry, config.gravity_compensation, logger)
     session_info.notes["gravity_compensation"] = calibration_notes
 
@@ -1469,6 +1475,25 @@ def _run_noninteractive(
             registry.stop_all()
             return 1
     session_info.notes["startup_discard"] = startup_discard_notes
+
+    start_wall_time_ns = time.time_ns()
+    start_monotonic_time_ns = time.perf_counter_ns()
+    end_monotonic_time_ns = (
+        start_monotonic_time_ns + int(round(config.duration_sec * 1_000_000_000.0))
+        if config.duration_sec > 0
+        else None
+    )
+    end_wall_time_ns = (
+        start_wall_time_ns + int(round(config.duration_sec * 1_000_000_000.0))
+        if config.duration_sec > 0
+        else None
+    )
+    session_info.notes["session_time_window"] = _build_session_time_window_notes(
+        start_host_time_ns=start_wall_time_ns,
+        start_monotonic_time_ns=start_monotonic_time_ns,
+        end_host_time_ns=end_wall_time_ns,
+        end_monotonic_time_ns=end_monotonic_time_ns,
+    )
 
     writer = SessionWriter(session_info, async_writes=True)
     aligner = BufferedFrameAligner(
@@ -1632,6 +1657,7 @@ def _run_interactive(
             print("录制在传感器就绪前被中断")
             return 1
 
+        _print_ft_zero_calibration_notice(config, run_logger)
         compensator, calibration_notes = run_static_calibration(registry, config.gravity_compensation, run_logger)
         startup_discard_notes = {
             "enabled": bool(config.startup_discard_sec > 0),

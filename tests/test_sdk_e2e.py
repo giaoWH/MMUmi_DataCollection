@@ -185,9 +185,12 @@ class SDKEndToEndTest(unittest.TestCase):
 
             orb_script = (
                 "import json, pathlib; "
-                "manifest = json.loads(pathlib.Path(r'{bundle_manifest}').read_text(encoding='utf-8')); "
+                "manifest_path = pathlib.Path(r'{bundle_manifest}'); "
+                "manifest = json.loads(manifest_path.read_text(encoding='utf-8')); "
+                "assoc = manifest_path.parent / manifest['files']['association_file']; "
+                "timestamp = float(assoc.read_text(encoding='utf-8').splitlines()[0].split()[0]); "
                 "payload = {"
-                "'timestamp': 5.0, "
+                "'timestamp': timestamp, "
                 "'position': [manifest['frame_count'], manifest['imu_rows'], 1.0], "
                 "'quaternion': [1.0, 0.0, 0.0, 0.0], "
                 "'tracking_state': 'OK'"

@@ -192,6 +192,7 @@ class SessionWriter:
         self._closed = True
         self._finish_async_writes()
         self._flush_pending_video_frames()
+        self._finish_artifact_writes()
         self._close_media_writers()
         if self.session_info is not None:
             self._finalize_timing_notes()
@@ -875,17 +876,18 @@ class SessionWriter:
 
     def _finish_async_writes(self) -> None:
         if not self.async_writes or self._write_queue is None:
-            self._collect_completed_artifact_futures(wait=True)
-            if self._artifact_executor is not None:
-                self._artifact_executor.shutdown(wait=True)
             return
         self._raise_if_writer_failed()
         self._write_queue.put(self._STOP)
         if self._writer_thread is not None:
             self._writer_thread.join()
+        self._raise_if_writer_failed()
+
+    def _finish_artifact_writes(self) -> None:
         self._collect_completed_artifact_futures(wait=True)
         if self._artifact_executor is not None:
             self._artifact_executor.shutdown(wait=True)
+            self._artifact_executor = None
         self._raise_if_writer_failed()
 
     def _raise_if_writer_failed(self) -> None:

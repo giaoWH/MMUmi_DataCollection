@@ -337,6 +337,25 @@ class RecorderConfigLoadingTest(unittest.TestCase):
         self.assertFalse(config.motors.enable_motor_1)
         self.assertTrue(config.motors.enable_motor_2)
 
+    def test_build_registry_skips_ft_zero_calibration_when_gravity_compensation_enabled(self) -> None:
+        config = sdk_record.RecorderConfig(
+            sensor_source="real",
+            enable_ft=True,
+            enable_imu=False,
+            enable_realsense=False,
+            enable_motors=False,
+            enable_microphone=False,
+            enable_camera=False,
+            enable_gelsight=False,
+            gravity_compensation=sdk_record.GravityCompensationConfig(enabled=True),
+        )
+
+        registry = sdk_record.build_registry(config, sdk_record.SystemClock())
+
+        self.assertFalse(config.ft.skip_calibration)
+        self.assertTrue(registry.sensors["ft"].config.skip_calibration)
+        self.assertTrue(registry.get_metadata()["ft"]["skip_calibration"])
+
     def test_parse_args_loads_startup_discard_sec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "record.yaml"

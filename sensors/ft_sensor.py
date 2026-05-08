@@ -10,10 +10,17 @@ class FTSensor(SerialBaseSensor):
     FRAME_HEADER = b'\x20\x4E'
     FRAME_LEN = 16
 
-    def __init__(self, port='COM3', baudrate=115200, calibration_duration=3.0):
+    def __init__(
+        self,
+        port='COM3',
+        baudrate=115200,
+        calibration_duration=3.0,
+        skip_calibration=False,
+    ):
         # 数据: [Fx, Fy, Fz, Tx, Ty, Tz]
         super().__init__("FT_Sensor", port, baudrate, data_length=6)
         self.calibration_duration = calibration_duration
+        self.skip_calibration = bool(skip_calibration)
         self._calibration_start_time = None
         self._calibration_sum = np.zeros(6, dtype=np.float64)
         self._calibration_count = 0
@@ -33,8 +40,13 @@ class FTSensor(SerialBaseSensor):
             self._calibration_sum.fill(0.0)
             self._calibration_count = 0
             self._baseline.fill(0.0)
-            self._calibration_finished.value = False
-            self._calibration_event.clear()
+            if self.skip_calibration:
+                self._calibration_finished.value = True
+                self._calibration_event.set()
+                print(f"[{self.name}] 已跳过零点校准，输出原始 FT 数据")
+            else:
+                self._calibration_finished.value = False
+                self._calibration_event.clear()
             self._ser.write(self.CMD_START)
 
     def _on_close(self):
@@ -74,7 +86,7 @@ class FTSensor(SerialBaseSensor):
                     vals[0]/100.0, vals[1]/100.0, vals[2]/100.0,
                     vals[3]/1000.0, vals[4]/1000.0, vals[5]/1000.0
                 ])
-                if not self._calibration_finished.value:
+                if not self.skip_calibration and not self._calibration_finished.value:
                     if self._calibration_start_time is None:
                         self._calibration_start_time = time.time()
 
@@ -95,7 +107,10 @@ class FTSensor(SerialBaseSensor):
                     )
                     continue
 
-                valid_frames.append(frame - self._baseline)
+                if self.skip_calibration:
+                    valid_frames.append(frame)
+                else:
+                    valid_frames.append(frame - self._baseline)
             except struct.error:
                 pass
             

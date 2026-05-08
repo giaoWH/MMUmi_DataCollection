@@ -105,7 +105,7 @@ gelsight:
   frame_queue_size: 128
 gravity_compensation:
   enabled: false
-  mass: 0.25
+  mass: 0.4
   com:
   - 0.0
   - 0.0

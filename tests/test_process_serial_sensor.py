@@ -131,3 +131,40 @@ class ProcessSerialSensorTest(unittest.TestCase):
                 self.assertEqual(runtime_status["dropped_frame_count"], 0)
             finally:
                 sensor.stop()
+
+    def test_serial_sensor_publishes_individual_frames_from_parser_batches(self):
+        class _BatchSerial(_DummySerial):
+            def __init__(self, port, baudrate, timeout=0):
+                super().__init__(port, baudrate, timeout=timeout)
+                self._payloads = [b"batch"]
+
+        class _BatchSensor(SerialBaseSensor):
+            def __init__(self):
+                super().__init__("BatchSerial", "/dev/null", 115200, data_length=1)
+
+            def _parse_protocol(self, buffer):
+                if not buffer:
+                    return None, buffer
+                return [
+                    np.array([1.0], dtype=np.float64),
+                    np.array([2.0], dtype=np.float64),
+                ], bytearray()
+
+        sensor = _BatchSensor()
+
+        with mock.patch("sensors.common.serial_base.serial.Serial", _BatchSerial):
+            sensor.start()
+            try:
+                deadline = time.time() + 2.0
+                while time.time() < deadline:
+                    runtime_status = sensor.get_runtime_status()
+                    if runtime_status["frame_count"] >= 2:
+                        break
+                    time.sleep(0.01)
+
+                packets = sensor.get_all_data_with_time_info()
+                self.assertEqual(len(packets), 2)
+                np.testing.assert_array_equal(packets[0][0], np.array([1.0], dtype=np.float64))
+                np.testing.assert_array_equal(packets[1][0], np.array([2.0], dtype=np.float64))
+            finally:
+                sensor.stop()

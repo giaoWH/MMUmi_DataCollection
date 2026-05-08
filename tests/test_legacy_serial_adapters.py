@@ -152,6 +152,37 @@ class LegacySerialAdaptersTest(unittest.TestCase):
         self.assertNotIn("torque", frame.payload)
         self.assertEqual(frame.metadata["units"], {"force": "N"})
 
+    def test_legacy_ft_adapter_can_skip_zero_calibration(self):
+        _MappedDummySerial.PAYLOADS = {
+            "FT_PORT": [
+                _make_ft_frame([1.0, 2.0, 3.0], [0.1, 0.2, 0.3]),
+            ]
+        }
+        adapter = LegacyFTAdapter(
+            FTSensorConfig(
+                port="FT_PORT",
+                calibration_duration=10.0,
+                skip_calibration=True,
+            ),
+            SystemClock(),
+        )
+
+        with mock.patch("sensors.common.serial_base.serial.Serial", _MappedDummySerial):
+            adapter.start()
+            try:
+                self.assertTrue(adapter.wait_until_ready(timeout=2.0))
+                frame = self._wait_for_frame(adapter)
+                status = adapter.get_status()
+                metadata = adapter.get_metadata()
+            finally:
+                adapter.stop()
+
+        self.assertTrue(status["calibration_finished"])
+        self.assertTrue(status["skip_calibration"])
+        self.assertTrue(metadata["skip_calibration"])
+        np.testing.assert_allclose(frame.payload["force"], [1.0, 2.0, 3.0], atol=1e-6)
+        np.testing.assert_allclose(frame.payload["torque"], [0.1, 0.2, 0.3], atol=1e-6)
+
     def test_legacy_imu_adapter_returns_full_frame_from_process_sensor(self):
         acc_payload = struct.pack("<hhhhhhhhh", 0, 0, 0, 0, 0, 0, 0, 0, 0)
         quat_payload = struct.pack("<ffff", 1.0, 0.0, 0.0, 0.0)

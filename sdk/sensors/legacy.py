@@ -16,6 +16,7 @@ class FTSensorConfig:
     baudrate: int = 115200
     calibration_duration: float = 3.0
     enable_torque: bool = True
+    skip_calibration: bool = False
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,7 @@ class LegacyFTAdapter(SensorAdapter):
             port=config.port,
             baudrate=config.baudrate,
             calibration_duration=config.calibration_duration,
+            skip_calibration=config.skip_calibration,
         )
 
     def start(self) -> None:
@@ -146,6 +148,7 @@ class LegacyFTAdapter(SensorAdapter):
             "baudrate": self.config.baudrate,
             "calibration_duration": self.config.calibration_duration,
             "enable_torque": self.config.enable_torque,
+            "skip_calibration": self.config.skip_calibration,
         }
 
     def get_status(self) -> dict[str, object]:
@@ -161,6 +164,7 @@ class LegacyFTAdapter(SensorAdapter):
             "max_queue_depth": runtime_status["max_queue_depth"],
             "queue_capacity": runtime_status["queue_capacity"],
             "calibration_finished": self.sensor.calibration_finished,
+            "skip_calibration": self.config.skip_calibration,
         }
 
     def is_ready(self) -> bool:

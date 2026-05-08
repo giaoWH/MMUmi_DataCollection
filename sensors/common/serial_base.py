@@ -147,7 +147,7 @@ class SerialBaseSensor(BaseSensor):
                         self._shared_frame_count.value = frame_count
                         self._shared_latest_timestamp.value = capture_wall_ns / 1_000_000_000.0
                         packet = {
-                            "data": new_frame,
+                            "data": frame,
                             "timestamp": capture_wall_ns / 1_000_000_000.0,
                             "frame_id": frame_count,
                             "time_info": {
