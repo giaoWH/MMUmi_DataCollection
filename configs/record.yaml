@@ -10,7 +10,7 @@
 
 device_role: collector
 output_root: /mnt/m2disk2/umi-data/umi-data/sessions
-task_name_batch_size: 5
+task_name_batch_size: 1
 sensor_source: real
 align_rate_hz: 30.0
 duration_sec: 10.0
