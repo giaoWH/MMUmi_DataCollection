@@ -47,12 +47,6 @@ class SDKEndToEndTest(unittest.TestCase):
                         "duration_sec": 0.2,
                         "enable_camera": True,
                         "enable_trajectory": True,
-                        "gravity_compensation": {
-                            "enabled": False,
-                            "stabilization_sec": 0.0,
-                            "calibration_duration_sec": 0.0,
-                            "minimum_samples": 5,
-                        },
                         "trajectory": {
                             "command": f"{sys.executable} -c \"{orb_script}\"",
                             "mode": "stereo_inertial",
@@ -116,14 +110,6 @@ class SDKEndToEndTest(unittest.TestCase):
                         "align_rate_hz": 20,
                         "duration_sec": 0.2,
                         "enable_camera": True,
-                        "gravity_compensation": {
-                            "enabled": True,
-                            "mass": 0.25,
-                            "com": [0.0, 0.0, 0.1],
-                            "stabilization_sec": 0.0,
-                            "calibration_duration_sec": 0.2,
-                            "minimum_samples": 5,
-                        },
                         "realsense": {
                             "enable_imu": True,
                             "enable_ir1": True,
@@ -178,10 +164,6 @@ class SDKEndToEndTest(unittest.TestCase):
             reader = SessionReader(session_dir)
             aligned_records = list(reader.iter_aligned_records())
             self.assertTrue(aligned_records)
-            self.assertTrue(
-                any("gravity_compensation" in record.get("metadata", {}) for record in aligned_records),
-                "录制结果中缺少重力补偿记录",
-            )
 
             orb_script = (
                 "import json, pathlib; "

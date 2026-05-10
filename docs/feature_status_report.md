@@ -4,16 +4,10 @@
 
 ## 已实现但未经测试的功能
 
-### 1. 重力补偿 (Gravity Compensation) — 部分测试，有潜在冲突
 
-- **代码**: `sdk/processors/gravity_compensation.py` (60行)
-- **测试**: `tests/test_gravity_compensation.py` (27行) — 仅 1 个单元测试
 - **问题**:
-  - 测试仅覆盖了 `calibrate_bias` + `process` 的基本路径，没有测试非单位四元数下的重力补偿精度
-  - **关键问题**: `sdk_record.py` 的传感器清零逻辑（`run_static_calibration`）与重力补偿存在潜在冲突 — 清零时采集的 bias 数据和重力补偿的 bias 校准可能互相干扰
   - 没有测试校准失败场景（样本不足、四元数异常）
   - 没有测试 `com_pos`（质心偏移）非零时的补偿效果
-  - 没有测试在录制中实时应用重力补偿的集成场景
 
 ### 2. 上位机模式 (End Effector / TCP Latest) — 未验证
 
@@ -47,7 +41,6 @@ IMU与FT传感器在安装时的物理坐标一致，但是传感器坐标系与
 
 ## 关键风险点总结
 
-1. **重力补偿 + 传感器清零冲突** — 清零逻辑（`run_static_calibration`）与重力补偿的 bias 校准可能互相干扰，需要集成测试验证
 2. **上位机模式未经硬件测试** — TCP 传输的稳定性、断线重连、帧丢失等场景未验证
 3. **轨迹解算完全没有测试** — ORB-SLAM3 的 7 个源文件没有任何测试
 4. **导出功能代码完整但无端到端测试** — CSV/HDF5/ROS Bag/RLDS 四种导出都没有实际导出测试

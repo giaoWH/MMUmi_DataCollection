@@ -264,7 +264,6 @@ class LeRobotSessionExporter(SessionExporter):
         task_name = self._resolve_task_name(session_annotations)
         for local_row_index, sample in enumerate(samples):
             record = sample.aligned_record
-            current_compensation = record.get("metadata", {}).get("gravity_compensation")
             row_index = global_row_start + local_row_index
             row: dict[str, Any] = {
                 "index": row_index,
@@ -307,8 +306,6 @@ class LeRobotSessionExporter(SessionExporter):
                         audio_dir=audio_dir,
                         fps=align_rate_hz,
                     )
-            if current_compensation:
-                self._flatten_mapping(row, "observation.gravity_compensation", current_compensation)
             self._flatten_mapping(
                 row,
                 "observation.trajectory",
@@ -893,7 +890,6 @@ def _build_observation_state_map(
     record: dict[str, Any],
     frame_index: dict[str, dict[int, Any]],
     trajectory: TrajectoryFrame,
-    compensation: dict[str, Any] | None,
 ) -> dict[str, float]:
     state: dict[str, float] = {}
     for sensor_name, frame_info in record.get("frames", {}).items():
@@ -906,8 +902,6 @@ def _build_observation_state_map(
         if frame is None:
             continue
         _collect_numeric_fields(f"observation.{sensor_name}", frame.payload, state)
-    if compensation:
-        _collect_numeric_fields("observation.gravity_compensation", compensation, state)
     _collect_numeric_fields(
         "observation.trajectory",
         {

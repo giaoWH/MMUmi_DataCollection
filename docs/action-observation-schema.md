@@ -34,7 +34,6 @@ record -> aligned session -> process_trajectory -> export(LeRobot / RLDS / HDF5 
 - Motors：启用，但当前仅 `motor_2` 开启，`motor_1` 关闭
 - GelSight：启用，`320x240 @ 25Hz`
 - Microphone：启用，`48kHz`, `chunk=1024`
-- 独立 IMU：启用，但它主要服务于 FT 重力补偿，不属于本文要求的 observation 主字段
 
 ## 3. Action Schema
 
@@ -234,9 +233,6 @@ LeRobot 导出字段：
 
 补充：
 
-- 若启用了重力补偿，aligned record metadata 中还会有：
-  - `observation.gravity_compensation.pure_force.*`
-  - `observation.gravity_compensation.gravity_force.*`
 - 这部分是附加低维观测，不替代原始 FT 读数
 
 ### 4.4 tactile

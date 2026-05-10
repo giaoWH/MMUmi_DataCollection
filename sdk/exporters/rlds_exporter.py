@@ -105,9 +105,6 @@ class RLDSSessionExporter(SessionExporter):
                 "payload": self._to_jsonable(frame.payload if frame is not None else {}),
                 "metadata": self._to_jsonable(frame.metadata if frame is not None else {}),
             }
-        compensation = aligned_record.get("metadata", {}).get("gravity_compensation")
-        if compensation:
-            observation["gravity_compensation"] = self._to_jsonable(compensation)
         if trajectory_frame is not None:
             observation["trajectory"] = {
                 "frame_id": trajectory_frame.frame_id,

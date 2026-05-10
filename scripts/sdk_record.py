@@ -13,7 +13,7 @@ import sys
 import termios
 import time
 import tty
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -28,7 +28,6 @@ from sdk.config import deep_merge, load_config_file
 from sdk.core import BufferedFrameAligner, SensorRegistry, SessionInfo, SystemClock, create_session_info
 from sdk.logging import build_logger
 from sdk.perception import OrbSlam3SessionProcessConfig
-from sdk.processors import GravityCompensationConfig, GravityCompensator
 from sdk.session_naming import format_item_name, normalize_task_slug
 from scripts.sdk_extract_camera_audio import extract_camera_audio_to_wavs, summarize_extraction_results
 from sdk.sensors.fake import (
@@ -114,7 +113,6 @@ class RecorderConfig:
     camera: CameraSensorConfig = CameraSensorConfig()
     gelsight: GelSightSensorConfig = GelSightSensorConfig()
     network_uplink: NetworkUplinkConfig = NetworkUplinkConfig()
-    gravity_compensation: GravityCompensationConfig = GravityCompensationConfig()
     trajectory: OrbSlam3SessionProcessConfig = OrbSlam3SessionProcessConfig()
 
 
@@ -301,31 +299,9 @@ def _handle_signal(_sig: int, _frame: object) -> None:
     is_running = False
 
 
-def _effective_ft_config(config: RecorderConfig) -> FTSensorConfig:
-    if config.enable_ft and config.gravity_compensation.enabled:
-        return replace(config.ft, skip_calibration=True)
-    return config.ft
-
-
-def _should_skip_ft_zero_calibration(config: RecorderConfig) -> bool:
-    return bool(config.enable_ft and config.gravity_compensation.enabled)
-
-
-def _print_ft_zero_calibration_notice(
-    config: RecorderConfig,
-    logger: logging.Logger | None = None,
-) -> None:
-    if not _should_skip_ft_zero_calibration(config):
-        return
-    message = "重力补偿已启用：FT 传感器零点校准已跳过，将由 GravityCompensator 统一处理零漂和重力。"
-    print(message)
-    if logger is not None:
-        logger.info(message)
-
-
 def build_registry(config: RecorderConfig, clock: SystemClock, *, skip_motors: bool = False) -> SensorRegistry:
     registry = SensorRegistry()
-    ft_config = _effective_ft_config(config)
+    ft_config = config.ft
     if config.sensor_source == "fake":
         if config.enable_ft:
             registry.register(
@@ -427,71 +403,6 @@ def build_registry(config: RecorderConfig, clock: SystemClock, *, skip_motors: b
     if config.enable_gelsight:
         registry.register(LegacyGelSightAdapter(config.gelsight, clock))
     return registry
-
-
-def _find_sensor_name_by_modality(registry: SensorRegistry, modality: str) -> str | None:
-    for sensor_name, sensor in registry.sensors.items():
-        if sensor.modality == modality:
-            return sensor_name
-    return None
-
-
-def run_static_calibration(
-    registry: SensorRegistry,
-    config: GravityCompensationConfig,
-    logger: logging.Logger,
-) -> tuple[GravityCompensator | None, dict[str, object]]:
-    if not config.enabled:
-        return None, {"enabled": False}
-
-    ft_sensor_name = _find_sensor_name_by_modality(registry, "force_torque")
-    imu_sensor_name = _find_sensor_name_by_modality(registry, "imu")
-    if ft_sensor_name is None or imu_sensor_name is None:
-        raise RuntimeError("启用重力补偿时必须同时具备 FT 和 IMU 传感器")
-
-    if config.stabilization_sec > 0:
-        logger.info("等待传感器稳定 %.2f 秒", config.stabilization_sec)
-        time.sleep(config.stabilization_sec)
-
-    compensator = GravityCompensator(config.mass, config.com)
-    ft_sensor = registry.sensors[ft_sensor_name]
-    imu_sensor = registry.sensors[imu_sensor_name]
-    ft_samples: list[np.ndarray] = []
-    quat_samples: list[np.ndarray] = []
-    last_frame_ids = {ft_sensor_name: -1, imu_sensor_name: -1}
-
-    logger.info("开始静态校准 %.2f 秒", config.calibration_duration_sec)
-    t_start = time.time()
-    while time.time() - t_start < config.calibration_duration_sec:
-        ft_frame = ft_sensor.read_frame()
-        imu_frame = imu_sensor.read_frame()
-        if ft_frame is not None and imu_frame is not None:
-            if (
-                ft_frame.frame_id != last_frame_ids[ft_sensor_name]
-                and imu_frame.frame_id != last_frame_ids[imu_sensor_name]
-            ):
-                ft_samples.append(np.asarray(ft_frame.payload["force"], dtype=np.float64))
-                quat_samples.append(np.asarray(imu_frame.payload["quaternion"], dtype=np.float64))
-                last_frame_ids[ft_sensor_name] = ft_frame.frame_id
-                last_frame_ids[imu_sensor_name] = imu_frame.frame_id
-        time.sleep(0.005)
-
-    minimum = max(config.minimum_samples, 10)
-    if len(ft_samples) < minimum:
-        raise RuntimeError(f"静态校准数据不足: {len(ft_samples)} < {minimum}")
-    if not compensator.calibrate_bias(ft_samples, quat_samples):
-        raise RuntimeError("重力补偿静态校准失败")
-    logger.info("重力补偿校准完成，样本数=%d, bias=%s", len(ft_samples), compensator.bias.tolist())
-
-    notes = {
-        "enabled": True,
-        "calibrated": True,
-        "sample_count": len(ft_samples),
-        "mass": config.mass,
-        "com": list(config.com),
-        "bias": compensator.bias.tolist(),
-    }
-    return compensator, notes
 
 
 def discard_startup_frames(
@@ -873,7 +784,6 @@ def parse_args(argv: list[str] | None = None) -> tuple[RecorderConfig, Path | No
         camera=CameraSensorConfig(**payload.get("camera", {})),
         gelsight=GelSightSensorConfig(**gelsight_payload),
         network_uplink=NetworkUplinkConfig(**payload.get("network_uplink", {})),
-        gravity_compensation=GravityCompensationConfig(**payload.get("gravity_compensation", {})),
         trajectory=OrbSlam3SessionProcessConfig(**payload.get("trajectory", {})),
     )
     return config, config_path
@@ -944,11 +854,9 @@ def _write_session_annotation(
 
 
 def _build_shared_calibration_notes(
-    calibration_notes: dict[str, object],
     startup_discard_notes: dict[str, object],
 ) -> dict[str, object]:
     return {
-        "gravity_compensation": _json_clone(calibration_notes),
         "startup_discard": _json_clone(startup_discard_notes),
     }
 
@@ -1029,9 +937,6 @@ def _record_iteration(
     *,
     session: RecordingSession,
     registry: SensorRegistry,
-    compensator: GravityCompensator | None,
-    ft_sensor_name: str | None,
-    imu_sensor_name: str | None,
     align_interval_ns: int,
     cutoff_monotonic_time_ns: int | None = None,
 ) -> object | None:
@@ -1067,23 +972,6 @@ def _record_iteration(
             aligned_time_ns=session.next_aligned_time_ns,
             aligned_monotonic_time_ns=session.next_aligned_monotonic_time_ns,
         )
-        if (
-            compensator is not None
-            and ft_sensor_name is not None
-            and imu_sensor_name is not None
-            and ft_sensor_name in aligned.frames
-            and imu_sensor_name in aligned.frames
-        ):
-            ft_force = np.asarray(aligned.frames[ft_sensor_name].payload["force"], dtype=np.float64)
-            imu_quaternion = np.asarray(aligned.frames[imu_sensor_name].payload["quaternion"], dtype=np.float64)
-            pure_force, gravity_force = compensator.process(ft_force, imu_quaternion)
-            aligned.metadata["gravity_compensation"] = {
-                "applied": True,
-                "pure_force": pure_force.tolist(),
-                "gravity_force": gravity_force.tolist(),
-                "bias": compensator.bias.tolist(),
-            }
-            session.logger.debug("重力补偿已应用: seq=%d", aligned.sequence_id)
         session.writer.write_aligned_frame(aligned)
         last_aligned = aligned
         session.next_aligned_time_ns += align_interval_ns
@@ -1258,9 +1146,6 @@ def _begin_stopping_session(
     stop_reason: str,
     stop_requested_host_time_ns: int,
     stop_requested_monotonic_time_ns: int,
-    compensator: GravityCompensator | None,
-    ft_sensor_name: str | None,
-    imu_sensor_name: str | None,
     align_interval_ns: int,
 ) -> StoppingSession:
     session.writer.set_session_time_window(
@@ -1274,9 +1159,6 @@ def _begin_stopping_session(
     _record_iteration(
         session=session,
         registry=registry,
-        compensator=compensator,
-        ft_sensor_name=ft_sensor_name,
-        imu_sensor_name=imu_sensor_name,
         align_interval_ns=align_interval_ns,
         cutoff_monotonic_time_ns=stop_requested_monotonic_time_ns,
     )
@@ -1454,9 +1336,6 @@ def _run_noninteractive(
     if config_path is not None:
         logger.info("加载配置文件: %s", config_path)
     _warn_deprecated_trajectory(config, logger)
-    _print_ft_zero_calibration_notice(config, logger)
-    compensator, calibration_notes = run_static_calibration(registry, config.gravity_compensation, logger)
-    session_info.notes["gravity_compensation"] = calibration_notes
 
     startup_discard_notes = {
         "enabled": bool(config.startup_discard_sec > 0),
@@ -1501,8 +1380,6 @@ def _run_noninteractive(
         max_frame_age=config.max_frame_age,
     )
     last_written_frame_ids = {name: -1 for name in registry.sensors}
-    ft_sensor_name = _find_sensor_name_by_modality(registry, "force_torque")
-    imu_sensor_name = _find_sensor_name_by_modality(registry, "imu")
 
     print(f"Session: {session_info.session_id}")
     print(f"输出目录: {session_info.output_dir}")
@@ -1552,23 +1429,6 @@ def _run_noninteractive(
                     aligned_time_ns=next_aligned_time_ns,
                     aligned_monotonic_time_ns=next_aligned_monotonic_time_ns,
                 )
-                if (
-                    compensator is not None
-                    and ft_sensor_name is not None
-                    and imu_sensor_name is not None
-                    and ft_sensor_name in aligned.frames
-                    and imu_sensor_name in aligned.frames
-                ):
-                    ft_force = np.asarray(aligned.frames[ft_sensor_name].payload["force"], dtype=np.float64)
-                    imu_quaternion = np.asarray(aligned.frames[imu_sensor_name].payload["quaternion"], dtype=np.float64)
-                    pure_force, gravity_force = compensator.process(ft_force, imu_quaternion)
-                    aligned.metadata["gravity_compensation"] = {
-                        "applied": True,
-                        "pure_force": pure_force.tolist(),
-                        "gravity_force": gravity_force.tolist(),
-                        "bias": compensator.bias.tolist(),
-                    }
-                    logger.debug("重力补偿已应用: seq=%d", aligned.sequence_id)
                 writer.write_aligned_frame(aligned)
                 last_aligned = aligned
                 next_aligned_time_ns += align_interval_ns
@@ -1657,8 +1517,6 @@ def _run_interactive(
             print("录制在传感器就绪前被中断")
             return 1
 
-        _print_ft_zero_calibration_notice(config, run_logger)
-        compensator, calibration_notes = run_static_calibration(registry, config.gravity_compensation, run_logger)
         startup_discard_notes = {
             "enabled": bool(config.startup_discard_sec > 0),
             "discard_sec": float(max(0.0, config.startup_discard_sec)),
@@ -1675,11 +1533,9 @@ def _run_interactive(
                 print("录制在启动阶段数据丢弃期间被中断")
                 return 1
 
-        shared_calibration = _build_shared_calibration_notes(calibration_notes, startup_discard_notes)
+        shared_calibration = _build_shared_calibration_notes(startup_discard_notes)
         record_run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         session_index = 0
-        ft_sensor_name = _find_sensor_name_by_modality(registry, "force_torque")
-        imu_sensor_name = _find_sensor_name_by_modality(registry, "imu")
         align_interval_ns = max(1, int(round(1_000_000_000.0 / max(config.align_rate_hz, 1e-6))))
         loop_interval = 1.0 / config.align_rate_hz if config.align_rate_hz > 0 else 0.05
 
@@ -1711,9 +1567,6 @@ def _run_interactive(
                         stop_reason="signal_interrupt",
                         stop_requested_host_time_ns=stop_requested_host_time_ns,
                         stop_requested_monotonic_time_ns=stop_requested_monotonic_time_ns,
-                        compensator=compensator,
-                        ft_sensor_name=ft_sensor_name,
-                        imu_sensor_name=imu_sensor_name,
                         align_interval_ns=align_interval_ns,
                     )
                     active_session = None
@@ -1747,9 +1600,6 @@ def _run_interactive(
                         stop_reason="sensor_failure",
                         stop_requested_host_time_ns=stop_requested_host_time_ns,
                         stop_requested_monotonic_time_ns=stop_requested_monotonic_time_ns,
-                        compensator=compensator,
-                        ft_sensor_name=ft_sensor_name,
-                        imu_sensor_name=imu_sensor_name,
                         align_interval_ns=align_interval_ns,
                     )
                     active_session = None
@@ -1776,9 +1626,6 @@ def _run_interactive(
                 last_aligned = _record_iteration(
                     session=active_session,
                     registry=registry,
-                    compensator=compensator,
-                    ft_sensor_name=ft_sensor_name,
-                    imu_sensor_name=imu_sensor_name,
                     align_interval_ns=align_interval_ns,
                 )
                 _print_align_progress(last_aligned)
@@ -1822,9 +1669,6 @@ def _run_interactive(
                         stop_reason="ctrl_c",
                         stop_requested_host_time_ns=stop_requested_host_time_ns,
                         stop_requested_monotonic_time_ns=stop_requested_monotonic_time_ns,
-                        compensator=compensator,
-                        ft_sensor_name=ft_sensor_name,
-                        imu_sensor_name=imu_sensor_name,
                         align_interval_ns=align_interval_ns,
                     )
                     active_session = None
@@ -1936,9 +1780,6 @@ def _run_interactive(
                         stop_reason="operator_stop",
                         stop_requested_host_time_ns=stop_requested_host_time_ns,
                         stop_requested_monotonic_time_ns=stop_requested_monotonic_time_ns,
-                        compensator=compensator,
-                        ft_sensor_name=ft_sensor_name,
-                        imu_sensor_name=imu_sensor_name,
                         align_interval_ns=align_interval_ns,
                     )
                     active_session = None

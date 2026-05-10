@@ -41,7 +41,7 @@
 - 普通 RGB 相机和 GelSight 当前都不是 ORB-SLAM3 默认视觉主链
 - `realsense` 作为一个设备接入，但设备内部可按配置录制 `color`、`depth`、`ir1`、`ir2`、`imu_samples`
 - RealSense 可选派生结果包括 `aligned_depth_to_color` 与 `pointcloud`
-- 项目中的独立 IMU 当前主要用于 FT 重力补偿
+- 项目中的独立 IMU 当前作为独立姿态传感器接入
 - `rgbd_inertial` / `stereo_inertial` 当前使用 D435i 板载 IMU 作为 SLAM 惯性输入
 
 ---
@@ -62,7 +62,7 @@ record -> inspect -> process_trajectory -> export -> validate
 - 纳秒级时间戳模型与采集时序记录
 - 串口类传感器多进程采集
 - FT / Motors 零点校准与 ready 等待
-- FT 静态校准与重力补偿
+- FT 零点校准
 - RealSense 多流录制与低层 bring-up
 - ORB-SLAM3 软件侧接入
 - 录制结束后按配置自动执行轨迹解算
@@ -121,7 +121,6 @@ sensor adapters
   - `realsense_sensor.py`：底层 D435i 采集封装
   - `realsense/realsense_communication.py`：RealSense 真机 bring-up / 连通性测试脚本
 - `sdk/processors/`
-  - `gravity_compensation.py`：静态校准与重力补偿
 - `sdk/storage/`
   - `schema.py`、`session_writer.py`、`session_reader.py`
 - `sdk/perception/orbslam3/`
@@ -144,7 +143,6 @@ sensor adapters
 - 串口多进程采集
 - 3 秒零点校准
 - 校准完成前 ready 等待
-- 重力补偿输入
 
 ### 5.2 独立 IMU
 
@@ -155,12 +153,12 @@ sensor adapters
 - 真实串口 IMU 适配
 - fake IMU 适配
 - 串口多进程采集
-- 当前作为 FT 重力补偿的姿态输入
+- 当前作为独立姿态传感器输入
 
 当前边界：
 
 - 当前项目里的这一套 IMU 不是 D435i 板载 IMU
-- 当前它主要服务于 FT 重力补偿，而不是 ORB-SLAM3 惯性输入
+- 当前它不参与 ORB-SLAM3 惯性输入
 
 ### 5.3 RealSense
 
@@ -259,20 +257,6 @@ sensor adapters
 - FT / Motors 会在零点校准完成后置 ready
 - 若串口打开失败，不会一直假装 running，避免等待卡死
 
-### 6.3 重力补偿
-
-状态：已完成
-
-当前行为：
-
-- 仅在 FT + 独立 IMU 同时存在时启用
-- 先收集静态段样本
-- 在 aligned 记录中写入补偿结果
-
-当前边界：
-
-- 当前明确依赖独立 IMU
-- RealSense D435i 板载 IMU 不参与 FT 重力补偿
 
 ### 6.4 当前依赖边界
 
@@ -369,7 +353,6 @@ session_xxx/
 已覆盖内容：
 
 - 对齐逻辑测试
-- 重力补偿测试
 - session writer / reader 测试
 - ORB-SLAM3 bundle / command / CLI 测试
 - RealSense 工具函数测试

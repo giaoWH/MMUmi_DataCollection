@@ -67,14 +67,12 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 ### 重要边界：这里有两套不同用途的 IMU
 
 - 项目中的“独立串口 IMU”
-  - 当前主要用于 FT 重力补偿
 - RealSense D435i 自带的“板载 IMU”
   - 当前已经可以录入 session
   - 当前主要服务于 ORB-SLAM3 的惯性输入
 
 因此，当前项目真实状态应理解为：
 
-- FT 的重力补偿：依赖独立 IMU
 - RealSense：可以按配置录制 `color + depth + ir1 + ir2 + imu_samples`
 - `rgbd_inertial` / `stereo_inertial`：当前软件上使用 RealSense 板载 IMU
 
@@ -107,7 +105,6 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - `real` / `fake` 两种数据源
 - 录制前 ready 等待
 - FT / Motors 零点校准
-- FT 静态校准与重力补偿
 - 首次安装时通过 `sdk_discover_ports.py` 统一发现 FT / IMU / Motors 串口，以及 RealSense / Camera / GelSight 视觉设备配置
 - 录制端只负责生成 session；轨迹解算统一改为 PC 端离线执行
 
@@ -208,7 +205,6 @@ record on Pi -> copy session to PC -> inspect -> annotate -> export -> validate
 - 统一 session schema
 - 串口类传感器多进程采集
 - ready / 校准等待
-- FT 重力补偿
 - ORB-SLAM3 软件接入
 - 首次安装时的设备自动发现与配置写回
 - session 拷贝到 PC 后再离线执行轨迹解算
@@ -360,9 +356,7 @@ UMI_DataCollection/
 
 负责采集中的派生处理：
 
-- `gravity_compensation.py`
   - FT 静态校准
-  - 重力补偿
 
 #### `sdk/storage/`
 
@@ -416,7 +410,6 @@ UMI_DataCollection/
 - 串口多进程采集
 - 3 秒零点校准
 - ready 等待
-- FT 重力补偿输入
 - 真实落盘 payload 仅保留 `force` 与 `torque` 两组共 6 自由度；旧 session 中的 `force_torque` 仅作为兼容读取路径
 - `record.yaml` 中可通过 `ft.enable_torque` 关闭 `torque[3]` 落盘，仅保留 `force[3]`
 
@@ -425,7 +418,6 @@ UMI_DataCollection/
 - `sensors/ft_sensor.py`
 - `sdk/sensors/legacy.py`
 - `sdk/sensors/fake.py`
-- `sdk/processors/gravity_compensation.py`
 
 ### 6.2 独立 IMU
 
@@ -436,12 +428,10 @@ UMI_DataCollection/
 - 真实串口 IMU 适配
 - fake IMU 适配
 - 串口多进程采集
-- 当前作为 FT 重力补偿姿态输入
 
 当前边界：
 
 - 这不是 D435i 板载 IMU
-- 当前主要用于 FT 重力补偿
 
 对应代码：
 
@@ -685,7 +675,6 @@ python scripts/sdk_record.py
 - FT / IMU / Motors 在 ready 后的极短时间内仍存在同步瞬态
 - 这些启动瞬态污染正式数据集开头
 
-### 7.3 FT 重力补偿
 
 当前行为：
 
@@ -696,7 +685,6 @@ python scripts/sdk_record.py
 当前边界：
 
 - 当前明确依赖独立 IMU
-- D435i 板载 IMU 当前不参与 FT 重力补偿
 
 ### 7.4 当前依赖边界
 
@@ -857,7 +845,6 @@ session_xxx/
 
 - 对齐逻辑测试
 - annotation schema / CRUD / Web 标注服务测试
-- 重力补偿测试
 - session writer / reader 测试
 - 导出校验测试
 - 配置文件加载与 CLI 覆盖测试
@@ -870,7 +857,6 @@ session_xxx/
 
 - `tests/test_aligner.py`
 - `tests/test_annotations.py`
-- `tests/test_gravity_compensation.py`
 - `tests/test_session_writer.py`
 - `tests/test_export_validation.py`
 - `tests/test_record_config_loading.py`

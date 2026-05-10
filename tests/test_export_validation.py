@@ -127,14 +127,7 @@ class SessionExportValidationTest(unittest.TestCase):
                 },
                 missing_sensors=[],
                 age_by_sensor={"ft": 0.0, "imu": 0.0, "realsense": 0.0, "camera": 0.0},
-                metadata={
-                    "gravity_compensation": {
-                        "applied": True,
-                        "pure_force": [0.5, 1.5, 2.5],
-                        "gravity_force": [0.5, 0.5, 0.5],
-                        "bias": [0.0, 0.0, 0.0],
-                    }
-                },
+                metadata={},
             )
         )
         writer.close()

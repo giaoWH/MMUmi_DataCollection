@@ -1710,13 +1710,7 @@ class SessionWriterTest(unittest.TestCase):
                     },
                     missing_sensors=[],
                     age_by_sensor={"ft": 0.0, "imu": 0.0, "realsense": 0.0, "motors": 0.0},
-                    metadata={
-                        "gravity_compensation": {
-                            "applied": True,
-                            "pure_force": [0.7, 1.8, 0.4],
-                            "gravity_force": [0.0, 0.0, -2.45],
-                        }
-                    },
+                    metadata={},
                 )
             )
             writer.write_aligned_frame(
@@ -1766,7 +1760,6 @@ class SessionWriterTest(unittest.TestCase):
             rlds_payload = json.loads((rlds_result.output_path / "episodes" / "episode_000000.json").read_text(encoding="utf-8"))
             step = rlds_payload["steps"][0]
             self.assertEqual(step["observation"]["ft"]["payload"]["force"], [1.0, 2.0, 3.0])
-            self.assertEqual(step["observation"]["gravity_compensation"]["pure_force"], [0.7, 1.8, 0.4])
             self.assertEqual(step["observation"]["trajectory"]["position"], [1.0, 2.0, 3.0])
 
             import pyarrow.parquet as pq
@@ -1776,7 +1769,6 @@ class SessionWriterTest(unittest.TestCase):
             row = rows[0]
             info_payload = json.loads((lerobot_result.output_path / "meta" / "info.json").read_text(encoding="utf-8"))
             self.assertEqual(row["observation.ft.force.0"], 1.0)
-            self.assertEqual(row["observation.gravity_compensation.pure_force.2"], 0.4)
             self.assertEqual(row["observation.trajectory.position.1"], 2.0)
             self.assertEqual(row["observation.motors.motor_2.position"], 4.0)
             self.assertEqual(len(row["action"]), 8)
@@ -2179,14 +2171,7 @@ class SessionWriterTest(unittest.TestCase):
                     },
                     missing_sensors=[],
                     age_by_sensor={"ft": 0.05, "imu": 0.04, "realsense": 0.03, "camera": 0.02},
-                    metadata={
-                        "gravity_compensation": {
-                            "applied": True,
-                            "pure_force": [0.7, 1.8, 0.4],
-                            "gravity_force": [0.0, 0.0, -2.45],
-                            "bias": [0.3, 0.2, 0.15],
-                        }
-                    },
+                    metadata={},
                 )
             )
             writer.close()
@@ -2196,8 +2181,6 @@ class SessionWriterTest(unittest.TestCase):
             lines = result.output_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(len(lines), 2)
             header = lines[0].split(",")
-            self.assertIn("Fx_Pure", header)
-            self.assertIn("Gravity_Fz", header)
             self.assertIn("RealSense_Frame_ID", header)
             self.assertIn("Camera_Frame_ID", header)
             self.assertIn("Missing_Sensors", header)

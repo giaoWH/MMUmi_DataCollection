@@ -138,8 +138,6 @@ PC starts receiver -> Pi runs end_effector mode -> PC receives latest frames in 
   - 这段数据不会进入 session，也不计入 `duration_sec`
 - `realsense.frame_queue_size` / `camera.frame_queue_size` / `gelsight.frame_queue_size`
   - 控制视觉链路的本地缓存队列深度，用于降低主循环瞬时抖动带来的帧覆盖风险
-- `gravity_compensation.enabled` / `mass` / `com` / `stabilization_sec` / `calibration_duration_sec` / `minimum_samples`
-  - 控制 FT 传感器重力补偿的启停与参数
 - `trajectory_qc.enabled` / `thresholds`
   - 控制轨迹质量检查的启停与各项阈值
 
@@ -169,11 +167,10 @@ PC starts receiver -> Pi runs end_effector mode -> PC receives latest frames in 
 - 设备内部可以按需录制 `color`、`depth`、`ir1`、`ir2`、`imu_samples`
 - 可选派生结果包括 `aligned_depth_to_color` 与 `pointcloud`
 - RealSense 板载 IMU 现在已经进入 session，并作为 ORB-SLAM3 惯性输入来源
-- 项目里的“独立串口 IMU”仍然保留，当前主要用于 FT 重力补偿
 
 换句话说：
 
-- `FT + 独立 IMU`：当前已经打通，用于重力补偿
+- `FT + 独立 IMU`：当前已经打通
 - `D435i color/depth/ir/board IMU`：当前已经可以按配置录制
 - `aligned_depth_to_color` / `pointcloud`：当前可以按配置派生并落盘
 
@@ -317,13 +314,11 @@ python scripts/sdk_record.py \
 - 这段时间主循环只会持续消费各路缓存，避免把设备启动瞬态写进正式数据
 - `duration_sec` 的计时会从丢弃窗口结束后才开始
 
-### 4. FT 重力补偿
 
 当前 FT 处理链已经支持：
 
 - 零点校准
 - 静态校准
-- 重力补偿
 - `record.yaml` 中通过 `ft.enable_torque` 控制是否落盘 `torque[3]`
 
 这里依赖的仍然是“独立串口 IMU”的姿态输入，而不是 D435i 板载 IMU。
@@ -582,18 +577,6 @@ python scripts/sdk_extract_camera_audio.py <session_dir>
 python scripts/sdk_simplify_jsonl.py <sessions_root>
 ```
 
-### 12. 重力补偿配置
-
-`configs/record.yaml` 中的 `gravity_compensation` 配置块控制 FT 传感器的重力补偿行为：
-
-- `enabled`：是否启用重力补偿，默认 `false`
-- `mass`：末端负载质量（kg），默认 `0.25`
-- `com`：质心偏移 `[x, y, z]`，默认 `[0.0, 0.0, 0.0]`
-- `stabilization_sec`：校准前稳定等待时间，默认 `2.0`
-- `calibration_duration_sec`：校准采样时长，默认 `3.0`
-- `minimum_samples`：最小校准样本数，默认 `10`
-
-注意：重力补偿依赖独立串口 IMU 的姿态输入，而不是 D435i 板载 IMU。当前 `sdk_record.py` 的传感器清零逻辑（`run_static_calibration`）与重力补偿的 bias 校准可能存在潜在冲突，需要集成测试验证。
 
 ## 目录结构
 

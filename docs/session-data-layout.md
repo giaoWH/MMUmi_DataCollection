@@ -507,9 +507,6 @@ pick_place/
     }
   },
   "metadata": {
-    "gravity_compensation": {
-      "pure_force": [0.7, 1.8, 0.4],
-      "gravity_force": [0.0, 0.0, -2.45]
     }
   }
 }
@@ -528,7 +525,6 @@ pick_place/
 - `frames`
   - 每个传感器在该对齐步上被选中的原始帧索引信息
 - `metadata`
-  - 当前对齐步的附加元信息，典型例子是重力补偿结果
 
 推荐用途：
 

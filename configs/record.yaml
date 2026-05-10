@@ -103,16 +103,6 @@ gelsight:
   height: 240
   fps: 25
   frame_queue_size: 128
-gravity_compensation:
-  enabled: false
-  mass: 0.4
-  com:
-  - 0.0
-  - 0.0
-  - 0.0
-  stabilization_sec: 2.0
-  calibration_duration_sec: 3.0
-  minimum_samples: 10
 trajectory:
   command: null
   mode: stereo_inertial

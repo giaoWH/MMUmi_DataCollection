@@ -32,12 +32,6 @@ class CSVSnapshotExporter(SessionExporter):
             "Tx",
             "Ty",
             "Tz",
-            "Fx_Pure",
-            "Fy_Pure",
-            "Fz_Pure",
-            "Gravity_Fx",
-            "Gravity_Fy",
-            "Gravity_Fz",
             "IMU_Time",
             "Ax",
             "Ay",
@@ -77,7 +71,6 @@ class CSVSnapshotExporter(SessionExporter):
         self._fill_force_torque(row, aligned_record, frame_index)
         self._fill_imu(row, aligned_record, frame_index)
         self._fill_visual_streams(row, aligned_record, frame_index)
-        self._fill_compensation(row, aligned_record)
         return row
 
     def _fill_force_torque(self, row: dict[str, Any], aligned_record: dict[str, Any], frame_index: dict[str, dict[int, Any]]) -> None:
@@ -136,13 +129,3 @@ class CSVSnapshotExporter(SessionExporter):
                 row["Camera_Time"] = f"{float(frame_info['host_time']):.6f}"
                 row["Camera_Frame_ID"] = str(frame_info["frame_id"])
 
-    def _fill_compensation(self, row: dict[str, Any], aligned_record: dict[str, Any]) -> None:
-        compensation = aligned_record.get("metadata", {}).get("gravity_compensation")
-        if not compensation:
-            return
-        pure_force = compensation.get("pure_force", [])
-        gravity_force = compensation.get("gravity_force", [])
-        if len(pure_force) >= 3:
-            row["Fx_Pure"], row["Fy_Pure"], row["Fz_Pure"] = [f"{float(value):.6f}" for value in pure_force[:3]]
-        if len(gravity_force) >= 3:
-            row["Gravity_Fx"], row["Gravity_Fy"], row["Gravity_Fz"] = [f"{float(value):.6f}" for value in gravity_force[:3]]

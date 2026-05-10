@@ -35,12 +35,6 @@ def _write_interactive_config(
         "enable_microphone": False,
         "enable_camera": False,
         "enable_gelsight": False,
-        "gravity_compensation": {
-            "enabled": False,
-            "stabilization_sec": 0.0,
-            "calibration_duration_sec": 0.0,
-            "minimum_samples": 5,
-        },
     }
     if extra_payload:
         payload.update(extra_payload)
