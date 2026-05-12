@@ -7,6 +7,7 @@ UMI Data Collection SDK
 3. 将原始流、对齐结果、轨迹结果写入按 task 批次分组的标准 session
 4. 为 ORB-SLAM3 提供 RGB-D-Inertial / Stereo / Stereo-Inertial 输入
 5. 将 session 导出为常见机器人与具身智能数据格式
+6. 当前项目中的重力补偿功能存在逻辑问题，采集时请勿开启重力补偿，但请开启IMU和FT。采集完成之后使用gravity-comp中的脚本对数据集进行处理即可
 
 当前系统已经具备完整的软件闭环：
 
