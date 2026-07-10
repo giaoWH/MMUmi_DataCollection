@@ -610,6 +610,18 @@ def _build_session_sensor_stats(
     return payload
 
 
+def _find_empty_data_sensors(
+    sensor_stats: dict[str, dict[str, object]],
+) -> list[tuple[str, int, int]]:
+    empty_sensors: list[tuple[str, int, int]] = []
+    for sensor_name, status in sensor_stats.items():
+        produced = _status_counter(status, "produced_frame_count")
+        delivered = _status_counter(status, "delivered_frame_count")
+        if produced <= 0 or delivered <= 0:
+            empty_sensors.append((sensor_name, produced, delivered))
+    return empty_sensors
+
+
 def _format_int(value: object) -> str:
     if value is None:
         return "-"
@@ -1952,6 +1964,22 @@ def _run_interactive(
                     continue
             elif state == STATE_REVIEW_STOPPED and stopped_session is not None:
                 if action == KEY_ENTER:
+                    empty_sensors = _find_empty_data_sensors(stopped_session.session_sensor_stats)
+                    if empty_sensors:
+                        print("检测到无效 session，以下传感器产出或写入为 0，自动放弃当前 session:")
+                        for sensor_name, produced, delivered in empty_sensors:
+                            print(f"  {sensor_name}: 产出={produced}, 写入={delivered}")
+                        _discard_stopped_session(stopped_session, reason="empty_sensor_data")
+                        stopped_session = None
+                        state = STATE_IDLE_READY
+                        if current_batch is not None:
+                            print(
+                                f"已回到待机状态。当前 task 批次仍为 {current_batch.task_name}，"
+                                "本条不计入名额；按空格重录当前序号。"
+                            )
+                        else:
+                            print("已回到待机状态。按空格开始下一个 session，按 Ctrl+C 结束。")
+                        continue
                     print(f"已保存 session #{stopped_session.session_index}: {stopped_session.session_info.output_dir}")
                     if current_batch is None:
                         current_batch = TaskBatchContext(

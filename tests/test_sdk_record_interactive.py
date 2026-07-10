@@ -210,6 +210,43 @@ class InteractiveRecordTest(unittest.TestCase):
             self.assertEqual(sessions[0].relative_to(output_root), Path("discard_me") / "01")
             self.assertEqual(self._load_session_annotation(sessions[0])["data"]["task_name"], "discard_me")
 
+    def test_interactive_mode_auto_discards_empty_sensor_data_on_enter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_root = Path(tmp_dir) / "sessions"
+            config_path = _write_interactive_config(tmp_dir, output_root=output_root)
+            original_build_stats = sdk_record._build_session_sensor_stats
+
+            def build_stats_with_empty_imu(*args, **kwargs):
+                stats = original_build_stats(*args, **kwargs)
+                if "imu" in stats:
+                    stats["imu"]["delivered_frame_count"] = 0
+                return stats
+
+            captured = io.StringIO()
+            with patch.object(sdk_record, "_build_session_sensor_stats", side_effect=build_stats_with_empty_imu):
+                with contextlib.redirect_stdout(captured):
+                    exit_code = sdk_record.main(
+                        ["--config", str(config_path)],
+                        key_source=sdk_record.TimedKeySource(
+                            [
+                                (0.05, " "),
+                                (0.06, "empty_imu\n"),
+                                (0.20, " "),
+                                (0.35, " "),
+                                (0.50, "\n"),
+                                (0.70, "\x03"),
+                            ]
+                        ),
+                    )
+
+            output = captured.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(self._list_session_dirs(output_root), [])
+            self.assertIn("检测到无效 session", output)
+            self.assertIn("imu: 产出=", output)
+            self.assertIn("写入=0", output)
+            self.assertIn("原因: empty_sensor_data", output)
+
     def test_interactive_mode_discards_active_session_on_ctrl_c(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_root = Path(tmp_dir) / "sessions"
